@@ -1,0 +1,285 @@
+// =============================================================================
+// Exposure Engine — STRATEGY  (Pine Script v6)
+// -----------------------------------------------------------------------------
+// Uses the EXACT SAME engine as ExposureEngine_Indicator.pine (the section
+// between the ##### banners is identical). This does NOT simulate options,
+// premium, or leverage — it scales portfolio return by the target exposure,
+// exactly like the C# BankrollSimulator:
+//
+//     dailyReturn  = (close - close[1]) / close[1]
+//     tradeReturn  = signedExposure * dailyReturn      (signed: long +, short -)
+//     bankroll    *= (1 + tradeReturn)
+//
+// Timing (no look-ahead, mirrors C#): the exposure decided on bar t is applied
+// to the move from close[t] -> close[t+1]. Orders fill on close
+// (process_orders_on_close=true) so the Strategy Tester equity matches this.
+// The plotted "Synthetic equity" line is the exact C# mirror using
+// signedExposure[1] * thisBarReturn.
+// =============================================================================
+
+//@version=6
+strategy("Exposure Engine [Strategy]", overlay = true,
+     default_qty_type = strategy.fixed, pyramiding = 100000,
+     initial_capital = 10000, commission_type = strategy.commission.percent,
+     commission_value = 0, slippage = 0, process_orders_on_close = true,
+     calc_on_every_tick = false, max_labels_count = 500)
+
+// =============================================================================
+// 0. INPUTS
+// =============================================================================
+grpModel = "Exposure model"
+MODEL_FAITHFUL = "C# Ramp/Cap (faithful)"
+MODEL_SIMPLE   = "Simple Bucket Mapping"
+exposureModel  = input.string(MODEL_FAITHFUL, "Exposure model",
+     options = [MODEL_FAITHFUL, MODEL_SIMPLE], group = grpModel,
+     tooltip = "Faithful = mirrors BankrollSimulator (ramp-in MIN st-cap, short knobs).\nSimple = single configurable target per (LT,ST) bucket (the prompt's mapping table).")
+
+grpSim = "Simulation"
+plotSynthetic = input.bool(true, "Plot synthetic exposure equity (exact C# mirror)", group = grpSim)
+plotBuyHold   = input.bool(true, "Plot buy & hold reference",                        group = grpSim)
+// Base capital comes from the Strategy properties dialog (strategy.initial_capital)
+// so the synthetic curve and the Strategy Tester equity share the same base.
+
+// -- Faithful (BankrollSimulator) knobs ---------------------------------------
+grpRamp = "Faithful: Long ramp-in levels (LongRampLevels)"
+rampL0 = input.float(0.25, "Rung 0 (entry)", step = 0.05, group = grpRamp)
+rampL1 = input.float(0.50, "Rung 1",         step = 0.05, group = grpRamp)
+rampL2 = input.float(0.75, "Rung 2",         step = 0.05, group = grpRamp)
+rampL3 = input.float(1.00, "Rung 3 (top)",   step = 0.05, group = grpRamp)
+
+grpCap = "Faithful: ST exposure caps (StExposureLevels, indexed by aligned rank)"
+stCap0 = input.float(0.25, "Rank 0 (least aligned)", step = 0.05, group = grpCap)
+stCap1 = input.float(0.50, "Rank 1",                 step = 0.05, group = grpCap)
+stCap2 = input.float(0.75, "Rank 2",                 step = 0.05, group = grpCap)
+stCap3 = input.float(1.00, "Rank 3 (fully aligned)", step = 0.05, group = grpCap)
+
+grpShort = "Faithful: Short-side exposure"
+shortFirst  = input.float(0.25, "Max short — first confirmation",  step = 0.05, group = grpShort)
+shortSecond = input.float(0.00, "Max short — second+ confirmation", step = 0.05, group = grpShort)
+
+// -- Simple bucket mapping (the prompt's table; defaults = top of each range) --
+grpSimpleBull = "Simple mapping: LT Bull targets"
+sBullBull  = input.float(1.00, "Bull",         step = 0.05, group = grpSimpleBull)
+sBullBullN = input.float(0.75, "Bull Neutral", step = 0.05, group = grpSimpleBull)
+sBullBearN = input.float(0.50, "Bear Neutral", step = 0.05, group = grpSimpleBull)
+sBullBear  = input.float(0.25, "Bear",         step = 0.05, group = grpSimpleBull)
+
+grpSimpleBear = "Simple mapping: LT Bear targets (negative = short)"
+sBearBull  = input.float( 0.00, "Bull",         step = 0.05, group = grpSimpleBear)
+sBearBullN = input.float(-0.25, "Bull Neutral", step = 0.05, group = grpSimpleBear)
+sBearBearN = input.float(-0.50, "Bear Neutral", step = 0.05, group = grpSimpleBear)
+sBearBear  = input.float(-0.75, "Bear",         step = 0.05, group = grpSimpleBear)
+
+// #############################################################################
+// ############   SHARED ENGINE  (identical in indicator & strategy)   #########
+// #############################################################################
+
+// -----------------------------------------------------------------------------
+// 1. CANDLE CLASSIFICATION  (LongTermStateEngine.GetCandleType)
+//    return codes:  1 = Bull, -1 = Bear, 0 = Neutral
+// -----------------------------------------------------------------------------
+f_classify(cl, prevHigh, prevLow) =>
+    na(prevHigh) or na(prevLow) ? 0 : cl > prevHigh ? 1 : cl < prevLow ? -1 : 0
+
+// -----------------------------------------------------------------------------
+// 2. LONG TERM ENGINE  (LongTermStateEngine.Update)
+//    LT state codes: 1 = Bull, 0 = Bear  (initial = Bear).
+//    Returns: [state, bullCount, bearCount, bullAnchor, bearAnchor]
+// -----------------------------------------------------------------------------
+f_ltUpdate(candle, hi, lo, cl) =>
+    var int   bullCount    = 0
+    var int   bearCount    = 0
+    var float bullAnchor   = na
+    var float bearAnchor   = na
+    var float lastBullLow  = na
+    var float lastBearHigh = na
+    var int   state        = 0
+
+    if candle == 1
+        bearCount := 0
+        bullCount += 1
+        if bullCount >= 2
+            bullAnchor := lastBullLow
+        lastBullLow := lo
+        if bullCount >= 2 and not na(bearAnchor) and cl > bearAnchor
+            state := 1
+    else if candle == -1
+        bullCount := 0
+        bearCount += 1
+        if bearCount >= 2
+            bearAnchor := lastBearHigh
+        lastBearHigh := hi
+        if bearCount >= 2 and not na(bullAnchor) and cl < bullAnchor
+            state := 0
+
+    [state, bullCount, bearCount, bullAnchor, bearAnchor]
+
+// -----------------------------------------------------------------------------
+// 3. SHORT TERM ENGINE  (CandleStateEngine.Update)
+//    ST codes: 3=Bull 2=BullNeutral 1=BearNeutral 0=Bear na=null
+//    Returns: [st, bullCount, bearCount]
+// -----------------------------------------------------------------------------
+f_stUpdate(candle) =>
+    var int bullCount = 0
+    var int bearCount = 0
+    var int st        = na
+
+    if candle == 1
+        bullCount += 1
+        bearCount := 0
+        if bullCount >= 2
+            st := 3
+        else if st == 0
+            st := 1
+    else if candle == -1
+        bearCount += 1
+        bullCount := 0
+        if bearCount >= 2
+            st := 0
+        else if st == 3
+            st := 2
+
+    [st, bullCount, bearCount]
+
+// -----------------------------------------------------------------------------
+// 4a. EXPOSURE HELPERS  (BankrollSimulator pure functions)
+// -----------------------------------------------------------------------------
+f_alignedRank(lt, st) => lt == 1 ? st : 3 - st
+
+f_rampAt(rung) =>
+    r = math.max(0, math.min(3, rung))
+    r == 0 ? rampL0 : r == 1 ? rampL1 : r == 2 ? rampL2 : rampL3
+
+f_stCapAt(rung) =>
+    r = math.max(0, math.min(3, rung))
+    r == 0 ? stCap0 : r == 1 ? stCap1 : r == 2 ? stCap2 : stCap3
+
+// -----------------------------------------------------------------------------
+// 4b. FAITHFUL EXPOSURE ENGINE  (BankrollSimulator.Run, per-bar)
+//    Returns: [signedExposure, dir]   dir: 1 = long, -1 = short, 0 = flat
+// -----------------------------------------------------------------------------
+f_exposureFaithful(lt, st, candle) =>
+    var int   bullRun   = 0
+    var int   bearRun   = 0
+    var int   rampRung  = 0
+    var int   capRung   = 0
+    var float shortLevel = 0.0
+    var int   prevLt    = na
+    var int   prevSt    = na
+    var int   dir       = 0
+
+    float signedExpo = na
+
+    if not na(st) and not na(lt)
+        if candle == 1
+            bullRun += 1
+            bearRun := 0
+        else if candle == -1
+            bearRun += 1
+            bullRun := 0
+
+        if na(prevLt) or lt != prevLt
+            dir       := lt == 1 ? 1 : -1
+            rampRung  := 0
+            shortLevel := shortFirst
+            capRung   := f_alignedRank(lt, st)
+        else if lt == 1
+            if candle == 1 and bullRun >= 2
+                rampRung := rampRung + 1 > 3 ? 3 : rampRung + 1
+        else
+            if candle == -1 and bearRun >= 2
+                shortLevel := shortSecond
+
+        if not na(prevLt) and lt == prevLt and not na(prevSt) and st != prevSt
+            target = f_alignedRank(lt, st)
+            if target > capRung
+                capRung += 1
+            else if target < capRung
+                capRung -= 1
+
+        scaleIn = lt == 1 ? f_rampAt(rampRung) : shortLevel
+        expo    = math.min(scaleIn, f_stCapAt(capRung))
+        signedExpo := (dir == 1 ? 1.0 : -1.0) * expo
+
+        prevLt := lt
+        prevSt := st
+
+    [signedExpo, dir]
+
+// -----------------------------------------------------------------------------
+// 4c. SIMPLE BUCKET EXPOSURE (the prompt's mapping table; already signed)
+// -----------------------------------------------------------------------------
+f_exposureSimple(lt, st) =>
+    na(lt) or na(st) ? na :
+     lt == 1 ?
+       (st == 3 ? sBullBull : st == 2 ? sBullBullN : st == 1 ? sBullBearN : sBullBear) :
+       (st == 3 ? sBearBull : st == 2 ? sBearBullN : st == 1 ? sBearBearN : sBearBear)
+
+// #############################################################################
+// ############   END SHARED ENGINE                                    #########
+// #############################################################################
+
+// =============================================================================
+// 5. RUN THE ENGINE ON THIS BAR
+// =============================================================================
+candle = f_classify(close, high[1], low[1])
+
+[ltState, ltBullCount, ltBearCount, bullAnchor, bearAnchor] = f_ltUpdate(candle, high, low, close)
+[stState, stBullCount, stBearCount]                         = f_stUpdate(candle)
+
+[expFaithful, dirFaithful] = f_exposureFaithful(ltState, stState, candle)
+expSimple                  = f_exposureSimple(ltState, stState)
+
+signedExposure = exposureModel == MODEL_FAITHFUL ? expFaithful : expSimple
+
+// =============================================================================
+// 6. STRATEGY — size the position to the target exposure.
+//    Target notional = signedExposure * equity  =>  target contracts = that/close.
+//    Rebalance to that target each confirmed bar (delta market order). With
+//    process_orders_on_close, the fill is at this close and the exposure is
+//    carried into the next bar's move — no look-ahead.
+// =============================================================================
+canTrade = barstate.isconfirmed and not na(signedExposure) and close > 0
+
+targetContracts = canTrade ? signedExposure * strategy.equity / close : strategy.position_size
+delta           = targetContracts - strategy.position_size
+
+if canTrade and math.abs(delta) > 0
+    if delta > 0
+        strategy.order("rebalance+", strategy.long,  qty = delta)
+    else
+        strategy.order("rebalance-", strategy.short, qty = -delta)
+
+// =============================================================================
+// 7. SYNTHETIC EQUITY — exact C# BankrollSimulator mirror (for verification).
+//    Uses signedExposure[1] applied to this bar's return (no look-ahead).
+// =============================================================================
+var float synthEquity = na
+var float buyHold      = na
+var float bhEntry      = na
+
+r        = na(close[1]) or close[1] == 0 ? 0.0 : (close - close[1]) / close[1]
+sePrev   = na(signedExposure[1]) ? 0.0 : signedExposure[1]
+tradeRet = sePrev * r
+
+synthEquity := na(synthEquity[1]) ? strategy.initial_capital : synthEquity[1] * (1 + tradeRet)
+
+// buy & hold reference, anchored at the first bar with a valid exposure signal
+if na(bhEntry) and not na(signedExposure)
+    bhEntry := close
+buyHold := na(bhEntry) ? strategy.initial_capital : strategy.initial_capital * (close / bhEntry)
+
+plot(plotSynthetic ? synthEquity : na, "Synthetic equity", color = color.new(#2962FF, 0), linewidth = 2)
+plot(plotBuyHold   ? buyHold     : na, "Buy & hold",       color = color.new(color.gray, 0), linewidth = 1)
+
+// =============================================================================
+// 8. DEBUG — Data Window series for bar-by-bar comparison against C#.
+// =============================================================================
+plot(ltBullCount,   "DBG Bull Count",  display = display.data_window)
+plot(ltBearCount,   "DBG Bear Count",  display = display.data_window)
+plot(bullAnchor,    "DBG Bull Anchor", display = display.data_window)
+plot(bearAnchor,    "DBG Bear Anchor", display = display.data_window)
+plot(candle,        "DBG Candle Type", display = display.data_window)
+plot(ltState,       "DBG LT State",    display = display.data_window)
+plot(stState,       "DBG ST State",    display = display.data_window)
+plot(signedExposure, "DBG Exposure",   display = display.data_window)
