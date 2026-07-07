@@ -21,8 +21,8 @@ namespace StockOdds
 		public DateTime ExitDate { get; set; }
 
 		public TradeDirection Direction { get; set; }
-		public double StakeStart { get; set; }       // exposure fraction at entry [0..1]
-		public double StakeEnd { get; set; }         // exposure fraction at exit  [0..1]
+		public double StakeStart { get; set; }       // signed exposure at entry [-1..1] (short is negative)
+		public double StakeEnd { get; set; }         // signed exposure at exit  [-1..1] (short is negative)
 
 		public double StockPct { get; set; }         // compounded % move of the stock over the run
 		public double TradePct { get; set; }         // compounded % change of TOTAL bankroll over the run
@@ -56,7 +56,7 @@ namespace StockOdds
 		// still-open position at the end of the data (not yet realized), if any
 		public (LongTermState LT, ShortTermState ST)? OpenBucket { get; set; }
 		public TradeDirection OpenDirection { get; set; }
-		public double OpenStake { get; set; }
+		public double OpenStake { get; set; }         // signed exposure [-1..1] (short is negative)
 
 		public double TotalReturnPct => (FinalBankroll - InitialBankroll) / InitialBankroll * 100.0;
 		public double BuyHoldReturnPct => (BuyHoldFinal - InitialBankroll) / InitialBankroll * 100.0;
@@ -71,8 +71,9 @@ namespace StockOdds
 
 	public static class BankrollSimulator
 	{
-		// ============ LONG-side exposure (set these to taste) ============
-		// Two independent controls, combined as exposure = MIN(ramp, ST-state cap):
+		// ============ Exposure controls (set these to taste) ============
+		// The long and short sides are mirror images. Exposure on either side is
+		// combined as exposure = MIN(direction ramp, ST-state cap):
 		//
 		// 1) LongRampLevels  -- how you SCALE INTO a fresh long. Indexed by the number
 		//    of bull-sequence confirmations since entering LT-Bull: rung 0 at entry,
@@ -80,31 +81,41 @@ namespace StockOdds
 		//    Default {0.25,0.50,0.75,1.00} => build 25% -> 100% over four confirmations.
 		public static double[] LongRampLevels = { .25, .5, .75, 1};
 
-		// 2) StExposureLevels -- the exposure CEILING for each ST state, indexed by
-		//    bullishness: [0]=Bear, [1]=BearNeutral, [2]=BullNeutral, [3]=Bull. The cap
-		//    moves toward the current state's level but only ONE step per ST state
-		//    change (up or down), so a skip like BullNeutral->Bear can't crash the cap
-		//    from 75% straight to 25% -- it only steps to 50%.
-		public static double[] StExposureLevels = { .25, .5, .75, 1};
+		// 2) ShortRampLevels -- the exact inverse of LongRampLevels for the short side.
+		//    How you SCALE INTO a fresh short. Indexed by the number of bear-sequence
+		//    confirmations since entering LT-Bear: rung 0 at entry, +1 rung per
+		//    confirming bear candle, held at the top rung thereafter. Same semantics as
+		//    LongRampLevels, just triggered by bear confirmations instead of bull.
+		public static double[] ShortRampLevels = { .25, .5, .75, 1};
 
-		// -------- SHORT-side exposure knobs (set these to taste) --------
-		// The short side never ramps. When LT flips to Bear the position is opened at
-		// MaxShortExposureFirstConfirmation. On every subsequent bear-sequence
-		// confirmation it is (re)set to MaxShortExposureSecondPlusConfirmation.
-		// Defaults (0.25 / 0.00) => open 25% short, then flatten to 0% on the next
-		// confirmation (i.e. the previous "exit on confirmation" behavior).
-		public static double MaxShortExposureFirstConfirmation = 0.25;
-		public static double MaxShortExposureSecondPlusConfirmation = 0;
+		// 3) The exposure CEILING for each ST state, one ladder per side, indexed by
+		//    ALIGNMENT with the trade direction: [0]=least aligned, [3]=fully aligned.
+		//    The cap moves toward the current state's level but only ONE step per ST
+		//    state change (up or down), so a skip like BullNeutral->Bear can't crash the
+		//    cap from 75% straight to 25% -- it only steps to 50%.
+		//
+		//    LongStExposureLevels is indexed by bullishness (fully aligned = ST Bull) and
+		//    is POSITIVE. ShortStExposureLevels is the mirror indexed by bearishness
+		//    (fully aligned = ST Bear) and is written NEGATIVE so it reads as a short
+		//    position; only its magnitude caps exposure (the sign comes from direction).
+		public static double[] LongStExposureLevels  = {  .25,  .5,  .75,  1 };
+		public static double[] ShortStExposureLevels = { -.25, -.5, -.75, -1 };
 
-		// entry-ramp exposure at a given rung (clamped to the ends of the ladder)
+		// long entry-ramp exposure at a given rung (clamped to the ends of the ladder)
 		private static double LongRampAt(int rung) =>
 			LongRampLevels.Length == 0 ? 0.0
 			: LongRampLevels[Math.Clamp(rung, 0, LongRampLevels.Length - 1)];
 
-		// ST-state exposure cap at a given rung (clamped to the ends of the ladder)
-		private static double StCapAt(int rung) =>
-			StExposureLevels.Length == 0 ? 1.0
-			: StExposureLevels[Math.Clamp(rung, 0, StExposureLevels.Length - 1)];
+		// short entry-ramp exposure at a given rung (clamped to the ends of the ladder)
+		private static double ShortRampAt(int rung) =>
+			ShortRampLevels.Length == 0 ? 0.0
+			: ShortRampLevels[Math.Clamp(rung, 0, ShortRampLevels.Length - 1)];
+
+		// ST-state exposure cap MAGNITUDE at a given rung on the given ladder (clamped to
+		// the ends). Bear levels are stored negative for clarity, so we return |level|.
+		private static double StCapAt(double[] levels, int rung) =>
+			levels.Length == 0 ? 1.0
+			: Math.Abs(levels[Math.Clamp(rung, 0, levels.Length - 1)]);
 
 		// bullishness rank of an ST state (higher = more bullish).
 		private static int StRank(ShortTermState st) => st switch
@@ -116,20 +127,21 @@ namespace StockOdds
 			_ => 0
 		};
 
-		// Rung into StExposureLevels for the CURRENT trade direction: how aligned the ST
-		// state is with the position. Long => bullishness (Bull is fully aligned); short
-		// => bearishness (Bear is fully aligned). So StExposureLevels[3] is the ceiling
-		// when ST agrees with the trade, [0] when it least agrees. Applies to both sides.
+		// Rung into the side's ST-cap ladder for the CURRENT trade direction: how aligned
+		// the ST state is with the position. Long => bullishness (Bull is fully aligned);
+		// short => bearishness (Bear is fully aligned). So level [3] is the ceiling when
+		// ST agrees with the trade, [0] when it least agrees. Applies to both sides.
 		private static int AlignedRank(LongTermState lt, ShortTermState st) =>
 			lt == LongTermState.Bull ? StRank(st) : 3 - StRank(st);
 
 		// Walks the bars bar-by-bar, sizing exposure = MIN(scale-in level, ST-state cap):
 		//   * on an LT state change, exposure resets (direction = LT: Bull->long, Bear->short)
-		//   * scale-in level: LONG uses the LongRampLevels ramp (one rung per bull
-		//     confirmation); SHORT uses the MaxShortExposure* confirmation knobs
-		//   * ST-state cap: StExposureLevels indexed by how aligned ST is with the trade
-		//     (bullishness when long, bearishness when short), moving one rung per ST
-		//     state change (rate limit) -- caps BOTH long and short exposure
+		//   * scale-in level: LONG ramps up LongRampLevels one rung per bull confirmation;
+		//     SHORT is the exact inverse -- it ramps up ShortRampLevels one rung per bear
+		//     confirmation
+		//   * ST-state cap: a per-side ladder (LongStExposureLevels / ShortStExposureLevels)
+		//     indexed by how aligned ST is with the trade (bullishness when long, bearishness
+		//     when short), moving one rung per ST state change (rate limit) -- caps BOTH sides
 		//   * exposure is sticky otherwise (neutral / opposing candles don't change it)
 		// State is evaluated as of `prev` (bars[i-1]); the resulting exposure is held
 		// over the move into `cur` (bars[i]), so there is no look-ahead.
@@ -160,15 +172,13 @@ namespace StockOdds
 			// confirmed "sequence" once it reaches 2.
 			int bullRun = 0, bearRun = 0;
 
-			// entry-ramp rung within an LT-Bull regime (climbs one rung per bull confirmation)
+			// entry-ramp rung within the current regime (climbs one rung per aligned
+			// confirmation: bull confirmations when long, bear confirmations when short)
 			int rampRung = 0;
 
 			// ST-state cap rung, rate-limited to move one rung per ST state change
 			// (aligned to bullishness in LT-Bull, bearishness in LT-Bear)
 			int capRung = 0;
-
-			// short-side scale-in level from the confirmation knobs (before the ST cap)
-			double shortLevel = 0.0;
 
 			// previous bar's ST state, to detect ST state changes
 			ShortTermState? prevSt = null;
@@ -214,9 +224,8 @@ namespace StockOdds
 				{
 					// LT state change (or the very first evaluation): reset for the new regime.
 					dir = lt == LongTermState.Bull ? TradeDirection.Long : TradeDirection.Short;
-					rampRung = 0;                                   // long scale-in from the bottom
-					shortLevel = MaxShortExposureFirstConfirmation;  // short opens at the first-conf level
-					capRung = AlignedRank(lt, st.Value);            // cap starts at the entry state's level
+					rampRung = 0;                        // scale-in from the bottom rung (either side)
+					capRung = AlignedRank(lt, st.Value); // cap starts at the entry state's level
 				}
 				else if (lt == LongTermState.Bull)
 				{
@@ -226,9 +235,9 @@ namespace StockOdds
 				}
 				else // lt == LongTermState.Bear
 				{
-					// short scale-in: a new bear confirmation (re)sets to the second+ level
+					// short scale-in (inverse of long): a confirming bear candle climbs one ramp rung
 					if (candle == CandleType.Bear && bearRun >= 2)
-						shortLevel = MaxShortExposureSecondPlusConfirmation;
+						rampRung = Math.Min(ShortRampLevels.Length - 1, rampRung + 1);
 				}
 
 				// ST cap: on an ST state change, step the cap ONE rung toward the current
@@ -241,9 +250,12 @@ namespace StockOdds
 					else if (target < capRung) capRung--;
 				}
 
-				// combine the direction's scale-in level with the ST-state cap
-				double scaleIn = lt == LongTermState.Bull ? LongRampAt(rampRung) : shortLevel;
-				exposure = Math.Min(scaleIn, StCapAt(capRung));
+				// combine the direction's scale-in level with the ST-state cap, then
+				// sign it by direction: long is positive, short is negative.
+				double scaleIn = lt == LongTermState.Bull ? LongRampAt(rampRung) : ShortRampAt(rampRung);
+				double[] caps  = lt == LongTermState.Bull ? LongStExposureLevels : ShortStExposureLevels;
+				double magnitude = Math.Min(scaleIn, StCapAt(caps, capRung));
+				exposure = (dir == TradeDirection.Long ? 1.0 : -1.0) * magnitude;
 
 				prevLt = lt;
 				prevSt = st.Value;
@@ -269,8 +281,7 @@ namespace StockOdds
 
 				// -------- P&L for this bar-step (prev.Close -> bar.Close) --------
 				double r = (bar.Close - prev.Close) / prev.Close;
-				double signed = (dir == TradeDirection.Long ? 1.0 : -1.0) * exposure;
-				double tradeReturn = signed * r;
+				double tradeReturn = exposure * r;   // exposure already carries the sign
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -319,7 +330,6 @@ namespace StockOdds
 				{
 					dir = lastLt == LongTermState.Bull ? TradeDirection.Long : TradeDirection.Short;
 					rampRung = 0;
-					shortLevel = MaxShortExposureFirstConfirmation;
 					capRung = AlignedRank(lastLt, lastSt.Value);
 				}
 				else if (lastLt == LongTermState.Bull)
@@ -330,7 +340,7 @@ namespace StockOdds
 				else // lastLt == LongTermState.Bear
 				{
 					if (lastCandle == CandleType.Bear && bearRun >= 2)
-						shortLevel = MaxShortExposureSecondPlusConfirmation;
+						rampRung = Math.Min(ShortRampLevels.Length - 1, rampRung + 1);
 				}
 
 				if (prevLt != null && lastLt == prevLt && prevSt.HasValue && lastSt.Value != prevSt.Value)
@@ -340,8 +350,9 @@ namespace StockOdds
 					else if (target < capRung) capRung--;
 				}
 
-				double lastScaleIn = lastLt == LongTermState.Bull ? LongRampAt(rampRung) : shortLevel;
-				exposure = Math.Min(lastScaleIn, StCapAt(capRung));
+				double lastScaleIn = lastLt == LongTermState.Bull ? LongRampAt(rampRung) : ShortRampAt(rampRung);
+				double[] lastCaps = lastLt == LongTermState.Bull ? LongStExposureLevels : ShortStExposureLevels;
+				exposure = (dir == TradeDirection.Long ? 1.0 : -1.0) * Math.Min(lastScaleIn, StCapAt(lastCaps, capRung));
 
 				result.OpenBucket = (lastLt, lastSt.Value);
 				result.OpenDirection = dir;
