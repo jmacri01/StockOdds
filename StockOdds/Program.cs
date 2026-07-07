@@ -77,9 +77,9 @@ class Program
 		// -------------------------
 		// 5. BANKROLL SIMULATION
 		// -------------------------
-		// Pyramiding exposure: on an LT state change, exposure resets to 25% (long in
-		// LT-Bull, short in LT-Bear). Each confirming candle (bull in LT-Bull, bear in
-		// LT-Bear) adds +25% up to 100%; exposure is sticky otherwise.
+		// Each candle's target exposure is looked up by its (LT, ST) bucket, smoothed by
+		// an EMA, only rebalanced when it drifts past a threshold, then clamped to the
+		// configured min/max. See BankrollSimulator for the knobs.
 		var bankroll = BankrollSimulator.Run(bars, initialBankroll: 10_000.0);
 		BankrollPrinter.Print(bankroll);
 	}

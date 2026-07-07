@@ -2,10 +2,10 @@
 // Exposure Engine — INDICATOR  (Pine Script v6)
 // -----------------------------------------------------------------------------
 // Direct translation of the StockOdds C# engine. The C# is the source of truth:
-//   * CandleType classification        (LongTermStateEngine.GetCandleType)
-//   * LongTermStateEngine              (anchor-based LT state machine)
-//   * CandleStateEngine                (ShortTermState 4-state machine)
-//   * BankrollSimulator exposure logic (long & short ramp-in, MIN st-cap; short = inverse of long)
+//   * CandleType classification  (LongTermStateEngine.GetCandleType)
+//   * LongTermStateEngine        (anchor-based LT state machine)
+//   * CandleStateEngine          (ShortTermState 4-state machine)
+//   * BankrollSimulator exposure (per-candle (LT,ST) target -> EMA -> drift band -> clamp)
 //
 // The engine section below is byte-for-byte identical to the one in
 // ExposureEngine_Strategy.pine so the strategy runs the *exact same* engine.
@@ -20,7 +20,10 @@
 // =============================================================================
 
 //@version=6
-indicator("Exposure Engine [Indicator]", overlay = true, max_labels_count = 500)
+// overlay = false: this script owns a separate pane where the exposure / EMA lines
+// are drawn on their own -1..+1 scale. The price-chart visuals (candle coloring, LT
+// background, anchors) are pushed back onto the main chart with force_overlay = true.
+indicator("Exposure Engine [Indicator]", overlay = false, max_labels_count = 500)
 
 // =============================================================================
 // 0. INPUTS
@@ -31,6 +34,13 @@ showTable      = input.bool(true,  "Show table (top-right)",      group = grpUI)
 showDebug      = input.bool(false, "Show debug information",      group = grpUI)
 showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
+grpExp = "Exposure pane"
+showExposure = input.bool(true, "Show exposure (position) line",  group = grpExp)
+showEma      = input.bool(true, "Show exposure EMA line",         group = grpExp)
+showBand     = input.bool(true, "Show rebalance band (EMA ± drift)", group = grpExp)
+showStValue  = input.bool(true, "Show ST-value stepline",         group = grpExp)
+showGuides   = input.bool(true, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
+
 grpColor = "Candle colors"
 colBull      = input.color(#00E676, "Bull (bright green)",  group = grpColor)
 colBullN     = input.color(#A5D6A7, "Bull Neutral (light green)", group = grpColor)
@@ -39,50 +49,29 @@ colBear      = input.color(#F23645, "Bear (red)",           group = grpColor)
 colBgBull    = input.color(color.new(#26A69A, 88), "Background LT Bull", group = grpColor)
 colBgBear    = input.color(color.new(#F23645, 88), "Background LT Bear", group = grpColor)
 
-grpModel = "Exposure model"
-MODEL_FAITHFUL = "C# Ramp/Cap (faithful)"
-MODEL_SIMPLE   = "Simple Bucket Mapping"
-exposureModel  = input.string(MODEL_FAITHFUL, "Exposure model",
-     options = [MODEL_FAITHFUL, MODEL_SIMPLE], group = grpModel,
-     tooltip = "Faithful = mirrors BankrollSimulator (long & short ramp-in, MIN ST-cap; short is the inverse of long).\nSimple = single configurable target per (LT,ST) bucket (the prompt's mapping table).")
+// -- Exposure model: one target per (LT, ST) bucket. Long positive, short negative.
+grpBull = "Exposure — LT Bull (long, per ST state)"
+bullBear  = input.float(0.25, "ST Bear",         step = 0.05, group = grpBull)
+bullBearN = input.float(0.50, "ST Bear Neutral", step = 0.05, group = grpBull)
+bullBullN = input.float(0.75, "ST Bull Neutral", step = 0.05, group = grpBull)
+bullBull  = input.float(1.00, "ST Bull",         step = 0.05, group = grpBull)
 
-// -- Faithful (BankrollSimulator) knobs ---------------------------------------
-grpRamp = "Faithful: Long ramp-in levels (LongRampLevels)"
-rampL0 = input.float(0.25, "Rung 0 (entry)", step = 0.05, group = grpRamp)
-rampL1 = input.float(0.50, "Rung 1",         step = 0.05, group = grpRamp)
-rampL2 = input.float(0.75, "Rung 2",         step = 0.05, group = grpRamp)
-rampL3 = input.float(1.00, "Rung 3 (top)",   step = 0.05, group = grpRamp)
+grpBear = "Exposure — LT Bear (short, per ST state)"
+bearBull  = input.float(-0.25, "ST Bull",         step = 0.05, group = grpBear)
+bearBullN = input.float(-0.50, "ST Bull Neutral", step = 0.05, group = grpBear)
+bearBearN = input.float(-0.75, "ST Bear Neutral", step = 0.05, group = grpBear)
+bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
-grpCapBull = "Faithful: ST exposure caps — LONG (by aligned rank)"
-stCapBull0 = input.float(0.25, "ST Bear (least aligned)",     step = 0.05, group = grpCapBull)
-stCapBull1 = input.float(0.50, "ST Bear Neutral",            step = 0.05, group = grpCapBull)
-stCapBull2 = input.float(0.75, "ST Bull Neutral",            step = 0.05, group = grpCapBull)
-stCapBull3 = input.float(1.00, "ST Bull (fully aligned)",     step = 0.05, group = grpCapBull)
-
-grpCapBear = "Faithful: ST exposure caps — SHORT (negative; by aligned rank)"
-stCapBear0 = input.float(-0.25, "ST Bull (least aligned)",    step = 0.05, group = grpCapBear)
-stCapBear1 = input.float(-0.50, "ST Bull Neutral",           step = 0.05, group = grpCapBear)
-stCapBear2 = input.float(-0.75, "ST Bear Neutral",           step = 0.05, group = grpCapBear)
-stCapBear3 = input.float(-1.00, "ST Bear (fully aligned)",    step = 0.05, group = grpCapBear)
-
-grpShortRamp = "Faithful: Short ramp-in levels (ShortRampLevels) — inverse of long"
-sRampL0 = input.float(0.25, "Rung 0 (entry)", step = 0.05, group = grpShortRamp)
-sRampL1 = input.float(0.50, "Rung 1",         step = 0.05, group = grpShortRamp)
-sRampL2 = input.float(0.75, "Rung 2",         step = 0.05, group = grpShortRamp)
-sRampL3 = input.float(1.00, "Rung 3 (top)",   step = 0.05, group = grpShortRamp)
-
-// -- Simple bucket mapping (the prompt's table; defaults = top of each range) --
-grpSimpleBull = "Simple mapping: LT Bull targets"
-sBullBull  = input.float(1.00, "Bull",         step = 0.05, group = grpSimpleBull)
-sBullBullN = input.float(0.75, "Bull Neutral", step = 0.05, group = grpSimpleBull)
-sBullBearN = input.float(0.50, "Bear Neutral", step = 0.05, group = grpSimpleBull)
-sBullBear  = input.float(0.25, "Bear",         step = 0.05, group = grpSimpleBull)
-
-grpSimpleBear = "Simple mapping: LT Bear targets (negative = short; inverse of Bull)"
-sBearBull  = input.float(-0.25, "Bull",         step = 0.05, group = grpSimpleBear)
-sBearBullN = input.float(-0.50, "Bull Neutral", step = 0.05, group = grpSimpleBear)
-sBearBearN = input.float(-0.75, "Bear Neutral", step = 0.05, group = grpSimpleBear)
-sBearBear  = input.float(-1.00, "Bear",         step = 0.05, group = grpSimpleBear)
+// -- Smoothing & rebalance control
+grpSmooth = "Smoothing & rebalance"
+emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
+     tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
+driftPct  = input.float(20, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
+     tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
+minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
+     tooltip = "Clamp on the POSITION only (not the per-candle target). -100 = fully short.")
+maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
+     tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -141,7 +130,7 @@ f_ltUpdate(candle, hi, lo, cl) =>
 
 // -----------------------------------------------------------------------------
 // 3. SHORT TERM ENGINE  (CandleStateEngine.Update)
-//    ST state codes chosen to equal the C# bullishness StRank:
+//    ST state codes chosen to equal the C# bullishness rank:
 //        3 = Bull, 2 = BullNeutral, 1 = BearNeutral, 0 = Bear, na = null
 //    Neutral candles do not affect counts or state.
 //    Returns: [st, bullCount, bearCount]
@@ -170,99 +159,15 @@ f_stUpdate(candle) =>
     [st, bullCount, bearCount]
 
 // -----------------------------------------------------------------------------
-// 4a. EXPOSURE HELPERS  (BankrollSimulator pure functions)
+// 4. TARGET EXPOSURE  (BankrollSimulator.TargetExposure)
+//    One value per (LT, ST) bucket; already signed (short negative).
+//    ST codes: 3=Bull 2=BullNeutral 1=BearNeutral 0=Bear
 // -----------------------------------------------------------------------------
-// StRank == the ST state code itself (3/2/1/0).
-// AlignedRank: how aligned ST is with the trade direction.
-//   LT Bull  -> bullishness (st)      ; LT Bear -> bearishness (3 - st)
-f_alignedRank(lt, st) => lt == 1 ? st : 3 - st
-
-// Long ramp level at a rung (clamped to [0,3]).
-f_rampAt(rung) =>
-    r = math.max(0, math.min(3, rung))
-    r == 0 ? rampL0 : r == 1 ? rampL1 : r == 2 ? rampL2 : rampL3
-
-// Short ramp level at a rung (clamped to [0,3]) — inverse of the long ramp.
-f_shortRampAt(rung) =>
-    r = math.max(0, math.min(3, rung))
-    r == 0 ? sRampL0 : r == 1 ? sRampL1 : r == 2 ? sRampL2 : sRampL3
-
-// ST exposure cap MAGNITUDE at a rung (clamped to [0,3]) for the given LT side.
-// Bear caps are entered negative for clarity, so we return the absolute value.
-f_stCapAt(lt, rung) =>
-    r = math.max(0, math.min(3, rung))
-    cap = lt == 1 ? (r == 0 ? stCapBull0 : r == 1 ? stCapBull1 : r == 2 ? stCapBull2 : stCapBull3)
-       :            (r == 0 ? stCapBear0 : r == 1 ? stCapBear1 : r == 2 ? stCapBear2 : stCapBear3)
-    math.abs(cap)
-
-// -----------------------------------------------------------------------------
-// 4b. FAITHFUL EXPOSURE ENGINE  (BankrollSimulator.Run, per-bar)
-//    exposure = MIN(direction scale-in, ST-state cap). Long and short mirror.
-//      * on LT change: reset (dir = LT, rampRung=0, cap=aligned)
-//      * LT Bull: a confirming bull candle (bullRun>=2) climbs one long ramp rung
-//      * LT Bear: a confirming bear candle (bearRun>=2) climbs one short ramp rung (inverse)
-//      * ST cap steps ONE rung per ST-state change toward aligned rank
-//    Guarded by `st != na`, mirroring the C# `if (st == null) continue;`
-//    (run counters only advance once ST state exists).
-//    Returns: [signedExposure, dir]   dir: 1 = long, -1 = short, 0 = flat
-// -----------------------------------------------------------------------------
-f_exposureFaithful(lt, st, candle) =>
-    var int   bullRun   = 0
-    var int   bearRun   = 0
-    var int   rampRung  = 0
-    var int   capRung   = 0
-    var int   prevLt    = na
-    var int   prevSt    = na
-    var int   dir       = 0
-
-    float signedExpo = na
-
-    if not na(st) and not na(lt)
-        // advance consecutive-run counters (neutral preserves both)
-        if candle == 1
-            bullRun += 1
-            bearRun := 0
-        else if candle == -1
-            bearRun += 1
-            bullRun := 0
-
-        // -------- regime / scale-in --------
-        if na(prevLt) or lt != prevLt
-            dir       := lt == 1 ? 1 : -1
-            rampRung  := 0
-            capRung   := f_alignedRank(lt, st)
-        else if lt == 1
-            if candle == 1 and bullRun >= 2
-                rampRung := rampRung + 1 > 3 ? 3 : rampRung + 1
-        else
-            if candle == -1 and bearRun >= 2
-                rampRung := rampRung + 1 > 3 ? 3 : rampRung + 1
-
-        // -------- ST cap: one rung per ST-state change --------
-        if not na(prevLt) and lt == prevLt and not na(prevSt) and st != prevSt
-            target = f_alignedRank(lt, st)
-            if target > capRung
-                capRung += 1
-            else if target < capRung
-                capRung -= 1
-
-        scaleIn = lt == 1 ? f_rampAt(rampRung) : f_shortRampAt(rampRung)
-        expo    = math.min(scaleIn, f_stCapAt(lt, capRung))
-        signedExpo := (dir == 1 ? 1.0 : -1.0) * expo
-
-        prevLt := lt
-        prevSt := st
-
-    [signedExpo, dir]
-
-// -----------------------------------------------------------------------------
-// 4c. SIMPLE BUCKET EXPOSURE (the prompt's mapping table; already signed)
-// -----------------------------------------------------------------------------
-f_exposureSimple(lt, st) =>
+f_target(lt, st) =>
     na(lt) or na(st) ? na :
      lt == 1 ?
-       (st == 3 ? sBullBull : st == 2 ? sBullBullN : st == 1 ? sBullBearN : sBullBear) :
-       (st == 3 ? sBearBull : st == 2 ? sBearBullN : st == 1 ? sBearBearN : sBearBear)
+       (st == 3 ? bullBull : st == 2 ? bullBullN : st == 1 ? bullBearN : bullBear) :
+       (st == 3 ? bearBull : st == 2 ? bearBullN : st == 1 ? bearBearN : bearBear)
 
 // #############################################################################
 // ############   END SHARED ENGINE                                    #########
@@ -276,10 +181,27 @@ candle = f_classify(close, high[1], low[1])
 [ltState, ltBullCount, ltBearCount, bullAnchor, bearAnchor] = f_ltUpdate(candle, high, low, close)
 [stState, stBullCount, stBearCount]                         = f_stUpdate(candle)
 
-[expFaithful, dirFaithful] = f_exposureFaithful(ltState, stState, candle)
-expSimple                  = f_exposureSimple(ltState, stState)
+target = f_target(ltState, stState)
 
-signedExposure = exposureModel == MODEL_FAITHFUL ? expFaithful : expSimple
+// -----------------------------------------------------------------------------
+// 5b. SMOOTH + REBALANCE
+//     ema      : EMA of the per-candle target (same recurrence as the C# sim)
+//     held     : follows the EMA, but only re-sets when it drifts past the band
+//     position : held, clamped to [min, max] — the exposure actually reported/traded
+// -----------------------------------------------------------------------------
+alpha = 2.0 / (emaPeriod + 1)
+var float emaExp = na
+if not na(target)
+    emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
+
+driftBand = driftPct / 100.0
+var float held = na
+if not na(emaExp) and (na(held) or math.abs(held - emaExp) > driftBand)
+    held := emaExp
+
+loExp = math.min(minExpPct, maxExpPct) / 100.0
+hiExp = math.max(minExpPct, maxExpPct) / 100.0
+position = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 
 // =============================================================================
 // 6. NAME HELPERS
@@ -295,24 +217,56 @@ barCol = na(stState) ? na :
          stState == 3 ? colBull :
          stState == 2 ? colBullN :
          stState == 1 ? colBearN : colBear
-barcolor(barCol)
+barcolor(barCol)   // barcolor always colors the main chart bars (no force_overlay needed)
 
 // =============================================================================
-// 8. UI — BACKGROUND (by LT regime)
+// 8. UI — BACKGROUND (by LT regime)  [forced onto the price chart]
 // =============================================================================
 bg = ltState == 1 ? colBgBull : colBgBear
-bgcolor(showBackground ? bg : na, title = "LT regime")
+bgcolor(showBackground ? bg : na, title = "LT regime", force_overlay = true)
 
 // =============================================================================
-// 9. UI — ANCHORS
+// 9. UI — ANCHORS  [forced onto the price chart]
 // =============================================================================
-plot(showAnchors ? bullAnchor : na, "Bull Anchor", color = color.new(#26A69A, 0), style = plot.style_circles, linewidth = 2)
-plot(showAnchors ? bearAnchor : na, "Bear Anchor", color = color.new(#F23645, 0), style = plot.style_circles, linewidth = 2)
+plot(showAnchors ? bullAnchor : na, "Bull Anchor", color = color.new(#26A69A, 0), style = plot.style_circles, linewidth = 2, force_overlay = true)
+plot(showAnchors ? bearAnchor : na, "Bear Anchor", color = color.new(#F23645, 0), style = plot.style_circles, linewidth = 2, force_overlay = true)
+
+// =============================================================================
+// 9b. EXPOSURE PANE — the -1..+1 exposure series (this indicator's own pane).
+//     Target = raw (LT,ST) map value; EMA = smoothed target; Exposure = the
+//     drift-banded, clamped position actually applied. Green above 0 (long),
+//     red below 0 (short).
+// =============================================================================
+gcol0 = color.new(color.gray, showGuides ? 0  : 100)
+gcol1 = color.new(color.gray, showGuides ? 55 : 100)
+gcol2 = color.new(color.gray, showGuides ? 80 : 100)
+hline( 0.0, "Zero",      color = gcol0, linestyle = hline.style_solid)
+hline( 1.0, "Max long",  color = gcol1, linestyle = hline.style_dotted)
+hline(-1.0, "Max short", color = gcol1, linestyle = hline.style_dotted)
+hline( 0.5, "+0.5",      color = gcol2, linestyle = hline.style_dotted)
+hline(-0.5, "-0.5",      color = gcol2, linestyle = hline.style_dotted)
+
+// raw (LT,ST) map value that feeds the EMA
+plot(showStValue ? target : na, "ST value", color = color.new(color.gray, 30), style = plot.style_stepline)
+
+// rebalance band: EMA ± drift — the zone the position holds inside without rebalancing
+bandUp = na(emaExp) ? na : emaExp + driftBand
+bandDn = na(emaExp) ? na : emaExp - driftBand
+pUp = plot(showBand ? bandUp : na, "Target band +", color = color.new(#2962FF, 55), linewidth = 1)
+pDn = plot(showBand ? bandDn : na, "Target band -", color = color.new(#2962FF, 55), linewidth = 1)
+fill(pUp, pDn, color = color.new(#2962FF, 90), title = "Rebalance band")
+
+plot(showEma ? emaExp : na, "EMA exposure", color = #2962FF, linewidth = 2)
+
+posColor = na(position) ? na : position >= 0 ? colBull : colBear
+pPos = plot(showExposure ? position : na, "Exposure (position)", color = posColor, linewidth = 2, style = plot.style_stepline)
+pZero = plot(showExposure ? 0.0 : na, "", color = na, display = display.none)
+fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "Exposure fill")
 
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 9, border_width = 1, frame_width = 1, frame_color = color.gray)
+var table tbl = table.new(position.top_right, 2, 10, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -321,15 +275,18 @@ f_row(row, k, v, txtCol) =>
 if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
-    f_row(0, "LT State",       f_ltName(ltState), ltCol)
-    f_row(1, "ST State",       f_stName(stState), stCol)
-    f_row(2, "Target Exposure", na(signedExposure) ? "—" : str.tostring(signedExposure, "#.##"), na(signedExposure) ? color.gray : signedExposure >= 0 ? colBull : colBear)
-    f_row(3, "Bull Count",     str.tostring(ltBullCount), color.white)
-    f_row(4, "Bear Count",     str.tostring(ltBearCount), color.white)
-    f_row(5, "Bull Anchor",    na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick), color.white)
-    f_row(6, "Bear Anchor",    na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick), color.white)
-    f_row(7, "Candle Type",    f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
-    f_row(8, "Model",          exposureModel == MODEL_FAITHFUL ? "Ramp/Cap" : "Simple", color.gray)
+    posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
+    bandTxt = na(emaExp) ? "—" : str.tostring(emaExp - driftBand, "#.##") + " – " + str.tostring(emaExp + driftBand, "#.##")
+    f_row(0, "LT State",     f_ltName(ltState), ltCol)
+    f_row(1, "ST State",     f_stName(stState), stCol)
+    f_row(2, "ST Value",     na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
+    f_row(3, "EMA",          na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
+    f_row(4, "Target",       bandTxt, color.white)
+    f_row(5, "Exposure",     na(position) ? "—" : str.tostring(position, "#.##"), posCol)
+    f_row(6, "Bull Count",   str.tostring(ltBullCount), color.white)
+    f_row(7, "Bear Count",   str.tostring(ltBearCount), color.white)
+    f_row(8, "Anchors B/S",  (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
+    f_row(9, "Candle Type",  f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
@@ -337,11 +294,13 @@ if showTable and barstate.islast
 //     ST/LT plotted as their integer codes:  LT 1=Bull 0=Bear ;
 //     ST 3=Bull 2=BullNeutral 1=BearNeutral 0=Bear ; Candle 1/-1/0.
 // =============================================================================
-plot(showDebug ? ltBullCount   : na, "DBG Bull Count",  display = display.data_window)
-plot(showDebug ? ltBearCount   : na, "DBG Bear Count",  display = display.data_window)
-plot(showDebug ? bullAnchor    : na, "DBG Bull Anchor", display = display.data_window)
-plot(showDebug ? bearAnchor    : na, "DBG Bear Anchor", display = display.data_window)
-plot(showDebug ? candle        : na, "DBG Candle Type", display = display.data_window)
-plot(showDebug ? ltState       : na, "DBG LT State",    display = display.data_window)
-plot(showDebug ? stState       : na, "DBG ST State",    display = display.data_window)
-plot(showDebug ? signedExposure : na, "DBG Exposure",   display = display.data_window)
+plot(showDebug ? ltBullCount : na, "DBG Bull Count",  display = display.data_window)
+plot(showDebug ? ltBearCount : na, "DBG Bear Count",  display = display.data_window)
+plot(showDebug ? bullAnchor  : na, "DBG Bull Anchor", display = display.data_window)
+plot(showDebug ? bearAnchor  : na, "DBG Bear Anchor", display = display.data_window)
+plot(showDebug ? candle      : na, "DBG Candle Type", display = display.data_window)
+plot(showDebug ? ltState     : na, "DBG LT State",    display = display.data_window)
+plot(showDebug ? stState     : na, "DBG ST State",    display = display.data_window)
+plot(showDebug ? target      : na, "DBG ST Value",   display = display.data_window)
+plot(showDebug ? emaExp      : na, "DBG EMA",        display = display.data_window)
+plot(showDebug ? position    : na, "DBG Exposure",   display = display.data_window)

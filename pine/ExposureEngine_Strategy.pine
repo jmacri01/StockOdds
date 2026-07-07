@@ -7,14 +7,18 @@
 // exactly like the C# BankrollSimulator:
 //
 //     dailyReturn  = (close - close[1]) / close[1]
-//     tradeReturn  = signedExposure * dailyReturn      (signed: long +, short -)
+//     tradeReturn  = position * dailyReturn            (signed: long +, short -)
 //     bankroll    *= (1 + tradeReturn)
 //
-// Timing (no look-ahead, mirrors C#): the exposure decided on bar t is applied
+// Exposure model: each candle has one target from its (LT, ST) bucket; that
+// target is EMA-smoothed, only rebalanced when it drifts past a band, then
+// clamped to [min, max]. `position` is the result actually traded.
+//
+// Timing (no look-ahead, mirrors C#): the position decided on bar t is applied
 // to the move from close[t] -> close[t+1]. Orders fill on close
 // (process_orders_on_close=true) so the Strategy Tester equity matches this.
 // The plotted "Synthetic equity" line is the exact C# mirror using
-// signedExposure[1] * thisBarReturn.
+// position[1] * thisBarReturn.
 // =============================================================================
 
 //@version=6
@@ -27,56 +31,35 @@ strategy("Exposure Engine [Strategy]", overlay = true,
 // =============================================================================
 // 0. INPUTS
 // =============================================================================
-grpModel = "Exposure model"
-MODEL_FAITHFUL = "C# Ramp/Cap (faithful)"
-MODEL_SIMPLE   = "Simple Bucket Mapping"
-exposureModel  = input.string(MODEL_FAITHFUL, "Exposure model",
-     options = [MODEL_FAITHFUL, MODEL_SIMPLE], group = grpModel,
-     tooltip = "Faithful = mirrors BankrollSimulator (long & short ramp-in, MIN ST-cap; short is the inverse of long).\nSimple = single configurable target per (LT,ST) bucket (the prompt's mapping table).")
-
 grpSim = "Simulation"
 plotSynthetic = input.bool(true, "Plot synthetic exposure equity (exact C# mirror)", group = grpSim)
 plotBuyHold   = input.bool(true, "Plot buy & hold reference",                        group = grpSim)
 // Base capital comes from the Strategy properties dialog (strategy.initial_capital)
 // so the synthetic curve and the Strategy Tester equity share the same base.
 
-// -- Faithful (BankrollSimulator) knobs ---------------------------------------
-grpRamp = "Faithful: Long ramp-in levels (LongRampLevels)"
-rampL0 = input.float(0.25, "Rung 0 (entry)", step = 0.05, group = grpRamp)
-rampL1 = input.float(0.50, "Rung 1",         step = 0.05, group = grpRamp)
-rampL2 = input.float(0.75, "Rung 2",         step = 0.05, group = grpRamp)
-rampL3 = input.float(1.00, "Rung 3 (top)",   step = 0.05, group = grpRamp)
+// -- Exposure model: one target per (LT, ST) bucket. Long positive, short negative.
+grpBull = "Exposure — LT Bull (long, per ST state)"
+bullBear  = input.float(0.25, "ST Bear",         step = 0.05, group = grpBull)
+bullBearN = input.float(0.50, "ST Bear Neutral", step = 0.05, group = grpBull)
+bullBullN = input.float(0.75, "ST Bull Neutral", step = 0.05, group = grpBull)
+bullBull  = input.float(1.00, "ST Bull",         step = 0.05, group = grpBull)
 
-grpCapBull = "Faithful: ST exposure caps — LONG (by aligned rank)"
-stCapBull0 = input.float(0.25, "ST Bear (least aligned)",     step = 0.05, group = grpCapBull)
-stCapBull1 = input.float(0.50, "ST Bear Neutral",            step = 0.05, group = grpCapBull)
-stCapBull2 = input.float(0.75, "ST Bull Neutral",            step = 0.05, group = grpCapBull)
-stCapBull3 = input.float(1.00, "ST Bull (fully aligned)",     step = 0.05, group = grpCapBull)
+grpBear = "Exposure — LT Bear (short, per ST state)"
+bearBull  = input.float(-0.25, "ST Bull",         step = 0.05, group = grpBear)
+bearBullN = input.float(-0.50, "ST Bull Neutral", step = 0.05, group = grpBear)
+bearBearN = input.float(-0.75, "ST Bear Neutral", step = 0.05, group = grpBear)
+bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
-grpCapBear = "Faithful: ST exposure caps — SHORT (negative; by aligned rank)"
-stCapBear0 = input.float(-0.25, "ST Bull (least aligned)",    step = 0.05, group = grpCapBear)
-stCapBear1 = input.float(-0.50, "ST Bull Neutral",           step = 0.05, group = grpCapBear)
-stCapBear2 = input.float(-0.75, "ST Bear Neutral",           step = 0.05, group = grpCapBear)
-stCapBear3 = input.float(-1.00, "ST Bear (fully aligned)",    step = 0.05, group = grpCapBear)
-
-grpShortRamp = "Faithful: Short ramp-in levels (ShortRampLevels) — inverse of long"
-sRampL0 = input.float(0.25, "Rung 0 (entry)", step = 0.05, group = grpShortRamp)
-sRampL1 = input.float(0.50, "Rung 1",         step = 0.05, group = grpShortRamp)
-sRampL2 = input.float(0.75, "Rung 2",         step = 0.05, group = grpShortRamp)
-sRampL3 = input.float(1.00, "Rung 3 (top)",   step = 0.05, group = grpShortRamp)
-
-// -- Simple bucket mapping (the prompt's table; defaults = top of each range) --
-grpSimpleBull = "Simple mapping: LT Bull targets"
-sBullBull  = input.float(1.00, "Bull",         step = 0.05, group = grpSimpleBull)
-sBullBullN = input.float(0.75, "Bull Neutral", step = 0.05, group = grpSimpleBull)
-sBullBearN = input.float(0.50, "Bear Neutral", step = 0.05, group = grpSimpleBull)
-sBullBear  = input.float(0.25, "Bear",         step = 0.05, group = grpSimpleBull)
-
-grpSimpleBear = "Simple mapping: LT Bear targets (negative = short; inverse of Bull)"
-sBearBull  = input.float(-0.25, "Bull",         step = 0.05, group = grpSimpleBear)
-sBearBullN = input.float(-0.50, "Bull Neutral", step = 0.05, group = grpSimpleBear)
-sBearBearN = input.float(-0.75, "Bear Neutral", step = 0.05, group = grpSimpleBear)
-sBearBear  = input.float(-1.00, "Bear",         step = 0.05, group = grpSimpleBear)
+// -- Smoothing & rebalance control
+grpSmooth = "Smoothing & rebalance"
+emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
+     tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
+driftPct  = input.float(20, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
+     tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70.")
+minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
+     tooltip = "Clamp on the POSITION only (not the per-candle target). -100 = fully short.")
+maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
+     tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -150,84 +133,15 @@ f_stUpdate(candle) =>
     [st, bullCount, bearCount]
 
 // -----------------------------------------------------------------------------
-// 4a. EXPOSURE HELPERS  (BankrollSimulator pure functions)
+// 4. TARGET EXPOSURE  (BankrollSimulator.TargetExposure)
+//    One value per (LT, ST) bucket; already signed (short negative).
+//    ST codes: 3=Bull 2=BullNeutral 1=BearNeutral 0=Bear
 // -----------------------------------------------------------------------------
-f_alignedRank(lt, st) => lt == 1 ? st : 3 - st
-
-f_rampAt(rung) =>
-    r = math.max(0, math.min(3, rung))
-    r == 0 ? rampL0 : r == 1 ? rampL1 : r == 2 ? rampL2 : rampL3
-
-f_shortRampAt(rung) =>
-    r = math.max(0, math.min(3, rung))
-    r == 0 ? sRampL0 : r == 1 ? sRampL1 : r == 2 ? sRampL2 : sRampL3
-
-// ST exposure cap MAGNITUDE at a rung for the given LT side. Bear caps are entered
-// negative for clarity, so we return the absolute value.
-f_stCapAt(lt, rung) =>
-    r = math.max(0, math.min(3, rung))
-    cap = lt == 1 ? (r == 0 ? stCapBull0 : r == 1 ? stCapBull1 : r == 2 ? stCapBull2 : stCapBull3)
-       :            (r == 0 ? stCapBear0 : r == 1 ? stCapBear1 : r == 2 ? stCapBear2 : stCapBear3)
-    math.abs(cap)
-
-// -----------------------------------------------------------------------------
-// 4b. FAITHFUL EXPOSURE ENGINE  (BankrollSimulator.Run, per-bar)
-//    Returns: [signedExposure, dir]   dir: 1 = long, -1 = short, 0 = flat
-// -----------------------------------------------------------------------------
-f_exposureFaithful(lt, st, candle) =>
-    var int   bullRun   = 0
-    var int   bearRun   = 0
-    var int   rampRung  = 0
-    var int   capRung   = 0
-    var int   prevLt    = na
-    var int   prevSt    = na
-    var int   dir       = 0
-
-    float signedExpo = na
-
-    if not na(st) and not na(lt)
-        if candle == 1
-            bullRun += 1
-            bearRun := 0
-        else if candle == -1
-            bearRun += 1
-            bullRun := 0
-
-        if na(prevLt) or lt != prevLt
-            dir       := lt == 1 ? 1 : -1
-            rampRung  := 0
-            capRung   := f_alignedRank(lt, st)
-        else if lt == 1
-            if candle == 1 and bullRun >= 2
-                rampRung := rampRung + 1 > 3 ? 3 : rampRung + 1
-        else
-            if candle == -1 and bearRun >= 2
-                rampRung := rampRung + 1 > 3 ? 3 : rampRung + 1
-
-        if not na(prevLt) and lt == prevLt and not na(prevSt) and st != prevSt
-            target = f_alignedRank(lt, st)
-            if target > capRung
-                capRung += 1
-            else if target < capRung
-                capRung -= 1
-
-        scaleIn = lt == 1 ? f_rampAt(rampRung) : f_shortRampAt(rampRung)
-        expo    = math.min(scaleIn, f_stCapAt(lt, capRung))
-        signedExpo := (dir == 1 ? 1.0 : -1.0) * expo
-
-        prevLt := lt
-        prevSt := st
-
-    [signedExpo, dir]
-
-// -----------------------------------------------------------------------------
-// 4c. SIMPLE BUCKET EXPOSURE (the prompt's mapping table; already signed)
-// -----------------------------------------------------------------------------
-f_exposureSimple(lt, st) =>
+f_target(lt, st) =>
     na(lt) or na(st) ? na :
      lt == 1 ?
-       (st == 3 ? sBullBull : st == 2 ? sBullBullN : st == 1 ? sBullBearN : sBullBear) :
-       (st == 3 ? sBearBull : st == 2 ? sBearBullN : st == 1 ? sBearBearN : sBearBear)
+       (st == 3 ? bullBull : st == 2 ? bullBullN : st == 1 ? bullBearN : bullBear) :
+       (st == 3 ? bearBull : st == 2 ? bearBullN : st == 1 ? bearBearN : bearBear)
 
 // #############################################################################
 // ############   END SHARED ENGINE                                    #########
@@ -241,21 +155,39 @@ candle = f_classify(close, high[1], low[1])
 [ltState, ltBullCount, ltBearCount, bullAnchor, bearAnchor] = f_ltUpdate(candle, high, low, close)
 [stState, stBullCount, stBearCount]                         = f_stUpdate(candle)
 
-[expFaithful, dirFaithful] = f_exposureFaithful(ltState, stState, candle)
-expSimple                  = f_exposureSimple(ltState, stState)
+target = f_target(ltState, stState)
 
-signedExposure = exposureModel == MODEL_FAITHFUL ? expFaithful : expSimple
+// -----------------------------------------------------------------------------
+// 5b. SMOOTH + REBALANCE
+//     ema      : EMA of the per-candle target (same recurrence as the C# sim)
+//     held     : follows the EMA, but only re-sets when it drifts past the band
+//     position : held, clamped to [min, max] — the exposure actually traded
+// -----------------------------------------------------------------------------
+alpha = 2.0 / (emaPeriod + 1)
+var float emaExp = na
+if not na(target)
+    emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
+
+driftBand = driftPct / 100.0
+var float held = na
+if not na(emaExp) and (na(held) or math.abs(held - emaExp) > driftBand)
+    held := emaExp
+
+loExp = math.min(minExpPct, maxExpPct) / 100.0
+hiExp = math.max(minExpPct, maxExpPct) / 100.0
+position = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 
 // =============================================================================
-// 6. STRATEGY — size the position to the target exposure.
-//    Target notional = signedExposure * equity  =>  target contracts = that/close.
+// 6. STRATEGY — size the position to the (smoothed, clamped) exposure.
+//    Target notional = position * equity  =>  target contracts = that/close.
 //    Rebalance to that target each confirmed bar (delta market order). With
 //    process_orders_on_close, the fill is at this close and the exposure is
-//    carried into the next bar's move — no look-ahead.
+//    carried into the next bar's move — no look-ahead. The drift band means the
+//    delta is usually zero (no order) — the position only moves when it must.
 // =============================================================================
-canTrade = barstate.isconfirmed and not na(signedExposure) and close > 0
+canTrade = barstate.isconfirmed and not na(position) and close > 0
 
-targetContracts = canTrade ? signedExposure * strategy.equity / close : strategy.position_size
+targetContracts = canTrade ? position * strategy.equity / close : strategy.position_size
 delta           = targetContracts - strategy.position_size
 
 if canTrade and math.abs(delta) > 0
@@ -266,20 +198,21 @@ if canTrade and math.abs(delta) > 0
 
 // =============================================================================
 // 7. SYNTHETIC EQUITY — exact C# BankrollSimulator mirror (for verification).
-//    Uses signedExposure[1] applied to this bar's return (no look-ahead).
+//    Uses the position from the previous bar applied to this bar's return
+//    (no look-ahead), so it matches the Strategy Tester equity.
 // =============================================================================
 var float synthEquity = na
 var float buyHold      = na
 var float bhEntry      = na
 
 r        = na(close[1]) or close[1] == 0 ? 0.0 : (close - close[1]) / close[1]
-sePrev   = na(signedExposure[1]) ? 0.0 : signedExposure[1]
-tradeRet = sePrev * r
+posPrev  = na(position[1]) ? 0.0 : position[1]
+tradeRet = posPrev * r
 
 synthEquity := na(synthEquity[1]) ? strategy.initial_capital : synthEquity[1] * (1 + tradeRet)
 
 // buy & hold reference, anchored at the first bar with a valid exposure signal
-if na(bhEntry) and not na(signedExposure)
+if na(bhEntry) and not na(position)
     bhEntry := close
 buyHold := na(bhEntry) ? strategy.initial_capital : strategy.initial_capital * (close / bhEntry)
 
@@ -289,11 +222,13 @@ plot(plotBuyHold   ? buyHold     : na, "Buy & hold",       color = color.new(col
 // =============================================================================
 // 8. DEBUG — Data Window series for bar-by-bar comparison against C#.
 // =============================================================================
-plot(ltBullCount,   "DBG Bull Count",  display = display.data_window)
-plot(ltBearCount,   "DBG Bear Count",  display = display.data_window)
-plot(bullAnchor,    "DBG Bull Anchor", display = display.data_window)
-plot(bearAnchor,    "DBG Bear Anchor", display = display.data_window)
-plot(candle,        "DBG Candle Type", display = display.data_window)
-plot(ltState,       "DBG LT State",    display = display.data_window)
-plot(stState,       "DBG ST State",    display = display.data_window)
-plot(signedExposure, "DBG Exposure",   display = display.data_window)
+plot(ltBullCount, "DBG Bull Count",  display = display.data_window)
+plot(ltBearCount, "DBG Bear Count",  display = display.data_window)
+plot(bullAnchor,  "DBG Bull Anchor", display = display.data_window)
+plot(bearAnchor,  "DBG Bear Anchor", display = display.data_window)
+plot(candle,      "DBG Candle Type", display = display.data_window)
+plot(ltState,     "DBG LT State",    display = display.data_window)
+plot(stState,     "DBG ST State",    display = display.data_window)
+plot(target,      "DBG Target",      display = display.data_window)
+plot(emaExp,      "DBG EMA",         display = display.data_window)
+plot(position,    "DBG Exposure",    display = display.data_window)
