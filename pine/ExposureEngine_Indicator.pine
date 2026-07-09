@@ -35,11 +35,11 @@ showDebug      = input.bool(false, "Show debug information",      group = grpUI)
 showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
 grpExp = "Exposure pane"
-showExposure = input.bool(true, "Show exposure (position) line",  group = grpExp)
-showEma      = input.bool(true, "Show exposure EMA line",         group = grpExp)
-showBand     = input.bool(true, "Show rebalance band (EMA ± drift)", group = grpExp)
-showStValue  = input.bool(true, "Show ST-value stepline",         group = grpExp)
-showGuides   = input.bool(true, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
+showExposure = input.bool(false, "Show exposure (position) line",  group = grpExp)
+showEma      = input.bool(true,  "Show exposure EMA line",         group = grpExp)
+showBand     = input.bool(false, "Show rebalance band (EMA ± drift)", group = grpExp)
+showStValue  = input.bool(false, "Show ST-value stepline",         group = grpExp)
+showGuides   = input.bool(false, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
 
 grpColor = "Candle colors"
 colBull      = input.color(#00E676, "Bull (bright green)",  group = grpColor)
@@ -50,25 +50,27 @@ colBgBull    = input.color(color.new(#26A69A, 88), "Background LT Bull", group =
 colBgBear    = input.color(color.new(#F23645, 88), "Background LT Bear", group = grpColor)
 
 // -- Exposure model: one target per (LT, ST) bucket. Long positive, short negative.
-grpBull = "Exposure — LT Bull (long, per ST state)"
-bullBear  = input.float(0.25, "ST Bear",         step = 0.05, group = grpBull)
-bullBearN = input.float(0.50, "ST Bear Neutral", step = 0.05, group = grpBull)
-bullBullN = input.float(0.75, "ST Bull Neutral", step = 0.05, group = grpBull)
-bullBull  = input.float(1.00, "ST Bull",         step = 0.05, group = grpBull)
+grpBull = "Exposure — LT Bull (per ST state)"
+bullBear  = input.float(-0.50, "ST Bear",         step = 0.05, group = grpBull)
+bullBearN = input.float( 0.00, "ST Bear Neutral", step = 0.05, group = grpBull)
+bullBullN = input.float( 0.50, "ST Bull Neutral", step = 0.05, group = grpBull)
+bullBull  = input.float( 1.00, "ST Bull",         step = 0.05, group = grpBull)
 
-grpBear = "Exposure — LT Bear (short, per ST state)"
-bearBull  = input.float(-0.25, "ST Bull",         step = 0.05, group = grpBear)
-bearBullN = input.float(-0.50, "ST Bull Neutral", step = 0.05, group = grpBear)
-bearBearN = input.float(-0.75, "ST Bear Neutral", step = 0.05, group = grpBear)
+grpBear = "Exposure — LT Bear (per ST state)"
+bearBull  = input.float( 0.50, "ST Bull",         step = 0.05, group = grpBear)
+bearBullN = input.float( 0.00, "ST Bull Neutral", step = 0.05, group = grpBear)
+bearBearN = input.float(-0.50, "ST Bear Neutral", step = 0.05, group = grpBear)
 bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
 // -- Smoothing & rebalance control
 grpSmooth = "Smoothing & rebalance"
 emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
+longBias  = input.float(0.75, "Long bias (-1..1)", minval = -1, maxval = 1, step = 0.05, group = grpSmooth,
+     tooltip = "Directional skew on the EMA: adjEMA = |EMA|*bias + EMA. 0 = none. +1 doubles longs and cancels shorts; -1 doubles shorts and cancels longs. -1..1 = -100%..100%.")
 driftPct  = input.float(20, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
-minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
+minExpPct = input.float(-100, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). -100 = fully short.")
 maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
@@ -185,8 +187,9 @@ target = f_target(ltState, stState)
 
 // -----------------------------------------------------------------------------
 // 5b. SMOOTH + REBALANCE
-//     ema      : EMA of the per-candle target (same recurrence as the C# sim)
-//     held     : follows the EMA, but only re-sets when it drifts past the band
+//     emaExp   : EMA of the per-candle target (same recurrence as the C# sim)
+//     adjEma   : long-bias skew of the EMA  ->  |emaExp|*longBias + emaExp
+//     held     : follows adjEma, but only re-sets when it drifts past the band
 //     position : held, clamped to [min, max] — the exposure actually reported/traded
 // -----------------------------------------------------------------------------
 alpha = 2.0 / (emaPeriod + 1)
@@ -194,10 +197,12 @@ var float emaExp = na
 if not na(target)
     emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
 
+adjEma = na(emaExp) ? na : math.abs(emaExp) * longBias + emaExp
+
 driftBand = driftPct / 100.0
 var float held = na
-if not na(emaExp) and (na(held) or math.abs(held - emaExp) > driftBand)
-    held := emaExp
+if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
+    held := adjEma
 
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
@@ -249,14 +254,16 @@ hline(-0.5, "-0.5",      color = gcol2, linestyle = hline.style_dotted)
 // raw (LT,ST) map value that feeds the EMA
 plot(showStValue ? target : na, "ST value", color = color.new(color.gray, 30), style = plot.style_stepline)
 
-// rebalance band: EMA ± drift — the zone the position holds inside without rebalancing
-bandUp = na(emaExp) ? na : emaExp + driftBand
-bandDn = na(emaExp) ? na : emaExp - driftBand
+// rebalance band: adjEma ± drift — the zone the position holds inside without rebalancing
+bandUp = na(adjEma) ? na : adjEma + driftBand
+bandDn = na(adjEma) ? na : adjEma - driftBand
 pUp = plot(showBand ? bandUp : na, "Target band +", color = color.new(#2962FF, 55), linewidth = 1)
 pDn = plot(showBand ? bandDn : na, "Target band -", color = color.new(#2962FF, 55), linewidth = 1)
 fill(pUp, pDn, color = color.new(#2962FF, 90), title = "Rebalance band")
 
-plot(showEma ? emaExp : na, "EMA exposure", color = #2962FF, linewidth = 2)
+// raw EMA (faint) vs long-bias-adjusted EMA (bold, the one that drives the position)
+plot(showEma ? emaExp : na, "EMA (raw)",      color = color.new(#2962FF, 65), linewidth = 1)
+plot(showEma ? adjEma : na, "EMA (adj bias)", color = #2962FF, linewidth = 2)
 
 posColor = na(position) ? na : position >= 0 ? colBull : colBear
 pPos = plot(showExposure ? position : na, "Exposure (position)", color = posColor, linewidth = 2, style = plot.style_stepline)
@@ -266,7 +273,7 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 10, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+var table tbl = table.new(position.top_right, 2, 11, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -276,17 +283,18 @@ if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
     posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
-    bandTxt = na(emaExp) ? "—" : str.tostring(emaExp - driftBand, "#.##") + " – " + str.tostring(emaExp + driftBand, "#.##")
-    f_row(0, "LT State",     f_ltName(ltState), ltCol)
-    f_row(1, "ST State",     f_stName(stState), stCol)
-    f_row(2, "ST Value",     na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
-    f_row(3, "EMA",          na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
-    f_row(4, "Target",       bandTxt, color.white)
-    f_row(5, "Exposure",     na(position) ? "—" : str.tostring(position, "#.##"), posCol)
-    f_row(6, "Bull Count",   str.tostring(ltBullCount), color.white)
-    f_row(7, "Bear Count",   str.tostring(ltBearCount), color.white)
-    f_row(8, "Anchors B/S",  (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
-    f_row(9, "Candle Type",  f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
+    bandTxt = na(adjEma) ? "—" : str.tostring(adjEma - driftBand, "#.##") + " – " + str.tostring(adjEma + driftBand, "#.##")
+    f_row(0,  "LT State",    f_ltName(ltState), ltCol)
+    f_row(1,  "ST State",    f_stName(stState), stCol)
+    f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
+    f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
+    f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
+    f_row(5,  "Target",      bandTxt, color.white)
+    f_row(6,  "Exposure",    na(position) ? "—" : str.tostring(position, "#.##"), posCol)
+    f_row(7,  "Bull Count",  str.tostring(ltBullCount), color.white)
+    f_row(8,  "Bear Count",  str.tostring(ltBearCount), color.white)
+    f_row(9,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
+    f_row(10, "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
@@ -301,6 +309,7 @@ plot(showDebug ? bearAnchor  : na, "DBG Bear Anchor", display = display.data_win
 plot(showDebug ? candle      : na, "DBG Candle Type", display = display.data_window)
 plot(showDebug ? ltState     : na, "DBG LT State",    display = display.data_window)
 plot(showDebug ? stState     : na, "DBG ST State",    display = display.data_window)
-plot(showDebug ? target      : na, "DBG ST Value",   display = display.data_window)
-plot(showDebug ? emaExp      : na, "DBG EMA",        display = display.data_window)
-plot(showDebug ? position    : na, "DBG Exposure",   display = display.data_window)
+plot(showDebug ? target      : na, "DBG ST Value",  display = display.data_window)
+plot(showDebug ? emaExp      : na, "DBG EMA",       display = display.data_window)
+plot(showDebug ? adjEma      : na, "DBG Adj EMA",   display = display.data_window)
+plot(showDebug ? position    : na, "DBG Exposure",  display = display.data_window)
