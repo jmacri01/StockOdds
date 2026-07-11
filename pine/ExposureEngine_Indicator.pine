@@ -51,26 +51,26 @@ colBgBear    = input.color(color.new(#F23645, 88), "Background LT Bear", group =
 
 // -- Exposure model: one target per (LT, ST) bucket. Long positive, short negative.
 grpBull = "Exposure — LT Bull (per ST state)"
-bullBear  = input.float(-0.50, "ST Bear",         step = 0.05, group = grpBull)
-bullBearN = input.float( 0.00, "ST Bear Neutral", step = 0.05, group = grpBull)
-bullBullN = input.float( 0.50, "ST Bull Neutral", step = 0.05, group = grpBull)
+bullBear  = input.float( 0.25, "ST Bear",         step = 0.05, group = grpBull)
+bullBearN = input.float( 0.50, "ST Bear Neutral", step = 0.05, group = grpBull)
+bullBullN = input.float( 0.75, "ST Bull Neutral", step = 0.05, group = grpBull)
 bullBull  = input.float( 1.00, "ST Bull",         step = 0.05, group = grpBull)
 
 grpBear = "Exposure — LT Bear (per ST state)"
-bearBull  = input.float( 0.50, "ST Bull",         step = 0.05, group = grpBear)
-bearBullN = input.float( 0.00, "ST Bull Neutral", step = 0.05, group = grpBear)
-bearBearN = input.float(-0.50, "ST Bear Neutral", step = 0.05, group = grpBear)
+bearBull  = input.float(-0.25, "ST Bull",         step = 0.05, group = grpBear)
+bearBullN = input.float(-0.50, "ST Bull Neutral", step = 0.05, group = grpBear)
+bearBearN = input.float(-0.75, "ST Bear Neutral", step = 0.05, group = grpBear)
 bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
 // -- Smoothing & rebalance control
 grpSmooth = "Smoothing & rebalance"
 emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
-biasPeriod = input.int(20, "Bias period", minval = 1, group = grpSmooth,
+biasPeriod = input.int(10, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
 longBias  = input.float(2, "Long bias (amplify)", step = 0.05, group = grpSmooth,
      tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
-biasEmaPeriod = input.int(100, "Bias EMA period", minval = 1, group = grpSmooth,
+biasEmaPeriod = input.int(50, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
 driftPct  = input.float(20, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
