@@ -16,6 +16,8 @@ class Program
 	static bool RUN_GRID_SEARCH = true;
 
 	// When RUN_GRID_SEARCH is on, pick one mode:
+	//   BiasSweep      -> 2-D sweep of BiasPeriod x BiasEmaPeriod (other knobs fixed) to find
+	//                     the smallest pair that maintains performance on the deployment set.
 	//   KnobRank       -> where the currently-configured smoothing knobs rank in the full
 	//                     grid over the deployment universe (HV-filtered), full window.
 	//   VolDeploy      -> short-side A/B (Min 0% vs -100%) + volatility-threshold deployment
@@ -28,8 +30,8 @@ class Program
 	//   WalkForward    -> single split: tuned-per-symbol vs. global default on held-out test.
 	//   VolStudy       -> tune each symbol to its OWN best knobs; print (HV -> knobs) + corr.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.KnobRank;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean }
+	static GridMode GRID_MODE = GridMode.BiasSweep;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -115,9 +117,9 @@ class Program
 		// an EMA, skewed by a dynamic long bias, only rebalanced when it drifts past a
 		// threshold, then clamped to the configured min/max. Tune the knobs here:
 		BankrollSimulator.ExposureEmaPeriod = 12;
-		BankrollSimulator.BiasPeriod = 40;
+		BankrollSimulator.BiasPeriod = 15;
 		BankrollSimulator.LongBias = 0.5;
-		BankrollSimulator.BiasEmaPeriod = 200;
+		BankrollSimulator.BiasEmaPeriod = 150;
 		BankrollSimulator.RebalanceDriftPercent = 30;
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
@@ -169,8 +171,8 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy)
-				Console.WriteLine($"\nComparing strategy vs buy & hold over the full window x {barsBySymbol.Count} symbols...");
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep)
+				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
 				long combos = GRID_MODE == GridMode.RollingBuckets ? GridSearch.BucketGridSize : GridSearch.GridSize;
@@ -179,6 +181,10 @@ class Program
 
 			switch (GRID_MODE)
 			{
+				case GridMode.BiasSweep:
+					var bs = GridSearch.BiasSweep(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintBiasSweep(bs);
+					break;
 				case GridMode.KnobRank:
 					var kr = GridSearch.KnobRank(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintKnobRank(kr);

@@ -66,11 +66,11 @@ bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 grpSmooth = "Smoothing & rebalance"
 emaPeriod = input.int(12, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
-biasPeriod = input.int(40, "Bias period", minval = 1, group = grpSmooth,
+biasPeriod = input.int(15, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
 longBias  = input.float(0.5, "Long bias (amplify)", step = 0.05, group = grpSmooth,
      tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
-biasEmaPeriod = input.int(200, "Bias EMA period", minval = 1, group = grpSmooth,
+biasEmaPeriod = input.int(150, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
 driftPct  = input.float(30, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
@@ -205,9 +205,20 @@ if not na(target)
 // A Bull candle contributes (longBias + 1), a Bear candle -1; longBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
 biasSig = ltState == 1 ? (longBias + 1) : ltState == 0 ? -1 : 0
-biasSum = math.sum(biasSig, biasPeriod)
+// C#-faithful sliding sum: add the current signal, drop the one leaving the window,
+// divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
+var float biasSum = 0.0
+biasSum += biasSig
+if bar_index >= biasPeriod
+    biasSum -= biasSig[biasPeriod]
 dynBias = biasSum / biasPeriod
-dynBiasEma = ta.ema(dynBias, biasEmaPeriod)
+// C#-faithful EMA seeded on the first bar. (ta.ema warms up ~biasEmaPeriod bars, leaving
+// `position` na and the whole strategy dormant until then — with period 200 that skipped
+// ~200 bars, re-anchoring the buy&hold and hiding the crash-protection window. C# seeds
+// immediately, so we replicate that here.)
+biasAlpha = 2.0 / (biasEmaPeriod + 1)
+var float dynBiasEma = na
+dynBiasEma := na(dynBiasEma) ? dynBias : biasAlpha * dynBias + (1 - biasAlpha) * dynBiasEma
 adjEma  = na(emaExp) ? na : math.abs(emaExp) * dynBiasEma + emaExp
 
 driftBand = driftPct / 100.0

@@ -111,6 +111,73 @@ namespace StockOdds
 			}
 		}
 
+		// 2-D sweep of BiasPeriod x BiasEmaPeriod (all other knobs held at their current
+		// values), scored by mean Sharpe / drawdown across the deployment universe over the
+		// full window. Finds the smallest pair that maintains current performance.
+		public static int[] BiasPeriodCandidates = { 5, 10, 15, 20, 30, 40 };
+		public static int[] BiasEmaCandidates    = { 20, 50, 100, 150, 200 };
+		public static double BiasSweepHvThreshold = 50.0;
+		public static double BiasSweepSharpeTol   = 0.05;   // allowed Sharpe give-up vs current
+		public static double BiasSweepDdTolPp     = 2.0;    // allowed extra drawdown (pct pts)
+
+		public static BiasSweepResult BiasSweep(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			int    curEma   = BankrollSimulator.ExposureEmaPeriod;
+			int    curBiasP = BankrollSimulator.BiasPeriod;
+			double curLBias = BankrollSimulator.LongBias;
+			int    curBEma  = BankrollSimulator.BiasEmaPeriod;
+			double curDrift = BankrollSimulator.RebalanceDriftPercent;
+
+			var universe = barsBySymbol
+				.Where(kv => Volatility.AnnualizedHistoricalPct(kv.Value) >= BiasSweepHvThreshold)
+				.ToDictionary(kv => kv.Key, kv => kv.Value);
+
+			var result = new BiasSweepResult
+			{
+				HvThreshold = BiasSweepHvThreshold, Symbols = universe.Count,
+				CurBiasPeriod = curBiasP, CurBiasEmaPeriod = curBEma,
+				BiasPeriods = BiasPeriodCandidates, BiasEmaPeriods = BiasEmaCandidates,
+			};
+			if (universe.Count == 0)
+				return result;
+
+			// evaluate one (biasP, biasEma) pair across the universe, other knobs fixed
+			(double sh, double dd) Eval(int biasP, int biasEma)
+			{
+				var shs = new List<double>();
+				var dds = new List<double>();
+				foreach (var b in universe.Values)
+				{
+					var r = RunWith(b, curEma, biasP, curLBias, biasEma, curDrift, initialBankroll);
+					shs.Add(SharpeOf(r));
+					dds.Add(r.MaxDrawdownPct);
+				}
+				return (shs.Average(), dds.Average());
+			}
+
+			var (curSh, curDd) = Eval(curBiasP, curBEma);
+			result.CurSharpe = curSh;
+			result.CurMaxDd  = curDd;
+
+			foreach (var bp in BiasPeriodCandidates)
+			foreach (var be in BiasEmaCandidates)
+			{
+				var (sh, dd) = Eval(bp, be);
+				result.Cells.Add(new BiasSweepCell { BiasPeriod = bp, BiasEmaPeriod = be, MeanSharpe = sh, MeanMaxDd = dd });
+			}
+
+			// smallest pair (min BiasPeriod+BiasEmaPeriod) that keeps Sharpe within tol and
+			// drawdown no worse than tol; tie-break toward the smaller Bias EMA.
+			result.Recommended = result.Cells
+				.Where(c => c.MeanSharpe >= curSh - BiasSweepSharpeTol && c.MeanMaxDd <= curDd + BiasSweepDdTolPp)
+				.OrderBy(c => c.BiasPeriod + c.BiasEmaPeriod)
+				.ThenBy(c => c.BiasEmaPeriod)
+				.FirstOrDefault();
+
+			return result;
+		}
+
 		// Where do the CURRENTLY configured smoothing knobs rank among the full grid, scored
 		// by mean Sharpe across a universe (optionally HV-filtered) over the full window?
 		// Answers "are the current knobs optimal?" with the whole distribution for context.
@@ -717,6 +784,26 @@ namespace StockOdds
 		// return per unit of max drawdown (Calmar-like); guarded against tiny drawdowns.
 		public double StratRetPerDd => StratMaxDd > 0.01 ? StratReturn / StratMaxDd : double.NaN;
 		public double BhRetPerDd    => BhMaxDd    > 0.01 ? BhReturn    / BhMaxDd    : double.NaN;
+	}
+
+	public class BiasSweepCell
+	{
+		public int    BiasPeriod;
+		public int    BiasEmaPeriod;
+		public double MeanSharpe;
+		public double MeanMaxDd;
+	}
+
+	public class BiasSweepResult
+	{
+		public double HvThreshold;
+		public int    Symbols;
+		public int    CurBiasPeriod, CurBiasEmaPeriod;
+		public double CurSharpe, CurMaxDd;
+		public int[]  BiasPeriods = System.Array.Empty<int>();
+		public int[]  BiasEmaPeriods = System.Array.Empty<int>();
+		public List<BiasSweepCell> Cells = new();
+		public BiasSweepCell? Recommended;
 	}
 
 	// Where the currently-configured smoothing knobs sit in the full-grid distribution.

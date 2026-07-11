@@ -408,6 +408,66 @@ namespace StockOdds
 				: $"=> Current knobs are in the bottom of the grid ({r.Percentile:0.}th pct). A better-behaved region exists; consider moving toward the grid median values, but do NOT fit to the in-sample best.");
 		}
 
+		// BiasPeriod x BiasEmaPeriod sweep: Sharpe and drawdown matrices (rows = BiasPeriod,
+		// cols = Bias EMA) over the deployment universe, with the current cell marked [*] and
+		// the smallest performance-preserving pair recommended.
+		public static void PrintBiasSweep(BiasSweepResult r)
+		{
+			Console.WriteLine("\n===== BIAS-PERIOD x BIAS-EMA SWEEP (other knobs fixed) =====");
+			Console.WriteLine($"Universe : {r.Symbols} symbols with HV >= {r.HvThreshold:0.} (deployment set), full window");
+			if (r.Symbols == 0 || r.Cells.Count == 0)
+			{
+				Console.WriteLine("No symbols in the universe.");
+				return;
+			}
+			Console.WriteLine($"Current  : BiasPeriod={r.CurBiasPeriod}, BiasEMA={r.CurBiasEmaPeriod}  " +
+			                  $"=> Sharpe {r.CurSharpe:0.000}, MaxDD -{r.CurMaxDd:0.0}%   [* marks current]");
+
+			double Get(int bp, int be, bool sharpe)
+			{
+				var c = r.Cells.First(x => x.BiasPeriod == bp && x.BiasEmaPeriod == be);
+				return sharpe ? c.MeanSharpe : c.MeanMaxDd;
+			}
+
+			void Matrix(string title, bool sharpe)
+			{
+				Console.WriteLine($"\n{title}   (rows = BiasPeriod, cols = Bias EMA)");
+				Console.Write($"{"BiasP\\EMA",-9}");
+				foreach (var be in r.BiasEmaPeriods) Console.Write($"{be,9}");
+				Console.WriteLine();
+				foreach (var bp in r.BiasPeriods)
+				{
+					Console.Write($"{bp,-9}");
+					foreach (var be in r.BiasEmaPeriods)
+					{
+						string mark = bp == r.CurBiasPeriod && be == r.CurBiasEmaPeriod ? "*" : " ";
+						string val = sharpe ? $"{Get(bp, be, true):0.000}" : $"-{Get(bp, be, false):0.0}%";
+						Console.Write($"{val + mark,9}");
+					}
+					Console.WriteLine();
+				}
+			}
+
+			Matrix("Mean Sharpe", true);
+			Matrix("Mean Max Drawdown", false);
+
+			Console.WriteLine();
+			if (r.Recommended != null)
+			{
+				var rec = r.Recommended;
+				bool smaller = rec.BiasPeriod + rec.BiasEmaPeriod < r.CurBiasPeriod + r.CurBiasEmaPeriod;
+				Console.WriteLine($"Recommended smaller pair : BiasPeriod={rec.BiasPeriod}, BiasEMA={rec.BiasEmaPeriod}  " +
+				                  $"=> Sharpe {rec.MeanSharpe:0.000} (vs {r.CurSharpe:0.000}), MaxDD -{rec.MeanMaxDd:0.0}% (vs -{r.CurMaxDd:0.0}%)");
+				Console.WriteLine(smaller
+					? $"=> Holds performance with smaller windows. Update Program.cs: BiasPeriod={rec.BiasPeriod}, BiasEmaPeriod={rec.BiasEmaPeriod}."
+					: "=> No smaller pair holds performance within tolerance; current values are already about as low as you can go.");
+			}
+			else
+			{
+				Console.WriteLine("No pair within tolerance — loosen BiasSweepSharpeTol/BiasSweepDdTolPp or accept current values.");
+			}
+		}
+
 		// Pearson correlation coefficient; returns 0 when either series has no variance.
 		private static double Corr(IEnumerable<double> xs, IEnumerable<double> ys)
 		{
