@@ -66,10 +66,12 @@ bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 grpSmooth = "Smoothing & rebalance"
 emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
-biasPeriod = input.int(100, "Bias period", minval = 1, group = grpSmooth,
+biasPeriod = input.int(20, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
 longBias  = input.float(2, "Long bias (amplify)", step = 0.05, group = grpSmooth,
      tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
+biasEmaPeriod = input.int(100, "Bias EMA period", minval = 1, group = grpSmooth,
+     tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
 driftPct  = input.float(20, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
 minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
@@ -190,7 +192,7 @@ target = f_target(ltState, stState)
 // -----------------------------------------------------------------------------
 // 5b. SMOOTH + REBALANCE
 //     emaExp   : EMA of the per-candle target (same recurrence as the C# sim)
-//     adjEma   : dynamic long-bias skew of the EMA  ->  |emaExp|*dynBias + emaExp
+//     adjEma   : dynamic long-bias skew of the EMA  ->  |emaExp|*dynBiasEma + emaExp
 //     held     : follows adjEma, but only re-sets when it drifts past the band
 //     position : held, clamped to [min, max] — the exposure actually reported/traded
 // -----------------------------------------------------------------------------
@@ -205,7 +207,8 @@ if not na(target)
 biasSig = ltState == 1 ? (longBias + 1) : ltState == 0 ? -1 : 0
 biasSum = math.sum(biasSig, biasPeriod)
 dynBias = biasSum / biasPeriod
-adjEma  = na(emaExp) ? na : math.abs(emaExp) * dynBias + emaExp
+dynBiasEma = ta.ema(dynBias, biasEmaPeriod)
+adjEma  = na(emaExp) ? na : math.abs(emaExp) * dynBiasEma + emaExp
 
 driftBand = driftPct / 100.0
 var float held = na
@@ -320,5 +323,6 @@ plot(showDebug ? stState     : na, "DBG ST State",    display = display.data_win
 plot(showDebug ? target      : na, "DBG ST Value",  display = display.data_window)
 plot(showDebug ? emaExp      : na, "DBG EMA",       display = display.data_window)
 plot(showDebug ? dynBias     : na, "DBG Dyn Bias",  display = display.data_window)
+plot(showDebug ? dynBiasEma  : na, "DBG Dyn Bias EMA", display = display.data_window)
 plot(showDebug ? adjEma      : na, "DBG Adj EMA",   display = display.data_window)
 plot(showDebug ? position    : na, "DBG Exposure",  display = display.data_window)

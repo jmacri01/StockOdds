@@ -106,13 +106,17 @@ namespace StockOdds
 		// Dynamic long bias: a directional skew applied to the EMA before the drift/clamp
 		// stage, driven by how one-sided the recent LT trend has been.
 		//   dynBias     = sum(LT dir over BiasPeriod) / BiasPeriod
-		//   adjustedEma = |ema| * dynBias + ema
+		//   biasEma     = EMA(dynBias, BiasEmaPeriod)
+		//   adjustedEma = |ema| * biasEma + ema
 		// LT dir is (LongBias + 1) on a Bull candle, -1 on a Bear candle. LongBias
 		// skews the Bull weight: 0 -> +1 (symmetric), -0.5 -> +0.5, +1 -> +2. So an
-		// all-Bull window gives dynBias (LongBias + 1) and all-Bear gives -1. Unclamped.
+		// all-Bull window gives dynBias (LongBias + 1) and all-Bear gives -1. dynBias is
+		// then EMA-smoothed before skewing. Unclamped.
 		// Applies to the smoothed exposure, not the per-candle target.
-		public static int    BiasPeriod = 100;
-		public static double LongBias   = 2.0;
+		public static int    BiasPeriod    = 20;
+		public static double LongBias      = 2.0;
+		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
+		public static int    BiasEmaPeriod = 100;
 
 		// target exposure for a bucket (the eight-value map above)
 		private static double TargetExposure(LongTermState lt, ShortTermState st) =>
@@ -141,7 +145,7 @@ namespace StockOdds
 		// Walks the bars bar-by-bar. On each candle:
 		//   target   = the (LT, ST) map value
 		//   ema      = EMA(target, ExposureEmaPeriod)          -- smooths the target
-		//   adjEma   = |ema|*dynBias + ema                     -- dynamic directional skew
+		//   adjEma   = |ema|*biasEma + ema                     -- EMA-smoothed dynamic skew
 		//   held     = adjEma, but only re-set when it drifts past RebalanceDriftPercent
 		//              (otherwise the previous held value persists -- the "deadband")
 		//   position = clamp(held, Min/MaxExposurePercent)     -- what is actually applied
@@ -166,6 +170,7 @@ namespace StockOdds
 			double maxDd = 0.0;
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
+			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
 			double driftBand = RebalanceDriftPercent / 100.0;
 			double minExp = MinExposurePercent / 100.0;
 			double maxExp = MaxExposurePercent / 100.0;
@@ -177,6 +182,7 @@ namespace StockOdds
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
 			double biasSum = 0.0;
+			double biasEma = double.NaN;   // EMA of the dynamic bias
 
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
 
@@ -200,7 +206,7 @@ namespace StockOdds
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
-				// BiasPeriod. A Bull candle contributes (LongBias + 1), a Bear candle -1.
+				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (LongBias + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
 				double sig = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindow.Enqueue(sig);
@@ -208,8 +214,9 @@ namespace StockOdds
 				while (biasWindow.Count > BiasPeriod)
 					biasSum -= biasWindow.Dequeue();
 				double dynBias = biasSum / BiasPeriod;
+				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				double adjEma = Math.Abs(ema) * dynBias + ema;
+				double adjEma = Math.Abs(ema) * biasEma + ema;
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
