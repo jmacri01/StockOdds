@@ -6,10 +6,10 @@ using System.Threading.Tasks;
 
 class Program
 {
-	static string SYMBOL = "mstr";//"^GSPC";
+	static string SYMBOL = "be";//"^GSPC";
 	static string INTERVAL = "1d";//"1d";
 	// Only simulate bars on/after this date. Set to DateTime.MinValue for all history.
-	static DateTime START_DATE = new DateTime(2025, 1, 1);
+	static DateTime START_DATE = new DateTime(2024, 1, 1);
 
 	static async Task Main()
 	{
@@ -86,9 +86,9 @@ class Program
 		// threshold, then clamped to the configured min/max. Tune the knobs here:
 		BankrollSimulator.ExposureEmaPeriod     = 5;      // EMA smoothing of the per-candle target
 		BankrollSimulator.BiasPeriod            = 10;     // dynamic-bias LT-direction look-back
-		BankrollSimulator.LongBias              = 2;    // Bull-candle weight skew (Bull = LongBias+1, Bear = -1)
+		BankrollSimulator.LongBias              = 0;    // Bull-candle weight skew (Bull = LongBias+1, Bear = -1)
 		BankrollSimulator.BiasEmaPeriod         = 50;    // EMA smoothing of the dynamic bias
-		BankrollSimulator.RebalanceDriftPercent = 20.0;   // deadband before the position is moved
+		BankrollSimulator.RebalanceDriftPercent = 20;   // deadband before the position is moved
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
@@ -103,13 +103,13 @@ class Program
 		//BankrollSimulator.BearBear = -1.0;
 
 		BankrollSimulator.BullBull = 1.0;
-		BankrollSimulator.BullBullNeutral = 0.75;
-		BankrollSimulator.BullBearNeutral = 0.5;
-		BankrollSimulator.BullBear = 0.25;
+		BankrollSimulator.BullBullNeutral = 0.5;
+		BankrollSimulator.BullBearNeutral = 0.0;
+		BankrollSimulator.BullBear = -0.5;
 
-		BankrollSimulator.BearBull = -0.25;
-		BankrollSimulator.BearBullNeutral = -0.5;
-		BankrollSimulator.BearBearNeutral = -0.75;
+		BankrollSimulator.BearBull = 0.5;
+		BankrollSimulator.BearBullNeutral = 0;
+		BankrollSimulator.BearBearNeutral = -0.5;
 		BankrollSimulator.BearBear = -1.0;
 
 		var bankroll = BankrollSimulator.Run(bars, initialBankroll: 10_000.0);
