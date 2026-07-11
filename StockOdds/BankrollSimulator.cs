@@ -67,6 +67,13 @@ namespace StockOdds
 
 		// worst peak-to-trough drawdown of the bankroll equity curve
 		public double MaxDrawdownPct { get; set; }
+
+		// annualized Sharpe ratio of the per-bar strategy returns (risk-free rate = 0)
+		public double SharpeRatio { get; set; }
+
+		// buy & hold, over the same span, for reference
+		public double BuyHoldMaxDrawdownPct { get; set; }
+		public double BuyHoldSharpeRatio { get; set; }
 	}
 
 	public static class BankrollSimulator
@@ -118,6 +125,10 @@ namespace StockOdds
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
+		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
+		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
+		public static double PeriodsPerYear = 252.0;
+
 		// target exposure for a bucket (the eight-value map above)
 		private static double TargetExposure(LongTermState lt, ShortTermState st) =>
 			lt == LongTermState.Bull
@@ -141,6 +152,32 @@ namespace StockOdds
 		// clamp that tolerates min/max given in either order
 		private static double Clamp(double x, double lo, double hi) =>
 			Math.Min(Math.Max(x, Math.Min(lo, hi)), Math.Max(lo, hi));
+
+		// Annualized Sharpe ratio of a per-bar return series, risk-free rate = 0:
+		//   mean(r) / stddev(r) * sqrt(periodsPerYear), using the sample stddev.
+		private static double Sharpe(List<double> rets, double periodsPerYear)
+		{
+			if (rets.Count < 2) return 0.0;
+			double mean = rets.Average();
+			double variance = rets.Sum(x => (x - mean) * (x - mean)) / (rets.Count - 1);
+			double sd = Math.Sqrt(variance);
+			return sd > 0.0 ? mean / sd * Math.Sqrt(periodsPerYear) : 0.0;
+		}
+
+		// Worst peak-to-trough drawdown (in %) of the equity curve implied by
+		// compounding a per-bar return series from 1.0.
+		private static double MaxDrawdown(List<double> rets)
+		{
+			double equity = 1.0, peak = 1.0, maxDd = 0.0;
+			foreach (var r in rets)
+			{
+				equity *= 1.0 + r;
+				if (equity > peak) peak = equity;
+				double dd = (peak - equity) / peak * 100.0;
+				if (dd > maxDd) maxDd = dd;
+			}
+			return maxDd;
+		}
 
 		// Walks the bars bar-by-bar. On each candle:
 		//   target   = the (LT, ST) map value
@@ -168,6 +205,11 @@ namespace StockOdds
 			double bankroll = initialBankroll;
 			double peak = initialBankroll;
 			double maxDd = 0.0;
+
+			// per-bar return series for Sharpe (strategy = sized/signed, buy&hold = raw move),
+			// over the exact same bars so the two ratios are comparable.
+			var stratReturns = new List<double>();
+			var bhReturns = new List<double>();
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
 			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
@@ -259,6 +301,9 @@ namespace StockOdds
 				double r = (bar.Close - prev.Close) / prev.Close;
 				double tradeReturn = position * r;   // position already carries the sign
 
+				stratReturns.Add(tradeReturn);
+				bhReturns.Add(r);
+
 				bankroll *= (1.0 + tradeReturn);
 
 				cur.ExitDate = bar.Date;
@@ -286,6 +331,11 @@ namespace StockOdds
 
 			result.FinalBankroll = bankroll;
 			result.MaxDrawdownPct = maxDd;
+
+			// Sharpe ratios (risk-free = 0) and buy & hold drawdown over the same bars.
+			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
+			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
+			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);
 
 			result.PerState = perState.Values
 				.OrderBy(s => s.Bucket.Item1)

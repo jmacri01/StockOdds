@@ -34,8 +34,13 @@ namespace StockOdds
 			                  $"(W {r.WinCount} / L {r.LossCount}, win rate {r.WinRatePct:0.0}%)");
 			Console.WriteLine($"Final bankroll   : {r.FinalBankroll,12:C2}");
 			Console.WriteLine($"Total return     : {Signed(r.TotalReturnPct)}%");
-			Console.WriteLine($"Max drawdown     : -{r.MaxDrawdownPct:0.00}%");
 			Console.WriteLine($"Buy & hold       : {r.BuyHoldFinal,12:C2}  ({Signed(r.BuyHoldReturnPct)}%)");
+
+			// -------- risk-adjusted comparison (strategy vs buy & hold) --------
+			Console.WriteLine();
+			Console.WriteLine($"{"",-17}   {"Strategy",12} {"Buy & Hold",12}");
+			Console.WriteLine($"{"Sharpe (ann.)",-17} : {r.SharpeRatio,12:0.00} {r.BuyHoldSharpeRatio,12:0.00}");
+			Console.WriteLine($"{"Max drawdown",-17} : {"-" + r.MaxDrawdownPct.ToString("0.00") + "%",12} {"-" + r.BuyHoldMaxDrawdownPct.ToString("0.00") + "%",12}");
 
 			if (r.OpenBucket.HasValue)
 			{
