@@ -338,13 +338,14 @@ namespace StockOdds
 			Console.WriteLine();
 			Console.WriteLine("Scale sweep (basket means vs the same static baseline):");
 			Console.WriteLine($"{"Scale",6} {"DynShp",7} {"BaseShp",8} {"ΔShp",7}   " +
-			                  $"{"DynDD",7} {"BaseDD",7} {"ΔDD",6}   {"Shp>base",9} {"DD<base",8}");
+			                  $"{"DynDD",7} {"BaseDD",7} {"ΔDD",6}   {"DynRet%",9} {"BaseRet%",9}   {"Shp>base",9} {"DD<base",8}");
 			foreach (var p in sweep)
 			{
 				Console.WriteLine(
 					$"{p.Scale,6:0.##} {p.MeanDynSharpe,7:0.00} {p.MeanBaseSharpe,8:0.00} " +
 					$"{p.MeanDynSharpe - p.MeanBaseSharpe,7:+0.00;-0.00}   " +
 					$"-{p.MeanDynDd,6:0.0}% -{p.MeanBaseDd,6:0.0}% {p.MeanBaseDd - p.MeanDynDd,6:+0.0;-0.0}   " +
+					$"{Signed(p.MeanDynRet),9} {Signed(p.MeanBaseRet),9}   " +
 					$"{$"{p.ShpWins}/{p.N}",9} {$"{p.DdWins}/{p.N}",8}");
 			}
 			Console.WriteLine("(ΔDD column: + = dynamic shallower drawdown than static. ΔShp: + = dynamic higher Sharpe.)");
