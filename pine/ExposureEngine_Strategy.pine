@@ -67,6 +67,21 @@ minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step
 maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
 
+// -- Dynamic long bias: recompute Long bias every bar from realized volatility.
+grpDyn = "Dynamic long bias (vol-driven)"
+useDynLb  = input.bool(false, "Enable dynamic long bias (overrides Long bias)", group = grpDyn,
+     tooltip = "When on, Long bias is derived each bar from realized volatility: dynLB = clamp(scale*ln(pivot/volEMA), floor, ceil). Calm regimes lean more long; volatile regimes lean flat. NOTE: in C# basket backtests this did NOT beat a static Long bias — treat as experimental.")
+volEmaLen = input.int(30, "Vol EMA period", minval = 1, group = grpDyn,
+     tooltip = "EWMA span for the per-bar realized-vol estimate (of squared log returns), annualized to the same HV% scale.")
+volPivot  = input.float(100, "Vol pivot (LB=0 here)", step = 5, group = grpDyn,
+     tooltip = "Annualized vol % at which the dynamic Long bias crosses 0. Below it LB > 0 (lean long); above it LB < 0 unless floored.")
+volScale  = input.float(1.0, "Vol map scale (slope)", step = 0.1, group = grpDyn,
+     tooltip = "Slope of the log map; larger = more aggressive vol response.")
+volFloor  = input.float(0.0, "Dyn LB floor", step = 0.5, group = grpDyn,
+     tooltip = "Lower clamp. 0 keeps a symmetric-or-long lean; going negative gutted upside on trending high-vol names in testing.")
+volCeil   = input.float(12.0, "Dyn LB ceiling", step = 1, group = grpDyn,
+     tooltip = "Upper clamp — the practical 'infinite' long lean as vol -> 0.")
+
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
 // #############################################################################
@@ -175,10 +190,20 @@ var float emaExp = na
 if not na(target)
     emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
 
+// Optional dynamic long bias from realized volatility (mirrors the C# BankrollSimulator):
+// EWMA of squared log returns -> annualized % -> dynLB = clamp(scale*ln(pivot/vol), floor, ceil).
+// Uses only the completed return into this bar, so no look-ahead. Off => static longBias.
+volRet = math.log(close / close[1])
+volAlpha = 2.0 / (volEmaLen + 1)
+var float volVar = na
+volVar := na(volRet) ? volVar : na(volVar) ? volRet * volRet : volAlpha * volRet * volRet + (1 - volAlpha) * volVar
+volPct = na(volVar) ? na : math.sqrt(volVar) * math.sqrt(252.0) * 100.0
+effLongBias = useDynLb and not na(volPct) ? math.max(math.min(volScale * math.log(volPivot / math.max(volPct, 1e-6)), math.max(volFloor, volCeil)), math.min(volFloor, volCeil)) : longBias
+
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
-// A Bull candle contributes (longBias + 1), a Bear candle -1; longBias skews
+// A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = ltState == 1 ? (longBias + 1) : ltState == 0 ? -1 : 0
+biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0

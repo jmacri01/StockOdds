@@ -418,6 +418,110 @@ namespace StockOdds
 			return rows.OrderBy(r => r.HistoricalVolatilityPct).ToList();
 		}
 
+		// ===================== DYNAMIC (per-candle) LONG-BIAS STUDY =====================
+		// Instead of a constant LongBias, derive it every candle from a running EWMA of
+		// realized volatility (BankrollSimulator.UseDynamicLongBias): calm regimes lean more
+		// long, volatile regimes lean flat/short. This compares that against the static
+		// LongBias baseline across the basket and sweeps the map's slope (VolBiasScale) so
+		// the data — not a guess — picks how aggressive the vol->LB response should be.
+		public static double   DynPivot  = 100.0;   // vol where dyn LB crosses 0
+		public static double   DynFloor  = 0.0;     // no negative lean (negative guts upside on trending high-vol names)
+		public static double   DynCeil   = 12.0;
+		public static int      DynVolEma = 30;
+		public static double[] DynScales = { 0.5, 1.0, 1.5, 2.0, 3.0 };
+		public static double   DynCompareScale = 1.5;   // scale for the per-symbol static-vs-dyn table
+
+		// Run one symbol with dynamic long bias at the given map params, restoring the
+		// caller's dynamic-bias config afterward.
+		public static BankrollResult RunDynamic(
+			List<OhlcBar> bars, double scale, double pivot, double floor, double ceil, int volEma,
+			double initialBankroll = 10_000.0)
+		{
+			bool   sUse = BankrollSimulator.UseDynamicLongBias;
+			int    sVe  = BankrollSimulator.VolEmaPeriod;
+			double sPiv = BankrollSimulator.VolBiasPivot, sSc = BankrollSimulator.VolBiasScale,
+			       sFl  = BankrollSimulator.VolBiasFloor, sCe = BankrollSimulator.VolBiasCeil;
+			try
+			{
+				BankrollSimulator.UseDynamicLongBias = true;
+				BankrollSimulator.VolEmaPeriod = volEma;
+				BankrollSimulator.VolBiasPivot = pivot;
+				BankrollSimulator.VolBiasScale = scale;
+				BankrollSimulator.VolBiasFloor = floor;
+				BankrollSimulator.VolBiasCeil  = ceil;
+				return BankrollSimulator.Run(bars, initialBankroll);
+			}
+			finally
+			{
+				BankrollSimulator.UseDynamicLongBias = sUse;
+				BankrollSimulator.VolEmaPeriod = sVe;
+				BankrollSimulator.VolBiasPivot = sPiv; BankrollSimulator.VolBiasScale = sSc;
+				BankrollSimulator.VolBiasFloor = sFl;  BankrollSimulator.VolBiasCeil  = sCe;
+			}
+		}
+
+		// map value at a given vol, for the "LB@HV" display column
+		private static double DynLbAt(double vol, double scale) =>
+			Math.Min(Math.Max(scale * Math.Log(DynPivot / Math.Max(vol, 1e-6)), Math.Min(DynFloor, DynCeil)),
+			         Math.Max(DynFloor, DynCeil));
+
+		// Per-symbol static-LongBias baseline vs dynamic long bias at one scale.
+		public static List<DynBiasRow> DynBiasCompare(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double scale, double initialBankroll = 10_000.0)
+		{
+			double baseLb = BankrollSimulator.LongBias;   // the static baseline in force (e.g. 0.5)
+			var rows = new List<DynBiasRow>();
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				double hv = Volatility.AnnualizedHistoricalPct(bars);
+				var stat = BankrollSimulator.Run(bars, initialBankroll);   // static (UseDynamic off by default)
+				var dyn  = RunDynamic(bars, scale, DynPivot, DynFloor, DynCeil, DynVolEma, initialBankroll);
+				rows.Add(new DynBiasRow
+				{
+					Symbol = sym, Hv = hv, Bars = bars.Count, BaseLb = baseLb, Scale = scale,
+					StatSharpe = SharpeOf(stat), StatDd = stat.MaxDrawdownPct, StatRet = stat.TotalReturnPct,
+					DynSharpe  = SharpeOf(dyn),  DynDd  = dyn.MaxDrawdownPct,  DynRet  = dyn.TotalReturnPct,
+					LbAtHv = DynLbAt(hv, scale),
+				});
+			}
+			return rows.OrderBy(r => r.Hv).ToList();
+		}
+
+		// Sweep the map slope (VolBiasScale) and report basket-mean dynamic metrics against
+		// the fixed static baseline, so the best-behaved scale (if any) is visible.
+		public static List<DynBiasScalePoint> DynBiasScaleSweep(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var baseline = barsBySymbol.ToDictionary(kv => kv.Key,
+				kv => BankrollSimulator.Run(kv.Value, initialBankroll));
+			double mBaseShp = baseline.Values.Average(SharpeOf);
+			double mBaseDd  = baseline.Values.Average(r => r.MaxDrawdownPct);
+			double mBaseRet = baseline.Values.Average(r => r.TotalReturnPct);
+
+			var points = new List<DynBiasScalePoint>();
+			foreach (var sc in DynScales)
+			{
+				var shp = new List<double>(); var dd = new List<double>(); var ret = new List<double>();
+				int shpWins = 0, ddWins = 0;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					var d = RunDynamic(bars, sc, DynPivot, DynFloor, DynCeil, DynVolEma, initialBankroll);
+					double s = SharpeOf(d);
+					shp.Add(s); dd.Add(d.MaxDrawdownPct); ret.Add(d.TotalReturnPct);
+					if (s > SharpeOf(baseline[sym])) shpWins++;
+					if (d.MaxDrawdownPct < baseline[sym].MaxDrawdownPct) ddWins++;
+				}
+				points.Add(new DynBiasScalePoint
+				{
+					Scale = sc, N = barsBySymbol.Count,
+					MeanBaseSharpe = mBaseShp, MeanBaseDd = mBaseDd, MeanBaseRet = mBaseRet,
+					MeanDynSharpe = shp.Average(), MeanDynDd = dd.Average(), MeanDynRet = ret.Average(),
+					ShpWins = shpWins, DdWins = ddWins,
+				});
+			}
+			return points;
+		}
+
 		// Same sweep, but each combination is scored on every symbol in the basket and
 		// ranked by the MEAN Sharpe across them, so the winning knobs are the ones that
 		// generalize rather than fit a single symbol's path.
@@ -972,6 +1076,33 @@ namespace StockOdds
 
 		public double RefBias;          // the configured default LongBias
 		public double RefSharpe;        // Sharpe at the swept value closest to RefBias
+	}
+
+	// One symbol: static-LongBias baseline vs dynamic (vol-driven) long bias at one scale.
+	public class DynBiasRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public int    Bars;
+		public double BaseLb;      // the static LongBias baseline (e.g. 0.5)
+		public double Scale;       // VolBiasScale used for the dynamic run
+		public double LbAtHv;      // representative dynamic LB at this symbol's HV
+
+		public double StatSharpe, StatDd, StatRet;
+		public double DynSharpe,  DynDd,  DynRet;
+
+		public double DShp => DynSharpe - StatSharpe;   // + => dynamic better
+		public double DDd  => DynDd - StatDd;           // - => dynamic shallower drawdown
+	}
+
+	// Basket-mean metrics for one VolBiasScale, against the fixed static baseline.
+	public class DynBiasScalePoint
+	{
+		public double Scale;
+		public int    N;
+		public double MeanBaseSharpe, MeanBaseDd, MeanBaseRet;
+		public double MeanDynSharpe,  MeanDynDd,  MeanDynRet;
+		public int    ShpWins, DdWins;   // # symbols where dynamic beats static
 	}
 
 	public class WalkForwardRow

@@ -125,9 +125,42 @@ namespace StockOdds
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
+		// ============ Dynamic (per-candle) long bias from volatility ============
+		// When UseDynamicLongBias is on, LongBias is NOT a constant — each candle it is
+		// derived from a running EWMA of realized volatility, so calm regimes lean more
+		// long and volatile regimes lean flat/short. This layers a volatility-target flavor
+		// onto the bias: in a calm uptrend it boosts the long lean (captures return); when
+		// vol rises it de-leans (trims exposure). The static LongBias above is ignored.
+		//
+		//   logret   = ln(close_t / close_{t-1})
+		//   volVar   = EWMA(logret^2, VolEmaPeriod)                 -- per-bar variance
+		//   volPct   = sqrt(volVar) * sqrt(PeriodsPerYear) * 100    -- annualized HV %, same
+		//                                                              scale as Volatility.cs
+		//   dynLB    = clamp(VolBiasScale * ln(VolBiasPivot / volPct), VolBiasFloor, VolBiasCeil)
+		//
+		// Shape (monotone decreasing): volPct -> 0 gives dynLB -> +inf (clamped to Ceil,
+		// the practical "infinite long lean"); dynLB = 0 at volPct = VolBiasPivot; dynLB < 0
+		// above the pivot. So with Pivot = 100: vol 50 -> +0.69*Scale, vol 100 -> 0,
+		// vol 200 -> -0.69*Scale. Only past closes feed the EWMA, so there is no look-ahead.
+		public static bool   UseDynamicLongBias = false;
+		public static int    VolEmaPeriod       = 30;
+		public static double VolBiasPivot       = 100.0;   // vol (annualized %) where dyn LB crosses 0
+		public static double VolBiasScale       = 1.0;     // slope of the log map
+		public static double VolBiasFloor       = -2.0;    // clamp low  (most bearish lean)
+		public static double VolBiasCeil        = 12.0;    // clamp high (the practical "infinite" long lean)
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
+
+		// Map a running annualized-vol reading (%) to a dynamic long bias. Monotone
+		// decreasing: -> VolBiasCeil as vol -> 0, 0 at VolBiasPivot, negative above it.
+		public static double DynamicLongBiasFromVol(double volAnnualizedPct)
+		{
+			double v = Math.Max(volAnnualizedPct, 1e-6);
+			double lb = VolBiasScale * Math.Log(VolBiasPivot / v);
+			return Clamp(lb, VolBiasFloor, VolBiasCeil);
+		}
 
 		// target exposure for a bucket (the eight-value map above)
 		private static double TargetExposure(LongTermState lt, ShortTermState st) =>
@@ -226,6 +259,22 @@ namespace StockOdds
 			double biasSum = 0.0;
 			double biasEma = double.NaN;   // EMA of the dynamic bias
 
+			// realized-volatility EWMA for the per-candle dynamic long bias (only used when
+			// UseDynamicLongBias is on). EWMA of squared log returns -> annualized HV %.
+			double volAlpha = 2.0 / (VolEmaPeriod + 1);
+			double varEwma = double.NaN;   // EWMA of squared log returns (per-bar variance)
+
+			// Effective LongBias for a candle, given the latest close-to-close log return
+			// (the return that LANDS on the state-decision bar `prev` — no look-ahead).
+			double EffLongBias(double logRet)
+			{
+				if (!UseDynamicLongBias) return LongBias;
+				double r2 = logRet * logRet;
+				varEwma = double.IsNaN(varEwma) ? r2 : volAlpha * r2 + (1.0 - volAlpha) * varEwma;
+				double volPct = Math.Sqrt(varEwma) * Math.Sqrt(PeriodsPerYear) * 100.0;
+				return DynamicLongBiasFromVol(volPct);
+			}
+
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
 
 			// current (LT, ST) run being accumulated for the ledger
@@ -242,15 +291,17 @@ namespace StockOdds
 			}
 
 			// target -> EMA -> dynamic long-bias skew -> drift-band held -> clamped position
-			double StepExposure(LongTermState lt, ShortTermState st)
+			// effLongBias is the LongBias to use for THIS candle: the static field normally,
+			// or the volatility-derived value when UseDynamicLongBias is on.
+			double StepExposure(LongTermState lt, ShortTermState st, double effLongBias)
 			{
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
-				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (LongBias + 1), a Bear candle -1.
+				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
-				double sig = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindow.Enqueue(sig);
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
@@ -275,7 +326,9 @@ namespace StockOdds
 				if (st == null)
 					continue;
 
-				position = StepExposure(lt, st.Value);
+				// vol as of `prev`: the return into prev (prevPrev.Close -> prev.Close).
+				double volRet = prevPrev.Close > 0 ? Math.Log(prev.Close / prevPrev.Close) : 0.0;
+				position = StepExposure(lt, st.Value, EffLongBias(volRet));
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------
@@ -348,7 +401,8 @@ namespace StockOdds
 			var lastSt = stEngine.Update(bars[^2], bars[^1]);
 			if (lastSt != null)
 			{
-				position = StepExposure(lastLt, lastSt.Value);
+				double lastVolRet = bars[^2].Close > 0 ? Math.Log(bars[^1].Close / bars[^2].Close) : 0.0;
+				position = StepExposure(lastLt, lastSt.Value, EffLongBias(lastVolRet));
 				result.OpenBucket = (lastLt, lastSt.Value);
 				result.OpenStake = position;
 				result.OpenDirection = position < 0 ? TradeDirection.Short : TradeDirection.Long;

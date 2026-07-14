@@ -295,6 +295,73 @@ namespace StockOdds
 			}
 		}
 
+		// Dynamic (per-candle) long bias: static LongBias baseline vs a vol-driven LongBias.
+		// Per-symbol table at one scale, then a scale sweep, then a verdict. The mapping is
+		//   dynLB = clamp(scale * ln(pivot / volEMA), floor, ceil).
+		public static void PrintDynBias(List<DynBiasRow> rows, List<DynBiasScalePoint> sweep)
+		{
+			Console.WriteLine("\n===== DYNAMIC (VOL-DRIVEN) LONG BIAS vs STATIC =====");
+			if (rows.Count == 0)
+			{
+				Console.WriteLine("No symbols with usable data.");
+				return;
+			}
+			double scale = rows[0].Scale, baseLb = rows[0].BaseLb;
+			Console.WriteLine($"Map : dynLB = clamp({scale:0.##}·ln({GridSearch.DynPivot:0.}/volEMA{GridSearch.DynVolEma}), " +
+			                  $"{GridSearch.DynFloor:0.##}, {GridSearch.DynCeil:0.##})   |   static baseline LongBias = {baseLb:0.##}");
+			Console.WriteLine("Positive ΔShp / negative ΔDD = dynamic better. LB@HV = the dyn LB at each symbol's avg vol.");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"{"Symbol",-8} {"HV%",6} {"LB@HV",6}   " +
+				$"{"Shp:Stat",8} {"Dyn",6} {"Δ",6} │ {"DD:Stat",8} {"Dyn",7} {"Δpp",6} │ {"Ret:Stat",9} {"Dyn",9}");
+
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.Hv,6:0.0} {r.LbAtHv,6:0.00}   " +
+					$"{r.StatSharpe,8:0.00} {r.DynSharpe,6:0.00} {r.DShp,6:+0.00;-0.00} │ " +
+					$"-{r.StatDd,6:0.0}% -{r.DynDd,5:0.0}% {r.DDd,6:+0.0;-0.0} │ " +
+					$"{Signed(r.StatRet),9} {Signed(r.DynRet),9}");
+			}
+
+			double mStatShp = rows.Average(r => r.StatSharpe), mDynShp = rows.Average(r => r.DynSharpe);
+			double mStatDd  = rows.Average(r => r.StatDd),     mDynDd  = rows.Average(r => r.DynDd);
+			int shpWins = rows.Count(r => r.DynSharpe > r.StatSharpe);
+			int ddWins  = rows.Count(r => r.DynDd < r.StatDd);
+			Console.WriteLine();
+			Console.WriteLine($"Mean Sharpe — static {mStatShp,6:0.00}   dynamic {mDynShp,6:0.00}   " +
+			                  $"(dynamic higher on {shpWins}/{rows.Count})");
+			Console.WriteLine($"Mean MaxDD — static -{mStatDd,5:0.0}%   dynamic -{mDynDd,5:0.0}%   " +
+			                  $"(dynamic shallower on {ddWins}/{rows.Count})");
+
+			// ---- scale sweep ----
+			Console.WriteLine();
+			Console.WriteLine("Scale sweep (basket means vs the same static baseline):");
+			Console.WriteLine($"{"Scale",6} {"DynShp",7} {"BaseShp",8} {"ΔShp",7}   " +
+			                  $"{"DynDD",7} {"BaseDD",7} {"ΔDD",6}   {"Shp>base",9} {"DD<base",8}");
+			foreach (var p in sweep)
+			{
+				Console.WriteLine(
+					$"{p.Scale,6:0.##} {p.MeanDynSharpe,7:0.00} {p.MeanBaseSharpe,8:0.00} " +
+					$"{p.MeanDynSharpe - p.MeanBaseSharpe,7:+0.00;-0.00}   " +
+					$"-{p.MeanDynDd,6:0.0}% -{p.MeanBaseDd,6:0.0}% {p.MeanBaseDd - p.MeanDynDd,6:+0.0;-0.0}   " +
+					$"{$"{p.ShpWins}/{p.N}",9} {$"{p.DdWins}/{p.N}",8}");
+			}
+			Console.WriteLine("(ΔDD column: + = dynamic shallower drawdown than static. ΔShp: + = dynamic higher Sharpe.)");
+
+			// ---- verdict ----
+			var best = sweep.OrderByDescending(p => p.MeanDynSharpe).FirstOrDefault();
+			Console.WriteLine();
+			bool anyShpEdge = best != null && best.MeanDynSharpe > best.MeanBaseSharpe + 0.03;
+			bool anyDdEdge  = sweep.Any(p => p.MeanBaseDd - p.MeanDynDd > 1.0 && p.ShpWins >= p.N / 2);
+			Console.WriteLine(
+				anyShpEdge ? $"=> A dynamic map (scale ~{best!.Scale:0.##}) beats static LongBias on mean Sharpe here. Worth OOS validation before trusting."
+				: anyDdEdge ? "=> Dynamic doesn't raise Sharpe but does cut drawdown at some scales — a risk-overlay tweak, not alpha."
+				: "=> Dynamic long bias does NOT beat static LongBias on this basket (Sharpe or drawdown). Consistent with prior OOS findings.");
+			Console.WriteLine("NOTE: in-sample, full window. HV is ~constant per name over the window, so per-candle LB mostly\n" +
+			                  "tracks each symbol's average vol; the extra value (if any) is the WITHIN-symbol vol response.");
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.
