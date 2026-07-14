@@ -526,6 +526,37 @@ namespace StockOdds
 			return points;
 		}
 
+		// Fixed-LongBias A/B: the plain engine (dynBias / BiasPeriod) vs the same with
+		// dynBias normalized by its max possible value (bounded to [-1,1]). LongBias stays
+		// constant (as configured), so this isolates the effect of the normalization alone.
+		public static List<VolScaleRow> NormStaticCompare(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var rows = new List<VolScaleRow>();
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				bool saved = BankrollSimulator.NormalizeDynBiasToMax;
+				BankrollResult off, on;
+				try
+				{
+					BankrollSimulator.NormalizeDynBiasToMax = false;
+					off = BankrollSimulator.Run(bars, initialBankroll);
+					BankrollSimulator.NormalizeDynBiasToMax = true;
+					on  = BankrollSimulator.Run(bars, initialBankroll);
+				}
+				finally { BankrollSimulator.NormalizeDynBiasToMax = saved; }
+
+				rows.Add(new VolScaleRow
+				{
+					Symbol = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), Bars = bars.Count,
+					MinExp = BankrollSimulator.MinExposurePercent,
+					BaseSharpe = SharpeOf(off), BaseDd = off.MaxDrawdownPct, BaseRet = off.TotalReturnPct,
+					SclSharpe  = SharpeOf(on),  SclDd  = on.MaxDrawdownPct,  SclRet  = on.TotalReturnPct,
+				});
+			}
+			return rows.OrderBy(r => r.Hv).ToList();
+		}
+
 		// ===================== VOL->LONGBIAS MAPPING GRID SEARCH =====================
 		// Grid-search the whole vol->LongBias mapping (pivot, scale, floor, ceil) with the
 		// normalized dynBias, ranked by mean Sharpe across the basket. Answers directly:

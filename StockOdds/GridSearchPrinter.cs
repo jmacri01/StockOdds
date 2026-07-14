@@ -464,6 +464,44 @@ namespace StockOdds
 			Console.WriteLine("NOTE: in-sample, full window. This is the CEILING of what tuning CAN do here; OOS is typically worse.");
 		}
 
+		// Fixed-LongBias A/B: plain dynBias (/BiasPeriod) vs normalized (/max => bounded [-1,1]).
+		public static void PrintNormStatic(List<VolScaleRow> rows, double longBias)
+		{
+			Console.WriteLine("\n===== FIXED LONGBIAS: PLAIN vs NORMALIZED dynBias (bounded to [-1,1]) =====");
+			if (rows.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine($"LongBias held at {longBias:0.##}. Plain: dynBias = sum/BiasPeriod (range [-1, {longBias + 1:0.##}]).  " +
+			                  $"Norm: sum/(BiasPeriod·{Math.Max(Math.Abs(longBias + 1), 1):0.##}) (range [{-1 / Math.Max(Math.Abs(longBias + 1), 1):0.00}, 1]).");
+			Console.WriteLine("Δ columns: + Sharpe = normalized better; − DD (Δpp) = normalized shallower.");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"{"Symbol",-8} {"HV%",6}   {"Shp:Plain",9} {"Norm",6} {"Δ",6} │ " +
+				$"{"DD:Plain",8} {"Norm",7} {"Δpp",6} │ {"Ret:Plain",9} {"Norm",9}");
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.Hv,6:0.0}   " +
+					$"{r.BaseSharpe,9:0.00} {r.SclSharpe,6:0.00} {r.DShp,6:+0.00;-0.00} │ " +
+					$"-{r.BaseDd,6:0.0}% -{r.SclDd,5:0.0}% {r.DDd,6:+0.0;-0.0} │ " +
+					$"{Signed(r.BaseRet),9} {Signed(r.SclRet),9}");
+			}
+			double mP = rows.Average(r => r.BaseSharpe), mN = rows.Average(r => r.SclSharpe);
+			double dP = rows.Average(r => r.BaseDd),     dN = rows.Average(r => r.SclDd);
+			double rP = rows.Average(r => r.BaseRet),    rN = rows.Average(r => r.SclRet);
+			int shpW = rows.Count(r => r.SclSharpe > r.BaseSharpe);
+			int ddW  = rows.Count(r => r.SclDd < r.BaseDd);
+			Console.WriteLine();
+			Console.WriteLine($"Mean Sharpe : plain {mP,5:0.00} -> norm {mN,5:0.00}  ({mN - mP:+0.000;-0.000}; norm higher {shpW}/{rows.Count})");
+			Console.WriteLine($"Mean MaxDD  : plain -{dP,4:0.0}% -> norm -{dN,4:0.0}%  ({dP - dN:+0.0;-0.0}pp; norm shallower {ddW}/{rows.Count})");
+			Console.WriteLine($"Mean Return : plain {Signed(rP)} -> norm {Signed(rN)}");
+			Console.WriteLine();
+			Console.WriteLine(
+				mN > mP + 0.02 && dN <= dP + 0.5 ? "=> Normalizing the fixed LongBias HELPS (higher Sharpe, no worse drawdown). Worth adopting (validate OOS)."
+				: dN < dP - 1.0 && mN >= mP - 0.02 ? "=> Normalizing mainly cuts drawdown at ~equal Sharpe — a mild risk-overlay tweak."
+				: Math.Abs(mN - mP) <= 0.02 ? "=> Normalizing barely changes anything — it's ~equivalent to a slightly smaller LongBias. Not worth the added complexity."
+				: "=> Normalizing does NOT help the fixed LongBias (lower Sharpe). Keep the plain divisor.");
+			Console.WriteLine("NOTE: in-sample, full window. For a CONSTANT LongBias, normalization is just a uniform rescale of the bias skew.");
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.
