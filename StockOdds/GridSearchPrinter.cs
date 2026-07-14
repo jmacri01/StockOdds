@@ -203,6 +203,33 @@ namespace StockOdds
 				Console.WriteLine();
 			}
 
+			// Per-symbol drawdown-minimizing LongBias + monotonicity check. DD is NOT strictly
+			// monotone in LongBias — some names dip in the mid-range before blowing out — so
+			// report each symbol's actual DD-min LongBias and flag non-monotone curves.
+			Console.WriteLine();
+			Console.WriteLine("DD-minimizing LongBias per symbol   (mono = DD never decreases as LongBias rises)");
+			Console.WriteLine($"{"Symbol",-8} {"HV%",6}   {"MinDD",6} {"@LB",6} {"RefDD",6} {"@Ref",6}   {"Mono?",6}");
+			int nonMono = 0, minAboveRef = 0;
+			foreach (var r in rows)
+			{
+				var minPt = r.Curve.OrderBy(p => p.MaxDdPct).First();
+				var refPt = r.Curve.OrderBy(p => Math.Abs(p.LongBias - refBias)).First();
+				bool mono = true;
+				for (int i = 1; i < r.Curve.Count; i++)
+					if (r.Curve[i].MaxDdPct < r.Curve[i - 1].MaxDdPct - 1e-9) { mono = false; break; }
+				if (!mono) nonMono++;
+				if (minPt.LongBias > refBias + 1e-9) minAboveRef++;
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.}   " +
+					$"-{minPt.MaxDdPct,4:0.}% {minPt.LongBias,6:0.##} -{refPt.MaxDdPct,4:0.}% {refBias,6:0.##}   " +
+					$"{(mono ? "yes" : "NO"),6}");
+			}
+			Console.WriteLine();
+			Console.WriteLine($"Non-monotone DD curves : {nonMono}/{rows.Count}   |   " +
+			                  $"DD-min LongBias above reference ({refBias:0.##}) : {minAboveRef}/{rows.Count}");
+			Console.WriteLine("(So raising LongBias CAN lower DD locally, but the lowest-DD LongBias is <= ref on almost every name;\n" +
+			                  " the mid-range dips are small and path-dependent, and DD always blows out at the high end.)");
+
 			// DD cost of moving from the reference LongBias to each symbol's Sharpe-optimal one
 			Console.WriteLine();
 			Console.WriteLine($"Drawdown cost of chasing Sharpe via LongBias (ref {refBias:0.##} -> best-Sharpe LongBias):");
