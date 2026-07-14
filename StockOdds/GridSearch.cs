@@ -344,6 +344,80 @@ namespace StockOdds
 				.ToList();
 		}
 
+		// ===================== 1-D LONG-BIAS vs VOLATILITY STUDY =====================
+		// The earlier VolStudy tuned all five smoothing knobs jointly and averaged the top
+		// region, which confounds LongBias with the other four and only spanned {0,.5,1,2}.
+		// This is the clean, isolated test of the user's hypothesis: hold EVERY other knob
+		// (and the bucket map / clamps) at whatever the caller configured, and sweep ONLY
+		// LongBias over a wide range per symbol. For each symbol we record the whole curve
+		// and the LongBias that maximizes Sharpe (and Calmar), tagged with the symbol's HV,
+		// so the (HV -> optimal LongBias) relationship — if any — shows up undiluted.
+		//
+		// Mechanism reminder: LongBias raises the per-Bull-candle contribution to the
+		// dynamic bias (sig = LongBias + 1), so a larger LongBias pins exposure higher in
+		// bullish regimes. On a calm, steadily-rising name that recovers the return the
+		// overlay otherwise forfeits to cash; on a jumpy name it over-exposes into the
+		// drawdowns the overlay exists to dodge. So Sharpe-optimal LongBias is EXPECTED to
+		// fall as HV rises — this quantifies whether, and how strongly, that holds.
+		public static double[] LongBiasSweepValues =
+			{ 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0 };
+
+		public static List<LongBiasVolRow> LongBiasVsVol(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			// hold all non-LongBias knobs at the caller's current config
+			int    curEma   = BankrollSimulator.ExposureEmaPeriod;
+			int    curBiasP = BankrollSimulator.BiasPeriod;
+			int    curBEma  = BankrollSimulator.BiasEmaPeriod;
+			double curDrift = BankrollSimulator.RebalanceDriftPercent;
+			double refBias  = BankrollSimulator.LongBias;   // the configured default, for reference
+
+			var rows = new List<LongBiasVolRow>();
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				var row = new LongBiasVolRow
+				{
+					Symbol                  = sym,
+					HistoricalVolatilityPct = Volatility.AnnualizedHistoricalPct(bars),
+					Bars                    = bars.Count,
+					RefBias                 = refBias,
+				};
+
+				foreach (var lb in LongBiasSweepValues)
+				{
+					var r = RunWith(bars, curEma, curBiasP, lb, curBEma, curDrift, initialBankroll);
+					row.Curve.Add(new LongBiasPoint
+					{
+						LongBias  = lb,
+						Sharpe    = SharpeOf(r),
+						ReturnPct = r.TotalReturnPct,
+						MaxDdPct  = r.MaxDrawdownPct,
+					});
+				}
+
+				// argmax-Sharpe LongBias (the primary objective)
+				var bestS = row.Curve.OrderByDescending(p => p.Sharpe).First();
+				row.BestSharpeBias = bestS.LongBias;
+				row.BestSharpe     = bestS.Sharpe;
+
+				// argmax-Calmar (return-per-drawdown) LongBias, for the capital-preservation lens
+				var calmar = row.Curve.Where(p => !double.IsNaN(p.RetPerDd)).ToList();
+				var bestC = (calmar.Count > 0 ? calmar : row.Curve)
+					.OrderByDescending(p => double.IsNaN(p.RetPerDd) ? double.NegativeInfinity : p.RetPerDd)
+					.First();
+				row.BestCalmarBias = bestC.LongBias;
+				row.BestCalmar     = bestC.RetPerDd;
+
+				// Sharpe at the configured default (closest swept value) — "what am I giving up?"
+				var refPoint = row.Curve.OrderBy(p => Math.Abs(p.LongBias - refBias)).First();
+				row.RefSharpe = refPoint.Sharpe;
+
+				rows.Add(row);
+			}
+
+			return rows.OrderBy(r => r.HistoricalVolatilityPct).ToList();
+		}
+
 		// Same sweep, but each combination is scored on every symbol in the basket and
 		// ranked by the MEAN Sharpe across them, so the winning knobs are the ones that
 		// generalize rather than fit a single symbol's path.
@@ -868,6 +942,36 @@ namespace StockOdds
 		public double   MedianTestSharpe;
 		public double   MeanTestReturnPct;
 		public double   PctPositive;           // fraction of symbols with test Sharpe > 0
+	}
+
+	// One point on a single symbol's 1-D LongBias sweep (all other knobs fixed).
+	public class LongBiasPoint
+	{
+		public double LongBias;
+		public double Sharpe;
+		public double ReturnPct;
+		public double MaxDdPct;
+		// return per unit of max drawdown (Calmar-like); guarded against tiny drawdowns.
+		public double RetPerDd => MaxDdPct > 0.01 ? ReturnPct / MaxDdPct : double.NaN;
+	}
+
+	// A single symbol's 1-D LongBias-vs-volatility result: the full sweep curve plus the
+	// LongBias maximizing Sharpe (and Calmar), tagged with the symbol's HV. Every knob
+	// except LongBias is held at the caller's configuration.
+	public class LongBiasVolRow
+	{
+		public string Symbol = "";
+		public double HistoricalVolatilityPct;
+		public int    Bars;
+		public List<LongBiasPoint> Curve = new();
+
+		public double BestSharpeBias;   // argmax-Sharpe LongBias
+		public double BestSharpe;
+		public double BestCalmarBias;   // argmax-(return/drawdown) LongBias
+		public double BestCalmar;
+
+		public double RefBias;          // the configured default LongBias
+		public double RefSharpe;        // Sharpe at the swept value closest to RefBias
 	}
 
 	public class WalkForwardRow

@@ -29,9 +29,12 @@ class Program
 	//   Rolling        -> rolling walk-forward over the SMOOTHING knobs.
 	//   WalkForward    -> single split: tuned-per-symbol vs. global default on held-out test.
 	//   VolStudy       -> tune each symbol to its OWN best knobs; print (HV -> knobs) + corr.
+	//   LongBiasStudy  -> 1-D sweep of ONLY LongBias per symbol (all other knobs fixed);
+	//                     print (HV -> optimal LongBias) curve + correlation. Clean test of
+	//                     "optimal LongBias falls as volatility rises."
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.BiasSweep;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, BasketMean }
+	static GridMode GRID_MODE = GridMode.LongBiasStudy;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -216,6 +219,10 @@ class Program
 				case GridMode.VolStudy:
 					var optima = GridSearch.RunPerSymbol(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintPerSymbolOptima(optima);
+					break;
+				case GridMode.LongBiasStudy:
+					var lbv = GridSearch.LongBiasVsVol(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintLongBiasVsVol(lbv);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

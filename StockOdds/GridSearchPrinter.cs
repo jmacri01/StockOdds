@@ -139,6 +139,135 @@ namespace StockOdds
 			}
 		}
 
+		// 1-D LongBias vs volatility: for each symbol (all other knobs fixed) the LongBias
+		// that maximizes Sharpe, tagged with HV and sorted by it, plus the full sweep curve,
+		// a low-vs-high HV group summary, Pearson & Spearman correlations, and a fitted
+		// LongBias(HV) rule. Tests "optimal LongBias falls as volatility rises."
+		public static void PrintLongBiasVsVol(List<LongBiasVolRow> rows)
+		{
+			Console.WriteLine("\n===== LONG-BIAS vs VOLATILITY (1-D sweep, all other knobs fixed) =====");
+			if (rows.Count == 0)
+			{
+				Console.WriteLine("No symbols with usable data.");
+				return;
+			}
+
+			double refBias = rows[0].RefBias;
+			Console.WriteLine($"Symbols : {rows.Count}   |   only LongBias moves; reference (configured) LongBias = {refBias:0.##}");
+			Console.WriteLine("Best* = the LongBias that maximizes that metric on this symbol's full window.");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"{"Symbol",-8} {"HV%",7} {"Bars",5}   " +
+				$"{"BestShpLB",9} {"BestShp",8} {"RefShp",8} {"ShpGain",8}   {"BestCalLB",9}");
+
+			foreach (var r in rows)
+			{
+				double gain = r.BestSharpe - r.RefSharpe;
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.HistoricalVolatilityPct,7:0.0} {r.Bars,5}   " +
+					$"{r.BestSharpeBias,9:0.##} {r.BestSharpe,8:0.00} {r.RefSharpe,8:0.00} {gain,8:+0.00;-0.00}   " +
+					$"{r.BestCalmarBias,9:0.##}");
+			}
+
+			// ---- full Sharpe curve matrix (rows = symbol by HV, cols = LongBias); [*] = row argmax ----
+			var biases = rows[0].Curve.Select(p => p.LongBias).ToList();
+			Console.WriteLine();
+			Console.WriteLine("Sharpe by LongBias   (rows = symbol asc HV, cols = LongBias; * = row max)");
+			Console.Write($"{"Sym\\LB",-8} {"HV%",6}");
+			foreach (var lb in biases) Console.Write($"{lb,7:0.#}");
+			Console.WriteLine();
+			foreach (var r in rows)
+			{
+				Console.Write($"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.}");
+				foreach (var p in r.Curve)
+				{
+					string mark = p.LongBias == r.BestSharpeBias ? "*" : " ";
+					Console.Write($"{p.Sharpe.ToString("0.00") + mark,7}");
+				}
+				Console.WriteLine();
+			}
+
+			// ---- max-drawdown curve matrix: does cranking LongBias cost drawdown? ----
+			// The strategy's real job is drawdown reduction, so a LongBias that lifts Sharpe
+			// but deepens drawdown is buying the wrong thing on the names we deploy on.
+			Console.WriteLine();
+			Console.WriteLine("Max drawdown % by LongBias   (rows = symbol asc HV, cols = LongBias; lower = better)");
+			Console.Write($"{"Sym\\LB",-8} {"HV%",6}");
+			foreach (var lb in biases) Console.Write($"{lb,7:0.#}");
+			Console.WriteLine();
+			foreach (var r in rows)
+			{
+				Console.Write($"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.}");
+				foreach (var p in r.Curve)
+					Console.Write($"{-p.MaxDdPct,7:0.}");
+				Console.WriteLine();
+			}
+
+			// DD cost of moving from the reference LongBias to each symbol's Sharpe-optimal one
+			Console.WriteLine();
+			Console.WriteLine($"Drawdown cost of chasing Sharpe via LongBias (ref {refBias:0.##} -> best-Sharpe LongBias):");
+			double DdAt(LongBiasVolRow r, double lb) =>
+				r.Curve.OrderBy(p => Math.Abs(p.LongBias - lb)).First().MaxDdPct;
+			foreach (var r in rows.Where(r => r.HistoricalVolatilityPct >= 50.0))
+			{
+				double ddRef = DdAt(r, refBias), ddBest = DdAt(r, r.BestSharpeBias);
+				Console.WriteLine(
+					$"  {r.Symbol,-8} HV {r.HistoricalVolatilityPct,5:0.} : DD -{ddRef,4:0.}% -> -{ddBest,4:0.}%  " +
+					$"({ddBest - ddRef,+5:+0;-0} pp)   Sharpe {r.RefSharpe:0.00} -> {r.BestSharpe:0.00}");
+			}
+
+			// ---- low-vs-high HV group summary (split at HV 50, the deployment threshold) ----
+			const double split = 50.0;
+			var low  = rows.Where(r => r.HistoricalVolatilityPct <  split).ToList();
+			var high = rows.Where(r => r.HistoricalVolatilityPct >= split).ToList();
+			Console.WriteLine();
+			Console.WriteLine($"Group means (split at HV {split:0.}):");
+			if (low.Count > 0)
+				Console.WriteLine($"  Low  HV (<{split:0.}, n={low.Count,2}) : mean best-Sharpe LongBias {low.Average(r => r.BestSharpeBias),6:0.00}   " +
+				                  $"median {Median(low.Select(r => r.BestSharpeBias)),5:0.0}");
+			if (high.Count > 0)
+				Console.WriteLine($"  High HV (>={split:0.}, n={high.Count,2}) : mean best-Sharpe LongBias {high.Average(r => r.BestSharpeBias),6:0.00}   " +
+				                  $"median {Median(high.Select(r => r.BestSharpeBias)),5:0.0}");
+
+			// ---- correlations: HV vs optimal LongBias (linear + rank) ----
+			if (rows.Count >= 3)
+			{
+				var hv        = rows.Select(r => r.HistoricalVolatilityPct).ToList();
+				var bestShpLB = rows.Select(r => r.BestSharpeBias).ToList();
+				var bestCalLB = rows.Select(r => r.BestCalmarBias).ToList();
+
+				double rP = Corr(hv, bestShpLB);
+				double rS = Spearman(hv, bestShpLB);
+				double rPc = Corr(hv, bestCalLB);
+
+				Console.WriteLine();
+				Console.WriteLine("Correlation of HV vs optimal LongBias (negative => bias falls as vol rises):");
+				Console.WriteLine($"  Sharpe-optimal LongBias : Pearson {rP,7:+0.000;-0.000}   Spearman {rS,7:+0.000;-0.000}");
+				Console.WriteLine($"  Calmar-optimal LongBias : Pearson {rPc,7:+0.000;-0.000}");
+
+				// linear fit  bias ~= a + b*HV  (least squares) on the Sharpe-optimal series
+				var (a, b) = LinFit(hv, bestShpLB);
+				Console.WriteLine();
+				Console.WriteLine($"Least-squares fit : LongBias ≈ {a:0.00} {(b >= 0 ? "+" : "-")} {Math.Abs(b):0.000}·HV");
+				double loMax = biases.Max();
+				Console.WriteLine($"  Suggested rule  : LongBias(HV) = clamp({a:0.0} - {Math.Abs(b):0.000}·HV, 0.5, {loMax:0.})   " +
+				                  "(diagnostic — validate OOS before trusting)");
+
+				Console.WriteLine();
+				double rBest = Math.Min(rS, rP);   // most-negative of the two
+				Console.WriteLine(
+					rBest <= -0.5 ? "=> Optimal LongBias clearly FALLS as volatility rises — the hypothesis holds in-sample. See caveat below."
+					: rBest <= -0.25 ? "=> Optimal LongBias falls with volatility DIRECTIONALLY (moderate negative r) — the hypothesis holds in\n" +
+					                   "   direction but weakly; a few high-vol names have flat, noisy curves that rail high by chance. See caveat."
+					: "=> No monotone HV->LongBias relationship in-sample (r near 0). LongBias optimum is not tracking volatility here.");
+				Console.WriteLine(
+					"CAVEAT: on low-vol names the Sharpe curve typically keeps rising toward the largest LongBias — i.e. the\n" +
+					"'optimum' is really 'turn the overlay OFF (stay fully invested)', not a finite vol-scaled setting. Read a\n" +
+					"railed optimum as 'don't deploy the overlay here' (consistent with the HV>=50 deployment rule), and treat\n" +
+					"any fitted slope as descriptive, not a knob to auto-set — per-symbol tuning did not survive OOS before.");
+			}
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.
@@ -466,6 +595,64 @@ namespace StockOdds
 			{
 				Console.WriteLine("No pair within tolerance — loosen BiasSweepSharpeTol/BiasSweepDdTolPp or accept current values.");
 			}
+		}
+
+		// Median of a sequence (0 if empty).
+		private static double Median(IEnumerable<double> xs)
+		{
+			var s = xs.OrderBy(x => x).ToList();
+			if (s.Count == 0) return 0.0;
+			return s.Count % 2 == 1 ? s[s.Count / 2] : (s[s.Count / 2 - 1] + s[s.Count / 2]) / 2.0;
+		}
+
+		// Spearman rank correlation: Pearson on the fractional ranks (ties get the average
+		// rank). Robust to the nonlinearity/railing of the LongBias optima.
+		private static double Spearman(IEnumerable<double> xs, IEnumerable<double> ys)
+		{
+			var x = xs.ToList();
+			var y = ys.ToList();
+			int n = Math.Min(x.Count, y.Count);
+			if (n < 2) return 0.0;
+			return Corr(Ranks(x.Take(n)), Ranks(y.Take(n)));
+		}
+
+		// Fractional ranks with ties averaged (1-based).
+		private static List<double> Ranks(IEnumerable<double> xs)
+		{
+			var v = xs.ToList();
+			var ranks = new double[v.Count];
+			var order = Enumerable.Range(0, v.Count).OrderBy(i => v[i]).ToList();
+			int k = 0;
+			while (k < order.Count)
+			{
+				int j = k;
+				while (j + 1 < order.Count && v[order[j + 1]] == v[order[k]]) j++;
+				double avg = 0.0;
+				for (int t = k; t <= j; t++) avg += t + 1;   // 1-based positions
+				avg /= (j - k + 1);
+				for (int t = k; t <= j; t++) ranks[order[t]] = avg;
+				k = j + 1;
+			}
+			return ranks.ToList();
+		}
+
+		// Ordinary least-squares fit y ~= a + b*x; returns (a intercept, b slope).
+		private static (double a, double b) LinFit(IEnumerable<double> xs, IEnumerable<double> ys)
+		{
+			var x = xs.ToList();
+			var y = ys.ToList();
+			int n = Math.Min(x.Count, y.Count);
+			if (n < 2) return (0.0, 0.0);
+			double mx = x.Take(n).Average(), my = y.Take(n).Average();
+			double sxy = 0, sxx = 0;
+			for (int i = 0; i < n; i++)
+			{
+				double dx = x[i] - mx;
+				sxy += dx * (y[i] - my);
+				sxx += dx * dx;
+			}
+			double b = sxx > 0 ? sxy / sxx : 0.0;
+			return (my - b * mx, b);
 		}
 
 		// Pearson correlation coefficient; returns 0 when either series has no variance.
