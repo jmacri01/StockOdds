@@ -34,9 +34,11 @@ class Program
 	//                     "optimal LongBias falls as volatility rises."
 	//   DynBiasStudy   -> per-candle LongBias derived from a vol EWMA (dynLB = scale·ln(pivot/vol));
 	//                     static baseline vs dynamic per symbol + a scale sweep.
+	//   VolScaleStudy  -> vol-SCALED exposure (adjEma *= pivot/vol long, vol/pivot short):
+	//                     baseline vs scaled per symbol, at MinExposure 0% and -100%.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.DynBiasStudy;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, BasketMean }
+	static GridMode GRID_MODE = GridMode.VolScaleStudy;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -230,6 +232,11 @@ class Program
 					var dynRows = GridSearch.DynBiasCompare(barsBySymbol, GridSearch.DynCompareScale, initialBankroll: 10_000.0);
 					var dynSweep = GridSearch.DynBiasScaleSweep(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintDynBias(dynRows, dynSweep);
+					break;
+				case GridMode.VolScaleStudy:
+					var vs0   = GridSearch.VolScaleCompare(barsBySymbol,    0.0, initialBankroll: 10_000.0);
+					var vsNeg = GridSearch.VolScaleCompare(barsBySymbol, -100.0, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintVolScale(new() { (0.0, vs0), (-100.0, vsNeg) });
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

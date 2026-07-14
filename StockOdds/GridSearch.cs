@@ -522,6 +522,78 @@ namespace StockOdds
 			return points;
 		}
 
+		// ===================== VOLATILITY-SCALED EXPOSURE STUDY =====================
+		// Leaves LongBias alone and instead scales the adjusted EMA by volatility
+		// (BankrollSimulator.UseVolExposureScale): longs amplified / shorts dampened as vol
+		// falls. Compares baseline vs vol-scaled per symbol at a given MinExposure, so it can
+		// be run for both Min 0% (long/cash) and Min -100% (short enabled, where the short
+		// dampening actually bites).
+		public static double VolScalePivotCfg = 100.0;
+		public static int    VolScaleEmaCfg   = 30;
+
+		// Baseline run (no vol scaling) at a specific MinExposure, restoring both afterward.
+		public static BankrollResult RunPlainWithMin(
+			List<OhlcBar> bars, double minExp, double initialBankroll = 10_000.0)
+		{
+			bool   sScale = BankrollSimulator.UseVolExposureScale;
+			double sMin   = BankrollSimulator.MinExposurePercent;
+			try
+			{
+				BankrollSimulator.UseVolExposureScale = false;
+				BankrollSimulator.MinExposurePercent  = minExp;
+				return BankrollSimulator.Run(bars, initialBankroll);
+			}
+			finally
+			{
+				BankrollSimulator.UseVolExposureScale = sScale;
+				BankrollSimulator.MinExposurePercent  = sMin;
+			}
+		}
+
+		// Vol-scaled run at a specific pivot / vol-EMA / MinExposure, restoring afterward.
+		public static BankrollResult RunVolScale(
+			List<OhlcBar> bars, double pivot, int volEma, double minExp, double initialBankroll = 10_000.0)
+		{
+			bool   sScale = BankrollSimulator.UseVolExposureScale;
+			double sPiv   = BankrollSimulator.VolScalePivot;
+			int    sVe    = BankrollSimulator.VolEmaPeriod;
+			double sMin   = BankrollSimulator.MinExposurePercent;
+			try
+			{
+				BankrollSimulator.UseVolExposureScale = true;
+				BankrollSimulator.VolScalePivot       = pivot;
+				BankrollSimulator.VolEmaPeriod        = volEma;
+				BankrollSimulator.MinExposurePercent  = minExp;
+				return BankrollSimulator.Run(bars, initialBankroll);
+			}
+			finally
+			{
+				BankrollSimulator.UseVolExposureScale = sScale;
+				BankrollSimulator.VolScalePivot       = sPiv;
+				BankrollSimulator.VolEmaPeriod        = sVe;
+				BankrollSimulator.MinExposurePercent  = sMin;
+			}
+		}
+
+		// Per-symbol baseline vs vol-scaled at one MinExposure setting.
+		public static List<VolScaleRow> VolScaleCompare(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double minExp, double initialBankroll = 10_000.0)
+		{
+			var rows = new List<VolScaleRow>();
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				var b = RunPlainWithMin(bars, minExp, initialBankroll);
+				var s = RunVolScale(bars, VolScalePivotCfg, VolScaleEmaCfg, minExp, initialBankroll);
+				rows.Add(new VolScaleRow
+				{
+					Symbol = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), Bars = bars.Count, MinExp = minExp,
+					BaseSharpe = SharpeOf(b), BaseDd = b.MaxDrawdownPct, BaseRet = b.TotalReturnPct,
+					SclSharpe  = SharpeOf(s), SclDd  = s.MaxDrawdownPct, SclRet  = s.TotalReturnPct,
+				});
+			}
+			return rows.OrderBy(r => r.Hv).ToList();
+		}
+
 		// Same sweep, but each combination is scored on every symbol in the basket and
 		// ranked by the MEAN Sharpe across them, so the winning knobs are the ones that
 		// generalize rather than fit a single symbol's path.
@@ -1093,6 +1165,21 @@ namespace StockOdds
 
 		public double DShp => DynSharpe - StatSharpe;   // + => dynamic better
 		public double DDd  => DynDd - StatDd;           // - => dynamic shallower drawdown
+	}
+
+	// One symbol: baseline vs volatility-scaled exposure at one MinExposure setting.
+	public class VolScaleRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public int    Bars;
+		public double MinExp;
+
+		public double BaseSharpe, BaseDd, BaseRet;
+		public double SclSharpe,  SclDd,  SclRet;
+
+		public double DShp => SclSharpe - BaseSharpe;   // + => vol-scaled better
+		public double DDd  => SclDd - BaseDd;           // - => vol-scaled shallower drawdown
 	}
 
 	// Basket-mean metrics for one VolBiasScale, against the fixed static baseline.

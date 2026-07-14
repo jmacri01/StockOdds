@@ -362,6 +362,48 @@ namespace StockOdds
 			                  "tracks each symbol's average vol; the extra value (if any) is the WITHIN-symbol vol response.");
 		}
 
+		// Volatility-scaled exposure: baseline vs vol-scaled, printed once per MinExposure
+		// setting (e.g. 0% and -100%). adjEma *= pivot/vol when long, vol/pivot when short.
+		public static void PrintVolScale(List<(double minExp, List<VolScaleRow> rows)> byMin)
+		{
+			Console.WriteLine("\n===== VOLATILITY-SCALED EXPOSURE vs BASELINE =====");
+			Console.WriteLine($"Rule : adjEma *= (pivot/vol) if long, (vol/pivot) if short   " +
+			                  $"[pivot {GridSearch.VolScalePivotCfg:0.}, volEMA {GridSearch.VolScaleEmaCfg}]");
+			Console.WriteLine("Calm -> amplify longs / shrink shorts; volatile -> trim longs / grow shorts.");
+
+			foreach (var (minExp, rows) in byMin)
+			{
+				Console.WriteLine();
+				Console.WriteLine($"----- MinExposure {minExp:0.}%  ({(minExp < 0 ? "shorts enabled" : "long/cash only")}) -----");
+				if (rows.Count == 0) { Console.WriteLine("  (no data)"); continue; }
+				Console.WriteLine(
+					$"{"Symbol",-8} {"HV%",6}   {"Shp:Base",8} {"Scl",6} {"Δ",6} │ " +
+					$"{"DD:Base",7} {"Scl",7} {"Δpp",6} │ {"Ret:Base",9} {"Scl",9}");
+				foreach (var r in rows)
+				{
+					Console.WriteLine(
+						$"{r.Symbol,-8} {r.Hv,6:0.0}   " +
+						$"{r.BaseSharpe,8:0.00} {r.SclSharpe,6:0.00} {r.DShp,6:+0.00;-0.00} │ " +
+						$"-{r.BaseDd,5:0.0}% -{r.SclDd,5:0.0}% {r.DDd,6:+0.0;-0.0} │ " +
+						$"{Signed(r.BaseRet),9} {Signed(r.SclRet),9}");
+				}
+				double mB = rows.Average(r => r.BaseSharpe), mS = rows.Average(r => r.SclSharpe);
+				double dB = rows.Average(r => r.BaseDd),     dS = rows.Average(r => r.SclDd);
+				int shpW = rows.Count(r => r.SclSharpe > r.BaseSharpe);
+				int ddW  = rows.Count(r => r.SclDd < r.BaseDd);
+				Console.WriteLine(
+					$"  Mean Sharpe base {mB,5:0.00} -> scaled {mS,5:0.00} (scaled higher {shpW}/{rows.Count})   " +
+					$"Mean DD base -{dB,4:0.0}% -> scaled -{dS,4:0.0}% (scaled shallower {ddW}/{rows.Count})");
+				Console.WriteLine(
+					mS > mB + 0.03 && dS <= dB + 1.0 ? "  => Vol-scaling helps Sharpe without materially worse drawdown here."
+					: mS > mB + 0.03                 ? "  => Vol-scaling raises Sharpe but deepens drawdown — a return/risk trade, not a free win."
+					: dS < dB - 1.0                  ? "  => Vol-scaling doesn't raise Sharpe but does cut drawdown — a risk-overlay tweak."
+					:                                  "  => Vol-scaling does NOT beat baseline here (Sharpe or drawdown).");
+			}
+			Console.WriteLine();
+			Console.WriteLine("NOTE: in-sample, full window (incl. 2022). Judge on drawdown, not just the equity curve.");
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.

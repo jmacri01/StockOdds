@@ -149,6 +149,18 @@ namespace StockOdds
 		public static double VolBiasFloor       = -2.0;    // clamp low  (most bearish lean)
 		public static double VolBiasCeil        = 12.0;    // clamp high (the practical "infinite" long lean)
 
+		// ============ Volatility-scaled exposure ============
+		// A separate experiment from the dynamic long bias: instead of changing LongBias,
+		// scale the adjusted EMA (adjEma) directly by volatility. On a POSITIVE adjEma
+		// (net-long signal) multiply by VolScalePivot/vol (amplify longs as vol falls); on a
+		// NEGATIVE adjEma (net-short signal) multiply by vol/VolScalePivot (dampen shorts as
+		// vol falls). So calm -> lean harder long & shrink shorts; volatile -> trim longs &
+		// lean harder short. Applied to adjEma before the drift band + clamp; the short-side
+		// scaling only bites when MinExposurePercent < 0. Uses the same realized-vol EWMA
+		// (VolEmaPeriod) as the dynamic long bias. At vol = VolScalePivot the factor is 1.
+		public static bool   UseVolExposureScale = false;
+		public static double VolScalePivot       = 100.0;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -259,20 +271,18 @@ namespace StockOdds
 			double biasSum = 0.0;
 			double biasEma = double.NaN;   // EMA of the dynamic bias
 
-			// realized-volatility EWMA for the per-candle dynamic long bias (only used when
-			// UseDynamicLongBias is on). EWMA of squared log returns -> annualized HV %.
+			// realized-volatility EWMA feeding the vol-driven features (dynamic long bias
+			// and/or vol-scaled exposure). EWMA of squared log returns -> annualized HV %.
 			double volAlpha = 2.0 / (VolEmaPeriod + 1);
 			double varEwma = double.NaN;   // EWMA of squared log returns (per-bar variance)
 
-			// Effective LongBias for a candle, given the latest close-to-close log return
-			// (the return that LANDS on the state-decision bar `prev` — no look-ahead).
-			double EffLongBias(double logRet)
+			// Update the vol EWMA with the latest close-to-close log return (the return that
+			// LANDS on the state-decision bar `prev` — no look-ahead) and return annualized %.
+			double UpdateVolPct(double logRet)
 			{
-				if (!UseDynamicLongBias) return LongBias;
 				double r2 = logRet * logRet;
 				varEwma = double.IsNaN(varEwma) ? r2 : volAlpha * r2 + (1.0 - volAlpha) * varEwma;
-				double volPct = Math.Sqrt(varEwma) * Math.Sqrt(PeriodsPerYear) * 100.0;
-				return DynamicLongBiasFromVol(volPct);
+				return Math.Sqrt(varEwma) * Math.Sqrt(PeriodsPerYear) * 100.0;
 			}
 
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
@@ -293,7 +303,7 @@ namespace StockOdds
 			// target -> EMA -> dynamic long-bias skew -> drift-band held -> clamped position
 			// effLongBias is the LongBias to use for THIS candle: the static field normally,
 			// or the volatility-derived value when UseDynamicLongBias is on.
-			double StepExposure(LongTermState lt, ShortTermState st, double effLongBias)
+			double StepExposure(LongTermState lt, ShortTermState st, double effLongBias, double volPct)
 			{
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
@@ -310,6 +320,15 @@ namespace StockOdds
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				double adjEma = Math.Abs(ema) * biasEma + ema;
+
+				// volatility-scaled exposure: amplify longs / dampen shorts as vol falls
+				// (positive adjEma *= pivot/vol; negative adjEma *= vol/pivot). Factor = 1 at pivot.
+				if (UseVolExposureScale)
+				{
+					double v = Math.Max(volPct, 1e-6);
+					adjEma *= adjEma >= 0 ? VolScalePivot / v : v / VolScalePivot;
+				}
+
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
@@ -328,7 +347,9 @@ namespace StockOdds
 
 				// vol as of `prev`: the return into prev (prevPrev.Close -> prev.Close).
 				double volRet = prevPrev.Close > 0 ? Math.Log(prev.Close / prevPrev.Close) : 0.0;
-				position = StepExposure(lt, st.Value, EffLongBias(volRet));
+				double volPct = UpdateVolPct(volRet);
+				double effLb = UseDynamicLongBias ? DynamicLongBiasFromVol(volPct) : LongBias;
+				position = StepExposure(lt, st.Value, effLb, volPct);
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------
@@ -402,7 +423,9 @@ namespace StockOdds
 			if (lastSt != null)
 			{
 				double lastVolRet = bars[^2].Close > 0 ? Math.Log(bars[^1].Close / bars[^2].Close) : 0.0;
-				position = StepExposure(lastLt, lastSt.Value, EffLongBias(lastVolRet));
+				double lastVolPct = UpdateVolPct(lastVolRet);
+				double lastEffLb = UseDynamicLongBias ? DynamicLongBiasFromVol(lastVolPct) : LongBias;
+				position = StepExposure(lastLt, lastSt.Value, lastEffLb, lastVolPct);
 				result.OpenBucket = (lastLt, lastSt.Value);
 				result.OpenStake = position;
 				result.OpenDirection = position < 0 ? TradeDirection.Short : TradeDirection.Long;
