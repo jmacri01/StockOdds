@@ -526,6 +526,79 @@ namespace StockOdds
 			return points;
 		}
 
+		// ===================== VOL->LONGBIAS MAPPING GRID SEARCH =====================
+		// Grid-search the whole vol->LongBias mapping (pivot, scale, floor, ceil) with the
+		// normalized dynBias, ranked by mean Sharpe across the basket. Answers directly:
+		//   (a) can ANY single vol-adaptive mapping beat buy&hold / fixed LongBias 0.5?
+		//   (b) does the winner actually USE volatility (scale > 0) or collapse to a flat,
+		//       constant LB (scale = 0 => vol is irrelevant)?
+		// Includes scale=0 in the grid so the "flat" hypothesis competes on equal footing.
+		public static double[] MapPivots = { 50, 75, 100, 150, 200 };
+		public static double[] MapScales = { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0 };
+		public static double[] MapFloors = { 0.0 };
+		public static double[] MapCeils  = { 4.0, 8.0, 12.0 };
+
+		public static DynMapResult DynMapSearch(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			// baselines: fixed LongBias (as configured, e.g. 0.5) and buy & hold, per symbol
+			var fixRuns = barsBySymbol.ToDictionary(kv => kv.Key,
+				kv => BankrollSimulator.Run(kv.Value, initialBankroll));
+			var res = new DynMapResult
+			{
+				N        = barsBySymbol.Count,
+				FixLb    = BankrollSimulator.LongBias,
+				FixSharpe= fixRuns.Values.Average(SharpeOf),
+				FixDd    = fixRuns.Values.Average(r => r.MaxDrawdownPct),
+				FixRet   = fixRuns.Values.Average(r => r.TotalReturnPct),
+				BhSharpe = fixRuns.Values.Average(r => double.IsNaN(r.BuyHoldSharpeRatio) ? 0.0 : r.BuyHoldSharpeRatio),
+				BhDd     = fixRuns.Values.Average(r => r.BuyHoldMaxDrawdownPct),
+				BhRet    = fixRuns.Values.Average(r => r.BuyHoldReturnPct),
+			};
+			res.FixShpWinsBH = fixRuns.Values.Count(r => SharpeOf(r) > (double.IsNaN(r.BuyHoldSharpeRatio) ? 0.0 : r.BuyHoldSharpeRatio));
+			res.FixDdWinsBH  = fixRuns.Values.Count(r => r.MaxDrawdownPct < r.BuyHoldMaxDrawdownPct);
+
+			bool savedNorm = DynNormalize;
+			DynNormalize = true;   // normalized dynBias (the best-behaved form)
+			try
+			{
+				foreach (var piv in MapPivots)
+				foreach (var sc in MapScales)
+				foreach (var fl in MapFloors)
+				foreach (var ce in MapCeils)
+				{
+					// scale=0 => LB is constant (flat) regardless of pivot; dedupe those.
+					if (sc == 0.0 && piv != MapPivots[0])
+						continue;
+
+					var shp = new List<double>(); var dd = new List<double>(); var ret = new List<double>();
+					int shpWinsBH = 0, ddWinsBH = 0, shpWinsFix = 0;
+					foreach (var (sym, bars) in barsBySymbol)
+					{
+						var d = RunDynamic(bars, sc, piv, fl, ce, DynVolEma, initialBankroll);
+						double s = SharpeOf(d);
+						shp.Add(s); dd.Add(d.MaxDrawdownPct); ret.Add(d.TotalReturnPct);
+						double bh = double.IsNaN(d.BuyHoldSharpeRatio) ? 0.0 : d.BuyHoldSharpeRatio;
+						if (s > bh) shpWinsBH++;
+						if (d.MaxDrawdownPct < d.BuyHoldMaxDrawdownPct) ddWinsBH++;
+						if (s > SharpeOf(fixRuns[sym])) shpWinsFix++;
+					}
+					res.Ranked.Add(new DynMapPoint
+					{
+						Pivot = piv, Scale = sc, Floor = fl, Ceil = ce, Flat = sc == 0.0,
+						MeanSharpe = shp.Average(), MeanDd = dd.Average(), MeanRet = ret.Average(),
+						ShpWinsBH = shpWinsBH, DdWinsBH = ddWinsBH, ShpWinsFix = shpWinsFix,
+					});
+				}
+			}
+			finally { DynNormalize = savedNorm; }
+
+			res.Ranked = res.Ranked
+				.OrderByDescending(p => double.IsNaN(p.MeanSharpe) ? double.NegativeInfinity : p.MeanSharpe)
+				.ToList();
+			return res;
+		}
+
 		// ===================== VOLATILITY-SCALED EXPOSURE STUDY =====================
 		// Leaves LongBias alone and instead scales the adjusted EMA by volatility
 		// (BankrollSimulator.UseVolExposureScale): longs amplified / shorts dampened as vol
@@ -1169,6 +1242,32 @@ namespace StockOdds
 
 		public double DShp => DynSharpe - StatSharpe;   // + => dynamic better
 		public double DDd  => DynDd - StatDd;           // - => dynamic shallower drawdown
+	}
+
+	// One vol->LongBias mapping scored across the basket (normalized dynBias).
+	public class DynMapPoint
+	{
+		public double Pivot, Scale, Floor, Ceil;
+		public bool   Flat;          // scale == 0 => constant LB, volatility ignored
+		public double MeanSharpe, MeanDd, MeanRet;
+		public int    ShpWinsBH;     // # symbols beating buy&hold on Sharpe
+		public int    DdWinsBH;      // # symbols with shallower drawdown than buy&hold
+		public int    ShpWinsFix;    // # symbols beating the fixed-LongBias baseline on Sharpe
+	}
+
+	// Mapping grid-search result plus the fixed-LongBias and buy&hold baselines.
+	public class DynMapResult
+	{
+		public int    N;
+		public double FixLb;
+		public double FixSharpe, FixDd, FixRet;   public int FixShpWinsBH, FixDdWinsBH;
+		public double BhSharpe,  BhDd,  BhRet;
+		public List<DynMapPoint> Ranked = new();
+
+		// best mapping that actually uses volatility (scale > 0) and best flat one
+		public DynMapPoint? BestOverall => Ranked.Count > 0 ? Ranked[0] : null;
+		public DynMapPoint? BestVarying => Ranked.FirstOrDefault(p => !p.Flat);
+		public DynMapPoint? BestFlat    => Ranked.FirstOrDefault(p => p.Flat);
 	}
 
 	// One symbol: baseline vs volatility-scaled exposure at one MinExposure setting.

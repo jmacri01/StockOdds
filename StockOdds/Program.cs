@@ -38,9 +38,11 @@ class Program
 	//                     baseline vs scaled per symbol, at MinExposure 0% and -100%.
 	//   NormBiasStudy  -> dynamic LongBias but with dynBias normalized by its MAX possible
 	//                     value (bounded to [-1,1]); static baseline vs dynamic + scale sweep.
+	//   DynMapSearch   -> grid-search the vol->LongBias mapping (pivot/scale/floor/ceil) vs
+	//                     buy&hold and fixed LongBias; does the winner even use volatility?
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.NormBiasStudy;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, BasketMean }
+	static GridMode GRID_MODE = GridMode.DynMapSearch;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -246,6 +248,10 @@ class Program
 					var nbRows  = GridSearch.DynBiasCompare(barsBySymbol, GridSearch.DynCompareScale, initialBankroll: 10_000.0);
 					var nbSweep = GridSearch.DynBiasScaleSweep(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintDynBias(nbRows, nbSweep);
+					break;
+				case GridMode.DynMapSearch:
+					var mapRes = GridSearch.DynMapSearch(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintDynMap(mapRes);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

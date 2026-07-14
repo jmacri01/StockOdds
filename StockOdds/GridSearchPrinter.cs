@@ -405,6 +405,65 @@ namespace StockOdds
 			Console.WriteLine("NOTE: in-sample, full window (incl. 2022). Judge on drawdown, not just the equity curve.");
 		}
 
+		// Vol->LongBias mapping grid search: does any tuned vol-adaptive mapping beat buy&hold
+		// and fixed LongBias, and does the winner actually use volatility (scale > 0)?
+		public static void PrintDynMap(DynMapResult r)
+		{
+			Console.WriteLine("\n===== VOL->LONGBIAS MAPPING SEARCH (normalized dynBias, ranked by mean Sharpe) =====");
+			Console.WriteLine($"Basket : {r.N} symbols, full window. Mapping: dynLB = clamp(scale·ln(pivot/volEMA), floor, ceil).");
+			Console.WriteLine($"Combos : {r.Ranked.Count}   (scale = 0 => LB constant, i.e. volatility ignored)");
+			Console.WriteLine();
+			Console.WriteLine("Baselines (basket means):");
+			Console.WriteLine($"  Buy & hold          : Sharpe {r.BhSharpe,5:0.00}   MaxDD -{r.BhDd,4:0.0}%   Ret {Signed(r.BhRet)}");
+			Console.WriteLine($"  Fixed LongBias {r.FixLb,-4:0.##} : Sharpe {r.FixSharpe,5:0.00}   MaxDD -{r.FixDd,4:0.0}%   Ret {Signed(r.FixRet)}   " +
+			                  $"[beats B&H on Sharpe {r.FixShpWinsBH}/{r.N}, on DD {r.FixDdWinsBH}/{r.N}]");
+			Console.WriteLine();
+
+			Console.WriteLine("Top mappings by mean Sharpe:");
+			Console.WriteLine(
+				$"{"Pivot",6} {"Scale",6} {"Floor",6} {"Ceil",5} {"Flat?",6}   " +
+				$"{"MeanShp",8} {"MeanDD",7} {"MeanRet",9}   {"Shp>BH",7} {"DD>BH",6} {"Shp>Fix",8}");
+			foreach (var p in r.Ranked.Take(12))
+			{
+				Console.WriteLine(
+					$"{p.Pivot,6:0.} {p.Scale,6:0.##} {p.Floor,6:0.##} {p.Ceil,5:0.} {(p.Flat ? "FLAT" : ""),6}   " +
+					$"{p.MeanSharpe,8:0.000} -{p.MeanDd,6:0.0}% {Signed(p.MeanRet),9}   " +
+					$"{$"{p.ShpWinsBH}/{r.N}",7} {$"{p.DdWinsBH}/{r.N}",6} {$"{p.ShpWinsFix}/{r.N}",8}");
+			}
+
+			var best = r.BestOverall; var bestVar = r.BestVarying; var bestFlat = r.BestFlat;
+			// The best CONSTANT-LongBias benchmark: the better of the grid's flat point
+			// (which collapses to LB=0) and the actual fixed baseline (LB=0.5).
+			double bestConst = Math.Max(bestFlat?.MeanSharpe ?? double.NegativeInfinity, r.FixSharpe);
+			Console.WriteLine();
+			if (best != null)
+				Console.WriteLine($"Best overall   : {(best.Flat ? "FLAT (scale 0, vol ignored)" : $"scale {best.Scale:0.##}, pivot {best.Pivot:0.}, ceil {best.Ceil:0.}")}  " +
+				                  $"=> Sharpe {best.MeanSharpe:0.000} (fixed {r.FixSharpe:0.000}, B&H {r.BhSharpe:0.000})");
+			if (bestVar != null)
+			{
+				double volEdge = bestVar.MeanSharpe - bestConst;
+				Console.WriteLine($"Best vol-varying vs best CONSTANT LB : Sharpe {bestVar.MeanSharpe:0.000} vs {bestConst:0.000}  " +
+				                  $"=> volatility is worth {volEdge:+0.000;-0.000} Sharpe (constant ref = better of LB0 / fixed {r.FixLb:0.##})");
+			}
+
+			// verdicts
+			double edgeVsFix = (best?.MeanSharpe ?? 0) - r.FixSharpe;
+			double edgeVsBh  = (best?.MeanSharpe ?? 0) - r.BhSharpe;
+			double volEdgeVsConst = (bestVar?.MeanSharpe ?? double.NegativeInfinity) - bestConst;
+			Console.WriteLine();
+			Console.WriteLine(edgeVsBh > 0.03
+				? $"=> The best mapping BEATS buy & hold on mean Sharpe (+{edgeVsBh:0.000}) — but so does fixed LongBias (the overlay already does this)."
+				: $"=> The best mapping does NOT beat buy & hold on mean Sharpe ({edgeVsBh:+0.000;-0.000}).");
+			Console.WriteLine(
+				volEdgeVsConst > 0.03
+					? "=> Volatility DOES add value: the best vol-varying mapping beats the best constant LongBias."
+					: $"=> Volatility adds ~nothing ({volEdgeVsConst:+0.000;-0.000}): the best constant LongBias matches/beats every vol-adaptive mapping => vol is NOT the lever; a fixed LongBias works for everything.");
+			Console.WriteLine(edgeVsFix > 0.03
+				? $"=> Best mapping beats fixed LongBias {r.FixLb:0.##} by +{edgeVsFix:0.000} Sharpe (IN-SAMPLE — walk-forward before trusting)."
+				: $"=> Best mapping does NOT beat fixed LongBias {r.FixLb:0.##} ({edgeVsFix:+0.000;-0.000} Sharpe) — even with full in-sample hindsight.");
+			Console.WriteLine("NOTE: in-sample, full window. This is the CEILING of what tuning CAN do here; OOS is typically worse.");
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.
