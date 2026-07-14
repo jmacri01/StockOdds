@@ -430,6 +430,7 @@ namespace StockOdds
 		public static int      DynVolEma = 30;
 		public static double[] DynScales = { 0.5, 1.0, 1.5, 2.0, 3.0 };
 		public static double   DynCompareScale = 1.5;   // scale for the per-symbol static-vs-dyn table
+		public static bool     DynNormalize = false;    // divide dynBias by its max => bounded to [-1,1]
 
 		// Run one symbol with dynamic long bias at the given map params, restoring the
 		// caller's dynamic-bias config afterward.
@@ -438,12 +439,14 @@ namespace StockOdds
 			double initialBankroll = 10_000.0)
 		{
 			bool   sUse = BankrollSimulator.UseDynamicLongBias;
+			bool   sNrm = BankrollSimulator.NormalizeDynBiasToMax;
 			int    sVe  = BankrollSimulator.VolEmaPeriod;
 			double sPiv = BankrollSimulator.VolBiasPivot, sSc = BankrollSimulator.VolBiasScale,
 			       sFl  = BankrollSimulator.VolBiasFloor, sCe = BankrollSimulator.VolBiasCeil;
 			try
 			{
 				BankrollSimulator.UseDynamicLongBias = true;
+				BankrollSimulator.NormalizeDynBiasToMax = DynNormalize;
 				BankrollSimulator.VolEmaPeriod = volEma;
 				BankrollSimulator.VolBiasPivot = pivot;
 				BankrollSimulator.VolBiasScale = scale;
@@ -454,6 +457,7 @@ namespace StockOdds
 			finally
 			{
 				BankrollSimulator.UseDynamicLongBias = sUse;
+				BankrollSimulator.NormalizeDynBiasToMax = sNrm;
 				BankrollSimulator.VolEmaPeriod = sVe;
 				BankrollSimulator.VolBiasPivot = sPiv; BankrollSimulator.VolBiasScale = sSc;
 				BankrollSimulator.VolBiasFloor = sFl;  BankrollSimulator.VolBiasCeil  = sCe;

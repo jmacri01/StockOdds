@@ -143,6 +143,10 @@ namespace StockOdds
 		// above the pivot. So with Pivot = 100: vol 50 -> +0.69*Scale, vol 100 -> 0,
 		// vol 200 -> -0.69*Scale. Only past closes feed the EWMA, so there is no look-ahead.
 		public static bool   UseDynamicLongBias = false;
+		// When on, dynBias is divided by its MAX POSSIBLE magnitude (BiasPeriod*max(|LB+1|,1))
+		// instead of BiasPeriod, so it is naturally bounded to [-1, 1] and LongBias controls
+		// the shape (short-side compression) rather than an unbounded amplitude.
+		public static bool   NormalizeDynBiasToMax = false;
 		public static int    VolEmaPeriod       = 30;
 		public static double VolBiasPivot       = 100.0;   // vol (annualized %) where dyn LB crosses 0
 		public static double VolBiasScale       = 1.0;     // slope of the log map
@@ -316,7 +320,14 @@ namespace StockOdds
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
 					biasSum -= biasWindow.Dequeue();
-				double dynBias = biasSum / BiasPeriod;
+				// Normalizer: BiasPeriod (raw average, unbounded on the bull side) or, when
+				// NormalizeDynBiasToMax is on, the MAX possible |sum| = BiasPeriod*max(|LB+1|,1)
+				// so dynBias is naturally clamped to [-1, 1] (all-bull -> +1, all-bear -> -1/(LB+1)).
+				// LB then sets the SHAPE (how much the short side compresses) rather than amplitude.
+				double denom = NormalizeDynBiasToMax
+					? BiasPeriod * Math.Max(Math.Abs(effLongBias + 1.0), 1.0)
+					: BiasPeriod;
+				double dynBias = biasSum / denom;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				double adjEma = Math.Abs(ema) * biasEma + ema;
