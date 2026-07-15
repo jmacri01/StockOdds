@@ -67,9 +67,7 @@ class Program
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
 	static string[] GRID_SYMBOLS =
-		{ "^gspc" };
-	// Full basket (restore when done focusing on ^GSPC):
-	// { "^gspc", "aapl", "msft", "ko", "nok", "amd", "nvda", "tsla", "coin", "mstr", "smr", "asst", "asts", "open", "atai", "grpn", "fig", "be" };
+		{ "^gspc", "aapl", "msft", "ko", "nok", "amd", "nvda", "tsla", "coin", "mstr", "smr", "asst", "asts", "open", "atai", "grpn", "fig", "be" };
 
 	// Window used ONLY by the grid search / studies, independent of START_DATE (which
 	// governs the normal single-symbol run). Yahoo caps history at ~5y, so an early date

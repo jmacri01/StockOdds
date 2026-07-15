@@ -1021,7 +1021,11 @@ namespace StockOdds
 			int nBins = (int)Math.Round(2.0 / W); // 20 buckets over [-1, 1]
 			double alpha = 2.0 / (BankrollSimulator.ExposureEmaPeriod + 1);
 
-			var results = new List<ExpCurveResult>();
+			var perSymbol = new List<ExpCurveResult>();
+
+			// pooled (whole-basket) accumulators
+			var pCnt = new int[nBins]; var pFull = new double[nBins]; var pOn = new double[nBins]; var pUp = new int[nBins];
+			var pxs = new List<double>(); var pys = new List<double>();
 
 			foreach (var (sym, bars) in barsBySymbol)
 			{
@@ -1056,43 +1060,57 @@ namespace StockOdds
 
 					cnt[bin]++; sumFull[bin] += full; sumOn[bin] += on; if (full > 0) up[bin]++;
 					xs.Add(e); ys.Add(full);
+
+					pCnt[bin]++; pFull[bin] += full; pOn[bin] += on; if (full > 0) pUp[bin]++;
+					pxs.Add(e); pys.Add(full);
 				}
 
-				var res = new ExpCurveResult { Scope = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), N = xs.Count };
-				if (xs.Count > 0) res.MeanExp = xs.Average();
-				for (int b = 0; b < nBins; b++)
-				{
-					double lo = -1.0 + b * W;
-					res.Bins.Add(new ExpCurveBin
-					{
-						Lo = lo, Hi = lo + W, Center = lo + W / 2.0, N = cnt[b],
-						MeanFullPct = cnt[b] > 0 ? sumFull[b] / cnt[b] : double.NaN,
-						MeanOnPct   = cnt[b] > 0 ? sumOn[b] / cnt[b] : double.NaN,
-						UpPct       = cnt[b] > 0 ? (double)up[b] / cnt[b] * 100.0 : double.NaN,
-					});
-				}
-
-				// linear fit y = a + b*x  and quadratic y = a2 + b2*x + c2*x^2 over raw pairs
-				res.Corr = ProbCorr(xs, ys);
-				var (a, b1) = LinFit2(xs, ys);
-				res.Intercept = a; res.Slope = b1; res.R2 = res.Corr * res.Corr;
-				var (qa, qb, qc) = PolyFit2(xs, ys);
-				res.QuadA = qa; res.QuadB = qb; res.QuadC = qc;
-
-				// R^2 of the quadratic fit (how much of the return variance the curve explains)
-				double my = ys.Count > 0 ? ys.Average() : 0.0, ssTot = 0, ssRes = 0;
-				for (int k = 0; k < ys.Count; k++)
-				{
-					double pred = qa + qb * xs[k] + qc * xs[k] * xs[k];
-					ssRes += (ys[k] - pred) * (ys[k] - pred);
-					ssTot += (ys[k] - my) * (ys[k] - my);
-				}
-				res.QuadR2 = ssTot > 0 ? 1.0 - ssRes / ssTot : 0.0;
-
-				results.Add(res);
+				if (xs.Count == 0) continue;
+				perSymbol.Add(BuildCurveResult(sym, Volatility.AnnualizedHistoricalPct(bars), nBins, W, cnt, sumFull, sumOn, up, xs, ys));
 			}
 
+			var results = new List<ExpCurveResult>
+			{
+				BuildCurveResult("BASKET", 0.0, nBins, W, pCnt, pFull, pOn, pUp, pxs, pys)
+			};
+			results.AddRange(perSymbol.OrderBy(r => r.Hv));
 			return results;
+		}
+
+		// Assemble one exposure->return curve (buckets + linear & quadratic fits) from accumulators.
+		private static ExpCurveResult BuildCurveResult(
+			string scope, double hv, int nBins, double W,
+			int[] cnt, double[] sumFull, double[] sumOn, int[] up, List<double> xs, List<double> ys)
+		{
+			var res = new ExpCurveResult { Scope = scope, Hv = hv, N = xs.Count };
+			if (xs.Count > 0) res.MeanExp = xs.Average();
+			for (int b = 0; b < nBins; b++)
+			{
+				double lo = -1.0 + b * W;
+				res.Bins.Add(new ExpCurveBin
+				{
+					Lo = lo, Hi = lo + W, Center = lo + W / 2.0, N = cnt[b],
+					MeanFullPct = cnt[b] > 0 ? sumFull[b] / cnt[b] : double.NaN,
+					MeanOnPct   = cnt[b] > 0 ? sumOn[b] / cnt[b] : double.NaN,
+					UpPct       = cnt[b] > 0 ? (double)up[b] / cnt[b] * 100.0 : double.NaN,
+				});
+			}
+
+			res.Corr = ProbCorr(xs, ys);
+			var (a, b1) = LinFit2(xs, ys);
+			res.Intercept = a; res.Slope = b1; res.R2 = res.Corr * res.Corr;
+			var (qa, qb, qc) = PolyFit2(xs, ys);
+			res.QuadA = qa; res.QuadB = qb; res.QuadC = qc;
+
+			double my = ys.Count > 0 ? ys.Average() : 0.0, ssTot = 0, ssRes = 0;
+			for (int k = 0; k < ys.Count; k++)
+			{
+				double pred = qa + qb * xs[k] + qc * xs[k] * xs[k];
+				ssRes += (ys[k] - pred) * (ys[k] - pred);
+				ssTot += (ys[k] - my) * (ys[k] - my);
+			}
+			res.QuadR2 = ssTot > 0 ? 1.0 - ssRes / ssTot : 0.0;
+			return res;
 		}
 
 		// OLS line y = a + b*x.
