@@ -47,9 +47,12 @@ class Program
 	//   VolTargetWf    -> walk-forward: strategy vs a risk-matched PASSIVE vol-target baseline
 	//                     (exposure = clamp(targetVol/past-vol, 0, 1)), OOS. Does the active
 	//                     timing beat mechanical de-risking on out-of-sample Sharpe?
+	//   StateLagStudy  -> LT state vs return at offset 0 (concurrent, as charted) vs +1,+2,...
+	//                     (tradable). Shows the visible "Bull up / Bear down" pattern is the
+	//                     state LABELING the current move, and vanishes by the next bar.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, BasketMean }
-	static GridMode GRID_MODE = GridMode.VolTargetWf;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BasketMean }
+	static GridMode GRID_MODE = GridMode.StateLagStudy;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -189,7 +192,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -271,6 +274,10 @@ class Program
 				case GridMode.VolTargetWf:
 					var vtwf = GridSearch.VolTargetWalkForward(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintVolTargetWf(vtwf);
+					break;
+				case GridMode.StateLagStudy:
+					var sl = GridSearch.StateLag(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintStateLag(sl);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

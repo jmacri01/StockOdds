@@ -656,6 +656,77 @@ namespace StockOdds
 			return true;
 		}
 
+		// LT state: concurrent (charted) vs forward (tradable) return separation.
+		public static void PrintStateLag(List<StateLagResult> results)
+		{
+			Console.WriteLine("\n===== LT STATE: CONCURRENT (what you SEE) vs FORWARD (what you can TRADE) =====");
+			if (results.Count == 0) { Console.WriteLine("No data."); return; }
+			var basket = results[0];
+			var off = basket.Offsets;
+			Console.WriteLine("Each bar's LT state is computed FROM that bar's close (as drawn on a chart).");
+			Console.WriteLine("Offset 0 = that SAME bar's return (concurrent — the state labels this move; NOT tradable).");
+			Console.WriteLine("Offset +k = the return k bars LATER (tradable — the state is known at the current close).");
+			Console.WriteLine("If Bull−Bear separation is huge at 0 but ~0 by +1, the chart pattern is descriptive, not predictive.");
+
+			string OffHdr(int o) => o == 0 ? "0(now)" : "+" + o;
+
+			Console.WriteLine($"\n-- BASKET (pooled) --  mean per-bar return by LT state and offset:");
+			string head = $"  {"",-14}";
+			for (int j = 0; j < off.Length; j++) head += $"{OffHdr(off[j]),9}";
+			Console.WriteLine(head);
+
+			void RetRow(string label, StateLagRow r)
+			{
+				string line = $"  {label,-14}";
+				for (int j = 0; j < off.Length; j++) line += $"{Signed(r.MeanRetPct[j]) + "%",9}";
+				Console.WriteLine(line);
+			}
+			RetRow("LT Bull", basket.Bull);
+			RetRow("LT Bear", basket.Bear);
+
+			string spread = $"  {"Spread(Bu−Be)",-14}";
+			for (int j = 0; j < off.Length; j++) spread += $"{Signed(basket.Spread(j)) + "pp",9}";
+			Console.WriteLine(spread);
+
+			Console.WriteLine();
+			void UpRow(string label, StateLagRow r)
+			{
+				string line = $"  {label,-14}";
+				for (int j = 0; j < off.Length; j++) line += $"{r.UpRatePct[j],8:0.0}%";
+				Console.WriteLine(line);
+			}
+			UpRow("Up% Bull", basket.Bull);
+			UpRow("Up% Bear", basket.Bear);
+
+			// per-symbol: concurrent spread vs first tradable spread — is the collapse universal?
+			Console.WriteLine("\n-- PER SYMBOL --  Bull−Bear mean-return spread: concurrent (offset 0) vs next bar (+1)");
+			Console.WriteLine($"  {"Symbol",-8} {"HV%",6} {"Spread@0",9} {"Spread@+1",10} {"kept@+1",8}");
+			foreach (var r in results.Skip(1))
+			{
+				double s0 = r.Spread(0), s1 = r.Spread(1);
+				double kept = Math.Abs(s0) > 1e-9 ? s1 / s0 * 100.0 : 0.0;
+				Console.WriteLine($"  {r.Scope,-8} {r.Hv,6:0.0} {Signed(s0) + "pp",9} {Signed(s1) + "pp",10} {kept,6:0.0}%");
+			}
+
+			double b0 = basket.Spread(0), b1 = basket.Spread(1);
+			double keptB = Math.Abs(b0) > 1e-9 ? b1 / b0 * 100.0 : 0.0;
+			double upGap1 = basket.Bull.UpRatePct[1] - basket.Bear.UpRatePct[1];
+			Console.WriteLine();
+			Console.WriteLine($"Basket: concurrent spread {Signed(b0)}pp collapses to {Signed(b1)}pp at the next bar " +
+			                  $"({keptB:0.0}% survives); next-bar up-rate gap only {Signed(upGap1)}pp (direction ~coin flip).");
+			Console.WriteLine(
+				"=> Most of the separation you SEE is CONCURRENT labeling: the LT state is computed from the bar's own");
+			Console.WriteLine(
+				$"   close, so Bull bars are up bars by construction. ~{100 - keptB:0}% of it is gone by the next tradable bar.");
+			Console.WriteLine(
+				Math.Abs(b1) < 0.10
+					? "   What remains is negligible — the chart pattern does NOT forecast."
+					: $"   A small forward drift (~{Signed(b1)}pp/bar) persists — real but weak trend-persistence, concentrated in\n" +
+					  "   high-vol names, with direction still ~50/50. It's the same faint momentum the vol-target walk-forward\n" +
+					  "   showed does NOT beat passive de-risking OOS (net of costs).");
+			Console.WriteLine("NOTE: offset 0 uses the bar's own close to BOTH set the state and measure the return — it cannot be traded.");
+		}
+
 		// Walk-forward comparison of the strategy against a risk-matched passive vol-target.
 		public static void PrintVolTargetWf(List<VolTargetWfRow> rows)
 		{

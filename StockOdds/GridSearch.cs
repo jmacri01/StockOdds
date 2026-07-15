@@ -838,6 +838,77 @@ namespace StockOdds
 			double.IsNaN(r.SharpeRatio) ? 0.0 : r.SharpeRatio;
 
 		// ============================================================================
+		// LT STATE: CONCURRENT vs FORWARD returns.
+		// Reconciles "on the chart, Bull-state bars go up and Bear-state bars go down" with
+		// "the state has no predictive edge." For every bar the LT state is computed FROM that
+		// bar's close (exactly as drawn on a chart). Offset 0 measures that SAME bar's return
+		// (concurrent — the state literally labels this move; not tradable). Offsets +1,+2,...
+		// measure LATER bars' returns (tradable: the state is known at the current close). If
+		// the Bull−Bear return spread is large at offset 0 but ~0 by +1, the visible pattern is
+		// descriptive (the label is a function of the move), not a forecast.
+		// ============================================================================
+		public static readonly int[] StateLagOffsets = { 0, 1, 2, 3, 5, 10 };
+
+		public static List<StateLagResult> StateLag(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			int nOff = StateLagOffsets.Length;
+
+			// pooled accumulators: [state 0=Bull,1=Bear][offset] -> (sumRet%, count, upCount)
+			var pSum = new double[2, nOff];
+			var pCnt = new int[2, nOff];
+			var pUp  = new int[2, nOff];
+
+			var perSymbol = new List<StateLagResult>();
+
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				if (bars.Count < 3) continue;
+
+				var ltEngine = new LongTermStateEngine();
+				var sSum = new double[2, nOff];
+				var sCnt = new int[2, nOff];
+				var sUp  = new int[2, nOff];
+
+				for (int i = 1; i < bars.Count; i++)
+				{
+					// concurrent LT state at bar i — uses bars[i]'s close, exactly as charted
+					var s = ltEngine.Update(bars[i - 1], bars[i]);
+					int si = s == LongTermState.Bull ? 0 : 1;
+
+					for (int j = 0; j < nOff; j++)
+					{
+						int t = i + StateLagOffsets[j];   // return on bar t (offset 0 => bar i itself)
+						if (t < 1 || t >= bars.Count) continue;
+						if (bars[t - 1].Close <= 0) continue;
+						double r = (bars[t].Close - bars[t - 1].Close) / bars[t - 1].Close * 100.0;
+						sSum[si, j] += r; sCnt[si, j]++; if (r > 0) sUp[si, j]++;
+						pSum[si, j] += r; pCnt[si, j]++; if (r > 0) pUp[si, j]++;
+					}
+				}
+
+				perSymbol.Add(BuildStateLag(sym, Volatility.AnnualizedHistoricalPct(bars), sSum, sCnt, sUp));
+			}
+
+			var results = new List<StateLagResult> { BuildStateLag("BASKET", 0.0, pSum, pCnt, pUp) };
+			results.AddRange(perSymbol.OrderBy(r => r.Hv));
+			return results;
+		}
+
+		private static StateLagResult BuildStateLag(string scope, double hv, double[,] sum, int[,] cnt, int[,] up)
+		{
+			int nOff = StateLagOffsets.Length;
+			StateLagRow Row(int si) => new StateLagRow
+			{
+				State      = si == 0 ? LongTermState.Bull : LongTermState.Bear,
+				N          = Enumerable.Range(0, nOff).Select(j => cnt[si, j]).ToArray(),
+				MeanRetPct = Enumerable.Range(0, nOff).Select(j => cnt[si, j] > 0 ? sum[si, j] / cnt[si, j] : 0.0).ToArray(),
+				UpRatePct  = Enumerable.Range(0, nOff).Select(j => cnt[si, j] > 0 ? (double)up[si, j] / cnt[si, j] * 100.0 : 0.0).ToArray(),
+			};
+			return new StateLagResult { Scope = scope, Hv = hv, Offsets = StateLagOffsets, Bull = Row(0), Bear = Row(1) };
+		}
+
+		// ============================================================================
 		// PROBABILITY <-> EXPOSURE calibration.
 		// Does the per-candle TARGET exposure (the (LT,ST) map value, known as of `prev`)
 		// predict the odds that the NEXT candle closes ABOVE the previous close?
@@ -1657,6 +1728,29 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One LT state's mean return / up-rate across the measured offsets (parallel to
+	// GridSearch.StateLagOffsets).
+	public class StateLagRow
+	{
+		public LongTermState State;
+		public int[]    N          = System.Array.Empty<int>();
+		public double[] MeanRetPct = System.Array.Empty<double>();
+		public double[] UpRatePct  = System.Array.Empty<double>();
+	}
+
+	// Concurrent-vs-forward return separation for one scope (basket or symbol). Offsets[0]==0
+	// is concurrent (the bar the state was computed on); the rest are tradable forward bars.
+	public class StateLagResult
+	{
+		public string Scope = "";
+		public double Hv;
+		public int[]  Offsets = System.Array.Empty<int>();
+		public StateLagRow Bull = new();
+		public StateLagRow Bear = new();
+		// Bull−Bear mean-return spread at offset index j
+		public double Spread(int j) => Bull.MeanRetPct[j] - Bear.MeanRetPct[j];
 	}
 
 	// Everything the probability/risk-exposure study produces.
