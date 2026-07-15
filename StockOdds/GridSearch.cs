@@ -851,7 +851,7 @@ namespace StockOdds
 		// the exposure levels. The continuous curve uses an EMA-of-target at the currently
 		// configured ExposureEmaPeriod.
 		// ============================================================================
-		public static List<ProbExposureResult> ProbExposure(
+		public static ProbExposureStudyResult ProbExposure(
 			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
 		{
 			// pooled (whole-basket) observations for the headline calibration
@@ -897,32 +897,68 @@ namespace StockOdds
 					symExp, symUp, symRet, null));
 			}
 
+			var study = new ProbExposureStudyResult();
+
 			// basket (pooled) result first, with the continuous EMA-of-target decile curve
-			var results = new List<ProbExposureResult>
+			study.Calibration.Add(BuildProbResult("BASKET", 0.0, allExp, allUp, allRet, allEma));
+			study.Calibration.AddRange(perSymbol.OrderBy(r => r.Hv));
+
+			// de-risking vs timing control: strategy DD vs a constant position at the same
+			// average exposure. Needs the per-bar position series, so run the sim with recording.
+			bool savedRec = BankrollSimulator.RecordBars;
+			try
 			{
-				BuildProbResult("BASKET", 0.0, allExp, allUp, allRet, allEma)
-			};
-			results.AddRange(perSymbol.OrderBy(r => r.Hv));
-			return results;
+				BankrollSimulator.RecordBars = true;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var r = BankrollSimulator.Run(bars, initialBankroll);
+					if (r.BarPositions.Count == 0) continue;
+
+					double avgExp = r.BarPositions.Average();
+					// constant-exposure benchmark: hold avgExp every bar over the same returns.
+					var constRets = r.BarBhReturns.Select(x => avgExp * x).ToList();
+
+					study.Timing.Add(new RiskTimingRow
+					{
+						Symbol         = sym,
+						Hv             = Volatility.AnnualizedHistoricalPct(bars),
+						AvgExposurePct = avgExp * 100.0,
+						StratDd        = r.MaxDrawdownPct,
+						ConstDd        = MaxDdOf(constRets),
+						BhDd           = r.BuyHoldMaxDrawdownPct,
+						StratSharpe    = SharpeOf(r),
+						ConstSharpe    = SharpeOfReturns(constRets),
+					});
+				}
+			}
+			finally { BankrollSimulator.RecordBars = savedRec; }
+
+			study.Timing = study.Timing.OrderBy(t => t.Hv).ToList();
+			return study;
 		}
 
-		// Assemble one calibration result: base rate, exposure<->up / exposure<->return
-		// correlations, the discrete per-exposure-level table, and (basket only) the
+		// Assemble one calibration result: base rate, direction + risk correlations, the
+		// discrete per-exposure-level table (odds + forward risk), and (basket only) the
 		// continuous EMA-of-target decile curve.
 		private static ProbExposureResult BuildProbResult(
 			string scope, double hv,
 			List<double> exp, List<double> up, List<double> ret, List<double>? ema)
 		{
 			int n = exp.Count;
+			var absRet  = ret.Select(Math.Abs).ToList();
+			var downRet = ret.Select(x => Math.Min(x, 0.0)).ToList();  // 0 on up bars, r on down bars
 			var res = new ProbExposureResult
 			{
-				Scope         = scope,
-				Hv            = hv,
-				N             = n,
-				BaseUpRatePct = n > 0 ? up.Average() * 100.0 : 0.0,
-				MeanRetPct    = n > 0 ? ret.Average() : 0.0,
-				CorrExpUp     = ProbCorr(exp, up),
-				CorrExpRet    = ProbCorr(exp, ret),
+				Scope           = scope,
+				Hv              = hv,
+				N               = n,
+				BaseUpRatePct   = n > 0 ? up.Average() * 100.0 : 0.0,
+				MeanRetPct      = n > 0 ? ret.Average() : 0.0,
+				CorrExpUp       = ProbCorr(exp, up),
+				CorrExpRet      = ProbCorr(exp, ret),
+				CorrExpAbsRet   = ProbCorr(exp, absRet),
+				CorrExpDownside = ProbCorr(exp, downRet),
 			};
 
 			// discrete calibration: group by the distinct target-exposure value
@@ -931,13 +967,7 @@ namespace StockOdds
 				.OrderBy(g => g.Key))
 			{
 				var idx = g.ToList();
-				res.Levels.Add(new ProbExposureBin
-				{
-					Exposure      = g.Key,
-					N             = idx.Count,
-					Ups           = idx.Count(i => up[i] > 0),
-					MeanFwdRetPct = idx.Average(i => ret[i]),
-				});
+				res.Levels.Add(MakeBin(g.Key, idx, ret, up));
 			}
 
 			// continuous curve: EMA-of-target sorted into equal-count deciles (basket only)
@@ -951,17 +981,54 @@ namespace StockOdds
 					int hi = (int)((long)(b + 1) * n / bins);
 					if (hi <= lo) continue;
 					var slice = order.GetRange(lo, hi - lo);
-					res.Deciles.Add(new ProbExposureBin
-					{
-						Exposure      = slice.Average(i => ema[i]),
-						N             = slice.Count,
-						Ups           = slice.Count(i => up[i] > 0),
-						MeanFwdRetPct = slice.Average(i => ret[i]),
-					});
+					res.Deciles.Add(MakeBin(slice.Average(i => ema[i]), slice, ret, up));
 				}
 			}
 
 			return res;
+		}
+
+		// Build one bin (odds + forward-risk stats) from a set of observation indices.
+		private static ProbExposureBin MakeBin(double exposure, List<int> idx, List<double> ret, List<double> up)
+		{
+			int cnt = idx.Count;
+			double mean = cnt > 0 ? idx.Average(i => ret[i]) : 0.0;
+			double var  = cnt > 1 ? idx.Sum(i => (ret[i] - mean) * (ret[i] - mean)) / (cnt - 1) : 0.0;
+			double downSq = cnt > 0 ? idx.Average(i => { double d = Math.Min(ret[i], 0.0); return d * d; }) : 0.0;
+			return new ProbExposureBin
+			{
+				Exposure       = exposure,
+				N              = cnt,
+				Ups            = idx.Count(i => up[i] > 0),
+				MeanFwdRetPct  = mean,
+				FwdVolPct      = Math.Sqrt(var),
+				DownsideDevPct = Math.Sqrt(downSq),
+				DownRatePct    = cnt > 0 ? (double)idx.Count(i => ret[i] < 0) / cnt * 100.0 : 0.0,
+			};
+		}
+
+		// Max peak-to-trough drawdown (%) of the equity curve from compounding a return series.
+		private static double MaxDdOf(List<double> rets)
+		{
+			double equity = 1.0, peak = 1.0, maxDd = 0.0;
+			foreach (var r in rets)
+			{
+				equity *= 1.0 + r;
+				if (equity > peak) peak = equity;
+				double dd = (peak - equity) / peak * 100.0;
+				if (dd > maxDd) maxDd = dd;
+			}
+			return maxDd;
+		}
+
+		// Annualized Sharpe (rf=0) of a per-bar return series, using the configured periods/yr.
+		private static double SharpeOfReturns(List<double> rets)
+		{
+			if (rets.Count < 2) return 0.0;
+			double mean = rets.Average();
+			double variance = rets.Sum(x => (x - mean) * (x - mean)) / (rets.Count - 1);
+			double sd = Math.Sqrt(variance);
+			return sd > 0.0 ? mean / sd * Math.Sqrt(BankrollSimulator.PeriodsPerYear) : 0.0;
 		}
 
 		// Pearson correlation; 0 when either series has no variance.
@@ -1401,7 +1468,8 @@ namespace StockOdds
 		public double RefSharpe;        // Sharpe at the swept value closest to RefBias
 	}
 
-	// One exposure level (or decile bin) with the empirical up-close odds measured on it.
+	// One exposure level (or decile bin) with the empirical up-close odds AND forward-risk
+	// stats measured on it.
 	public class ProbExposureBin
 	{
 		public double Exposure;        // target-exposure value, or mean EMA-exposure of the bin
@@ -1409,6 +1477,10 @@ namespace StockOdds
 		public int    Ups;             // # of bars whose next close was above the prior close
 		public double UpRatePct => N > 0 ? (double)Ups / N * 100.0 : 0.0;
 		public double MeanFwdRetPct;
+		// forward-risk view: is the NEXT bar riskier when exposure is low?
+		public double FwdVolPct;       // std of the forward returns in the bin
+		public double DownsideDevPct;  // sqrt(mean(min(r,0)^2)) — downside semi-deviation
+		public double DownRatePct;     // P(next return < 0)
 	}
 
 	// Probability<->exposure calibration for one scope (the whole basket, or one symbol).
@@ -1421,8 +1493,31 @@ namespace StockOdds
 		public double MeanRetPct;
 		public double CorrExpUp;       // point-biserial corr(target exposure, up-close)
 		public double CorrExpRet;      // corr(target exposure, forward return)
+		public double CorrExpAbsRet;   // corr(target exposure, |forward return|): - => higher exp calmer
+		public double CorrExpDownside; // corr(target exposure, min(r,0)): + => higher exp = less downside
 		public List<ProbExposureBin> Levels  = new();   // discrete target-exposure values
 		public List<ProbExposureBin> Deciles = new();   // continuous EMA-of-target deciles
+	}
+
+	// De-risking-vs-timing control for one symbol: the strategy's drawdown against a CONSTANT
+	// position held at the strategy's own average exposure. If the strategy's drawdown is
+	// lower than the matched-constant one, the reduction is genuine risk TIMING; if they are
+	// ~equal, the strategy just holds less on average (plain de-risking, no skill).
+	public class RiskTimingRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public double AvgExposurePct;   // mean applied position (the constant benchmark's size)
+		public double StratDd, ConstDd, BhDd;
+		public double StratSharpe, ConstSharpe;
+		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// Everything the probability/risk-exposure study produces.
+	public class ProbExposureStudyResult
+	{
+		public List<ProbExposureResult> Calibration = new();   // [0] = basket, then per symbol
+		public List<RiskTimingRow>      Timing      = new();   // per symbol, sorted by HV
 	}
 
 	// One symbol: static-LongBias baseline vs dynamic (vol-driven) long bias at one scale.

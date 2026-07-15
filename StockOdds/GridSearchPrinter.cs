@@ -505,8 +505,9 @@ namespace StockOdds
 		// Probability<->exposure calibration: is the per-candle TARGET exposure predictive of
 		// an up-close on the next bar? Prints the pooled calibration table + continuous curve,
 		// then a per-symbol breakdown, then a verdict.
-		public static void PrintProbExposure(List<ProbExposureResult> results)
+		public static void PrintProbExposure(ProbExposureStudyResult study)
 		{
+			var results = study.Calibration;
 			Console.WriteLine("\n===== PROBABILITY <-> EXPOSURE: does target exposure predict an up-close? =====");
 			if (results.Count == 0) { Console.WriteLine("No data."); return; }
 			Console.WriteLine("Outcome = next candle closes ABOVE the previous close (the move the sim trades).");
@@ -532,15 +533,26 @@ namespace StockOdds
 					$"{ci,6:0.0} {liftStr,7} {Signed(b.MeanFwdRetPct),8}%");
 			}
 
+			// ---- BASKET: forward-RISK calibration (the drawdown question) ----
+			Console.WriteLine("\n  Forward RISK by exposure (is the NEXT bar riskier when exposure is low?):");
+			Console.WriteLine($"  corr(exposure, |fwd ret|): {basket.CorrExpAbsRet:+0.000;-0.000} (− = higher exp calmer)   " +
+			                  $"corr(exposure, downside): {basket.CorrExpDownside:+0.000;-0.000} (+ = higher exp less downside)");
+			Console.WriteLine($"  {"Exposure",8} {"N",7} {"FwdVol",7} {"DownDev",8} {"Down%",7} {"MeanRet",9}");
+			foreach (var b in basket.Levels)
+				Console.WriteLine(
+					$"  {b.Exposure,8:+0.00;-0.00} {b.N,7} {b.FwdVolPct,6:0.00}% {b.DownsideDevPct,7:0.00}% " +
+					$"{b.DownRatePct,6:0.0}% {Signed(b.MeanFwdRetPct),8}%");
+
 			if (basket.Deciles.Count > 0)
 			{
 				Console.WriteLine("\n  Continuous signal (EMA-of-target, equal-count deciles):");
-				Console.WriteLine($"  {"Decile",6} {"Exp~mean",9} {"N",7} {"Up%",7} {"MeanRet",9}");
+				Console.WriteLine($"  {"Decile",6} {"Exp~mean",9} {"N",7} {"Up%",7} {"FwdVol",7} {"DownDev",8} {"MeanRet",9}");
 				for (int i = 0; i < basket.Deciles.Count; i++)
 				{
 					var b = basket.Deciles[i];
 					Console.WriteLine(
-						$"  {i + 1,6} {b.Exposure,9:+0.00;-0.00} {b.N,7} {b.UpRatePct,6:0.0}% {Signed(b.MeanFwdRetPct),8}%");
+						$"  {i + 1,6} {b.Exposure,9:+0.00;-0.00} {b.N,7} {b.UpRatePct,6:0.0}% " +
+						$"{b.FwdVolPct,6:0.00}% {b.DownsideDevPct,7:0.00}% {Signed(b.MeanFwdRetPct),8}%");
 				}
 			}
 
@@ -587,7 +599,45 @@ namespace StockOdds
 					: basket.CorrExpUp > 0.01
 						? "=> Weak/marginal relationship: exposure nudges the odds but the edge is small — likely fragile OOS."
 						: "=> No usable relationship: target exposure does not predict the next up-close (odds ~ base rate at every level).");
-			Console.WriteLine("NOTE: in-sample, full window, no costs. Up-close is a coarse proxy for tradable edge (ignores magnitude).");
+
+			// ---- DE-RISKING vs TIMING: is the drawdown reduction real, or just holding less? ----
+			if (study.Timing.Count > 0)
+			{
+				Console.WriteLine("\n-- DRAWDOWN: TIMING vs plain DE-RISKING --");
+				Console.WriteLine("Strategy DD vs a CONSTANT position at the strategy's own average exposure, and vs B&H.");
+				Console.WriteLine("If StratDD < ConstDD the exposure TIMING genuinely cuts risk; if ~equal it's just lower avg size.");
+				Console.WriteLine();
+				Console.WriteLine(
+					$"  {"Symbol",-8} {"HV%",6} {"AvgExp",7} {"StratDD",8} {"ConstDD",8} {"B&H DD",8} " +
+					$"{"DD saved",9} {"StratShp",8} {"ConstShp",8}");
+				foreach (var t in study.Timing)
+					Console.WriteLine(
+						$"  {t.Symbol,-8} {t.Hv,6:0.0} {t.AvgExposurePct,6:0.0}% " +
+						$"-{t.StratDd,6:0.0}% -{t.ConstDd,6:0.0}% -{t.BhDd,6:0.0}% " +
+						$"{t.DdSaved,7:+0.0;-0.0}pp {t.StratSharpe,8:0.00} {t.ConstSharpe,8:0.00}");
+
+				double mAvg   = study.Timing.Average(t => t.AvgExposurePct);
+				double mStrat = study.Timing.Average(t => t.StratDd);
+				double mConst = study.Timing.Average(t => t.ConstDd);
+				double mBh    = study.Timing.Average(t => t.BhDd);
+				double mSaved = study.Timing.Average(t => t.DdSaved);
+				double mSs    = study.Timing.Average(t => t.StratSharpe);
+				double mCs    = study.Timing.Average(t => t.ConstSharpe);
+				int savedWins = study.Timing.Count(t => t.DdSaved > 0.5);
+				int n = study.Timing.Count;
+				Console.WriteLine();
+				Console.WriteLine($"Mean AvgExp {mAvg:0.0}%  |  MaxDD: strat -{mStrat:0.0}%  const -{mConst:0.0}%  B&H -{mBh:0.0}%  " +
+				                  $"(timing saves {mSaved:+0.0;-0.0}pp vs matched constant, wins {savedWins}/{n})");
+				Console.WriteLine($"Mean Sharpe: strat {mSs:0.00}  vs matched constant {mCs:0.00} ({mSs - mCs:+0.00;-0.00})");
+				Console.WriteLine(
+					mSaved > 1.0 && savedWins > n / 2
+						? "=> The drawdown reduction is partly genuine TIMING: exposure is lower specifically when risk is higher (validate OOS)."
+						: mSaved < 0.5
+							? "=> The drawdown reduction is essentially just DE-RISKING: at matched average exposure a CONSTANT position drops as much (or less). No risk-timing skill in the DD."
+							: "=> Mixed: a small part of the drawdown reduction is timing, most is just holding less on average.");
+			}
+
+			Console.WriteLine("\nNOTE: in-sample, full window, no costs. Up-close is a coarse proxy for tradable edge (ignores magnitude).");
 		}
 
 		// 95% normal-approx CI half-width (in pp) for a percentage p over n samples.

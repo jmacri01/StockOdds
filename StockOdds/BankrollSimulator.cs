@@ -74,6 +74,12 @@ namespace StockOdds
 		// buy & hold, over the same span, for reference
 		public double BuyHoldMaxDrawdownPct { get; set; }
 		public double BuyHoldSharpeRatio { get; set; }
+
+		// Per-bar series, only populated when BankrollSimulator.RecordBars is on. Used by the
+		// risk-timing study to compare the strategy's drawdown against a constant position at
+		// the same AVERAGE exposure (does exposure TIMING beat plain de-risking?).
+		public List<double> BarPositions = new();   // applied signed exposure each bar
+		public List<double> BarBhReturns = new();   // raw buy&hold return each bar (prev->cur)
 	}
 
 	public static class BankrollSimulator
@@ -168,6 +174,10 @@ namespace StockOdds
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
+
+		// When on, Run records the per-bar applied position + buy&hold return on the result
+		// (BarPositions / BarBhReturns). Off by default so the grid search stays lean.
+		public static bool RecordBars = false;
 
 		// Map a running annualized-vol reading (%) to a dynamic long bias. Monotone
 		// decreasing: -> VolBiasCeil as vol -> 0, 0 at VolBiasPivot, negative above it.
@@ -388,6 +398,12 @@ namespace StockOdds
 
 				stratReturns.Add(tradeReturn);
 				bhReturns.Add(r);
+
+				if (RecordBars)
+				{
+					result.BarPositions.Add(position);
+					result.BarBhReturns.Add(r);
+				}
 
 				bankroll *= (1.0 + tradeReturn);
 
