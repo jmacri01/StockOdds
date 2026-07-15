@@ -1007,6 +1007,126 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// EXPOSURE -> RETURN CURVE.
+		// Map the continuous exposure signal (the EMA-of-target, in [-1,1], look-ahead-free)
+		// into fixed 0.1-wide buckets and measure the AVERAGE forward return in each — no
+		// position sizing, just the raw shape. Answers: is mean return flat across exposure
+		// (no info), linearly rising (predictive & sizeable), or curved? Reports the per-bucket
+		// means plus a linear and quadratic fit over the raw observations.
+		// ============================================================================
+		public static List<ExpCurveResult> ExposureReturnCurve(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			const double W = 0.1;                 // bucket width
+			int nBins = (int)Math.Round(2.0 / W); // 20 buckets over [-1, 1]
+			double alpha = 2.0 / (BankrollSimulator.ExposureEmaPeriod + 1);
+
+			var results = new List<ExpCurveResult>();
+
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				if (bars.Count < 3) continue;
+				var ltE = new LongTermStateEngine();
+				var stE = new CandleStateEngine();
+				double ema = double.NaN;
+
+				var cnt = new int[nBins];
+				var sumFull = new double[nBins];
+				var sumOn = new double[nBins];
+				var up = new int[nBins];
+				var xs = new List<double>();   // exposure
+				var ys = new List<double>();   // full-day fwd return %
+
+				for (int i = 2; i < bars.Count; i++)
+				{
+					var lt = ltE.Update(bars[i - 2], bars[i - 1]);
+					var st = stE.Update(bars[i - 2], bars[i - 1]);
+					if (st == null) continue;
+					double target = BankrollSimulator.TargetExposure(lt, st.Value);
+					ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
+
+					double pc = bars[i - 1].Close, cl = bars[i].Close, op = bars[i].Open;
+					if (pc <= 0 || cl <= 0) continue;
+					double full = (cl / pc - 1.0) * 100.0;
+					double on = op > 0 ? (op / pc - 1.0) * 100.0 : 0.0;
+
+					double e = Math.Max(-1.0, Math.Min(1.0, ema));
+					int bin = (int)Math.Floor((e + 1.0) / W);
+					if (bin < 0) bin = 0; if (bin >= nBins) bin = nBins - 1;
+
+					cnt[bin]++; sumFull[bin] += full; sumOn[bin] += on; if (full > 0) up[bin]++;
+					xs.Add(e); ys.Add(full);
+				}
+
+				var res = new ExpCurveResult { Scope = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), N = xs.Count };
+				if (xs.Count > 0) res.MeanExp = xs.Average();
+				for (int b = 0; b < nBins; b++)
+				{
+					double lo = -1.0 + b * W;
+					res.Bins.Add(new ExpCurveBin
+					{
+						Lo = lo, Hi = lo + W, Center = lo + W / 2.0, N = cnt[b],
+						MeanFullPct = cnt[b] > 0 ? sumFull[b] / cnt[b] : double.NaN,
+						MeanOnPct   = cnt[b] > 0 ? sumOn[b] / cnt[b] : double.NaN,
+						UpPct       = cnt[b] > 0 ? (double)up[b] / cnt[b] * 100.0 : double.NaN,
+					});
+				}
+
+				// linear fit y = a + b*x  and quadratic y = a2 + b2*x + c2*x^2 over raw pairs
+				res.Corr = ProbCorr(xs, ys);
+				var (a, b1) = LinFit2(xs, ys);
+				res.Intercept = a; res.Slope = b1; res.R2 = res.Corr * res.Corr;
+				var (qa, qb, qc) = PolyFit2(xs, ys);
+				res.QuadA = qa; res.QuadB = qb; res.QuadC = qc;
+
+				// R^2 of the quadratic fit (how much of the return variance the curve explains)
+				double my = ys.Count > 0 ? ys.Average() : 0.0, ssTot = 0, ssRes = 0;
+				for (int k = 0; k < ys.Count; k++)
+				{
+					double pred = qa + qb * xs[k] + qc * xs[k] * xs[k];
+					ssRes += (ys[k] - pred) * (ys[k] - pred);
+					ssTot += (ys[k] - my) * (ys[k] - my);
+				}
+				res.QuadR2 = ssTot > 0 ? 1.0 - ssRes / ssTot : 0.0;
+
+				results.Add(res);
+			}
+
+			return results;
+		}
+
+		// OLS line y = a + b*x.
+		private static (double a, double b) LinFit2(List<double> xs, List<double> ys)
+		{
+			int n = xs.Count; if (n < 2) return (0, 0);
+			double mx = xs.Average(), my = ys.Average(), sxy = 0, sxx = 0;
+			for (int i = 0; i < n; i++) { double dx = xs[i] - mx; sxy += dx * (ys[i] - my); sxx += dx * dx; }
+			double b = sxx > 0 ? sxy / sxx : 0.0;
+			return (my - b * mx, b);
+		}
+
+		// Least-squares quadratic y = a + b*x + c*x^2 (3x3 normal equations, Cramer's rule).
+		private static (double a, double b, double c) PolyFit2(List<double> xs, List<double> ys)
+		{
+			int n = xs.Count; if (n < 3) return (0, 0, 0);
+			double S0 = n, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
+			for (int i = 0; i < n; i++)
+			{
+				double x = xs[i], y = ys[i], x2 = x * x;
+				S1 += x; S2 += x2; S3 += x2 * x; S4 += x2 * x2;
+				T0 += y; T1 += x * y; T2 += x2 * y;
+			}
+			double Det(double a, double b, double c, double d, double e, double f, double g, double h, double i)
+				=> a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+			double D = Det(S0, S1, S2, S1, S2, S3, S2, S3, S4);
+			if (Math.Abs(D) < 1e-12) return (0, 0, 0);
+			double a0 = Det(T0, S1, S2, T1, S2, S3, T2, S3, S4) / D;
+			double b0 = Det(S0, T0, S2, S1, T1, S3, S2, T2, S4) / D;
+			double c0 = Det(S0, S1, T0, S1, S2, T1, S2, S3, T2) / D;
+			return (a0, b0, c0);
+		}
+
+		// ============================================================================
 		// EXPOSURE vs OVERNIGHT GAP.
 		// The full-day close (close_i vs close_{i-1}) is a coin flip vs exposure, but the
 		// OVERNIGHT gap (open_i vs close_{i-1}) carries real drift. So: does the exposure
@@ -2076,6 +2196,28 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One fixed-width exposure bucket with its average forward return.
+	public class ExpCurveBin
+	{
+		public double Lo, Hi, Center;
+		public int    N;
+		public double MeanFullPct;   // avg full-day forward return in the bucket
+		public double MeanOnPct;     // avg overnight return
+		public double UpPct;
+	}
+
+	// Exposure->return curve for one symbol, with linear + quadratic fits.
+	public class ExpCurveResult
+	{
+		public string Scope = "";
+		public double Hv;
+		public int    N;
+		public double MeanExp;
+		public double Corr, Slope, Intercept, R2;   // linear: return% ~ a + slope*exposure
+		public double QuadA, QuadB, QuadC, QuadR2;  // quadratic: a + b*x + c*x^2 (c = curvature)
+		public List<ExpCurveBin> Bins = new();
 	}
 
 	// One exposure level: up-rate and mean return for overnight / full-day / intraday.

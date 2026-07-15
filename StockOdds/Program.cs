@@ -58,9 +58,11 @@ class Program
 	//                     forward edge, each with an OOS long/flat-vs-B&H check. For a single name.
 	//   ExposureGap    -> does target exposure predict the OVERNIGHT gap (open > prev close),
 	//                     where real drift lives, vs the full-day close (coin flip) and intraday?
+	//   ExpCurve       -> map the CONTINUOUS exposure (EMA of target) into 0.1-wide buckets and
+	//                     plot avg forward return per bucket: flat / linear / curved? (no sizing)
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, BasketMean }
-	static GridMode GRID_MODE = GridMode.ExposureGap;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, ExpCurve, BasketMean }
+	static GridMode GRID_MODE = GridMode.ExpCurve;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -202,7 +204,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap or GridMode.ExpCurve)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -300,6 +302,10 @@ class Program
 				case GridMode.ExposureGap:
 					var eg = GridSearch.ExposureGap(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintExposureGap(eg);
+					break;
+				case GridMode.ExpCurve:
+					var ec = GridSearch.ExposureReturnCurve(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintExpCurve(ec);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

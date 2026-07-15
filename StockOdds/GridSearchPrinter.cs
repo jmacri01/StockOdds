@@ -656,6 +656,66 @@ namespace StockOdds
 			return true;
 		}
 
+		// Exposure -> average forward return curve, with an ASCII plot of the shape.
+		public static void PrintExpCurve(List<ExpCurveResult> results)
+		{
+			Console.WriteLine("\n===== EXPOSURE -> AVERAGE RETURN CURVE (shape, not sizing) =====");
+			if (results.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("Exposure = smoothed signal (EMA of target), in [-1,1], as of the prior close (look-ahead-free).");
+			Console.WriteLine("Each row = a 0.1-wide bucket; MeanFull = avg NEXT-day return (close/prev-close) of bars in it. No position sizing.");
+
+			foreach (var r in results)
+			{
+				Console.WriteLine($"\n-- {r.Scope} (N={r.N}, meanExp {r.MeanExp:+0.00;-0.00}) --");
+
+				double maxAbs = 0.0;
+				foreach (var b in r.Bins) if (!double.IsNaN(b.MeanFullPct)) maxAbs = Math.Max(maxAbs, Math.Abs(b.MeanFullPct));
+				if (maxAbs <= 0) maxAbs = 1e-9;
+
+				Console.WriteLine($"  {"bucket",-13} {"N",5} {"MeanFull",9} {"MeanON",8} {"Up%",6}   {"− 0 +",0}");
+				foreach (var b in r.Bins)
+				{
+					string label = $"[{b.Lo,4:+0.0;-0.0},{b.Hi,4:+0.0;-0.0})";
+					if (b.N == 0)
+					{
+						Console.WriteLine($"  {label,-13} {0,5} {"·",9} {"·",8} {"·",6}   {Bar(0, maxAbs, 18)}");
+						continue;
+					}
+					string flag = b.N < 10 ? "*" : " ";
+					Console.WriteLine(
+						$"  {label,-13} {b.N,5} {Signed(b.MeanFullPct) + "%",9} {Signed(b.MeanOnPct) + "%",8} {b.UpPct,5:0.0}%{flag}  {Bar(b.MeanFullPct, maxAbs, 18)}");
+				}
+
+				Console.WriteLine();
+				Console.WriteLine($"  Linear fit : return% = {r.Intercept:+0.000;-0.000} {(r.Slope >= 0 ? "+" : "-")} {Math.Abs(r.Slope):0.000}·exp   " +
+				                  $"(corr {r.Corr:+0.000;-0.000}, R² {r.R2:0.000}, slope = {r.Slope:+0.000;-0.000}pp per +1.0 exposure)");
+				Console.WriteLine($"  Quadratic  : {r.QuadA:+0.000;-0.000} {(r.QuadB >= 0 ? "+" : "-")} {Math.Abs(r.QuadB):0.000}·exp {(r.QuadC >= 0 ? "+" : "-")} {Math.Abs(r.QuadC):0.000}·exp²   " +
+				                  $"(curvature c = {r.QuadC:+0.000;-0.000}, R² {r.QuadR2:0.000})");
+				// A shape only "counts" if the fit explains a non-trivial share of the return variance.
+				string shape =
+					r.QuadR2 < 0.01 ? "FLAT — mean return is ~independent of exposure (both fits explain <1% of return variance). No usable curve; the ups/downs across buckets are noise (see the tiny-N tail buckets)."
+					: (r.QuadR2 - r.R2 > 0.01 && Math.Abs(r.QuadC) > 0.15) ? "CURVED — the quadratic term adds real explanatory power beyond the line."
+					: r.Slope > 0.05 ? "UPWARD-SLOPING — higher exposure → higher mean return."
+					: r.Slope < -0.05 ? "DOWNWARD-SLOPING — higher exposure → LOWER mean return (mean-reversion tilt)."
+					: "≈FLAT — slope negligible and the fit explains almost no variance.";
+				Console.WriteLine($"  => {shape}");
+			}
+			Console.WriteLine("\n* bucket N<10 (unreliable). NOTE: in-sample, no costs; returns are raw averages, not sized/compounded.");
+		}
+
+		// Centered ASCII bar: '|' axis at the middle, bar grows right for +v, left for −v.
+		private static string Bar(double v, double maxAbs, int w)
+		{
+			int len = maxAbs > 0 ? (int)Math.Round(Math.Abs(v) / maxAbs * w) : 0;
+			if (len > w) len = w;
+			var c = new char[2 * w + 1];
+			for (int k = 0; k < c.Length; k++) c[k] = ' ';
+			c[w] = '|';
+			if (v >= 0) for (int k = 1; k <= len; k++) c[w + k] = '#';
+			else for (int k = 1; k <= len; k++) c[w - k] = '#';
+			return new string(c);
+		}
+
 		// Exposure vs overnight-gap odds (open>prev close), vs full-day and intraday.
 		public static void PrintExposureGap(List<ExposureGapResult> results)
 		{
