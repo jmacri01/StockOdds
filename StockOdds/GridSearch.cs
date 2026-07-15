@@ -1007,6 +1007,98 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// EXPOSURE vs OVERNIGHT GAP.
+		// The full-day close (close_i vs close_{i-1}) is a coin flip vs exposure, but the
+		// OVERNIGHT gap (open_i vs close_{i-1}) carries real drift. So: does the exposure
+		// signal (target exposure as of the prior close — look-ahead-free, tradable MOC→MOO)
+		// predict the overnight gap even though it can't predict the full day? Scores the same
+		// signal against overnight / full-day / intraday outcomes side by side.
+		// ============================================================================
+		public static List<ExposureGapResult> ExposureGap(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var allExp = new List<double>();
+			var onUp = new List<double>(); var fullUp = new List<double>(); var idUp = new List<double>();
+			var onRet = new List<double>(); var fullRet = new List<double>(); var idRet = new List<double>();
+			var perSymbol = new List<ExposureGapResult>();
+
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				if (bars.Count < 3) continue;
+				var ltE = new LongTermStateEngine();
+				var stE = new CandleStateEngine();
+
+				var sExp = new List<double>();
+				var sOnUp = new List<double>(); var sFullUp = new List<double>(); var sIdUp = new List<double>();
+				var sOnRet = new List<double>(); var sFullRet = new List<double>(); var sIdRet = new List<double>();
+
+				for (int i = 2; i < bars.Count; i++)
+				{
+					var lt = ltE.Update(bars[i - 2], bars[i - 1]);
+					var st = stE.Update(bars[i - 2], bars[i - 1]);
+					if (st == null) continue;
+					double pc = bars[i - 1].Close, op = bars[i].Open, cl = bars[i].Close;
+					if (pc <= 0 || op <= 0 || cl <= 0) continue;
+
+					double target = BankrollSimulator.TargetExposure(lt, st.Value);
+					double on = op / pc - 1.0, full = cl / pc - 1.0, id = cl / op - 1.0;
+
+					sExp.Add(target);
+					sOnUp.Add(on > 0 ? 1 : 0); sFullUp.Add(full > 0 ? 1 : 0); sIdUp.Add(id > 0 ? 1 : 0);
+					sOnRet.Add(on * 100); sFullRet.Add(full * 100); sIdRet.Add(id * 100);
+
+					allExp.Add(target);
+					onUp.Add(on > 0 ? 1 : 0); fullUp.Add(full > 0 ? 1 : 0); idUp.Add(id > 0 ? 1 : 0);
+					onRet.Add(on * 100); fullRet.Add(full * 100); idRet.Add(id * 100);
+				}
+
+				if (sExp.Count == 0) continue;
+				perSymbol.Add(BuildExposureGap(sym, Volatility.AnnualizedHistoricalPct(bars),
+					sExp, sOnUp, sFullUp, sIdUp, sOnRet, sFullRet, sIdRet));
+			}
+
+			var results = new List<ExposureGapResult>
+			{
+				BuildExposureGap("BASKET", 0.0, allExp, onUp, fullUp, idUp, onRet, fullRet, idRet)
+			};
+			results.AddRange(perSymbol.OrderBy(r => r.Hv));
+			return results;
+		}
+
+		private static ExposureGapResult BuildExposureGap(
+			string scope, double hv, List<double> exp,
+			List<double> onUp, List<double> fullUp, List<double> idUp,
+			List<double> onRet, List<double> fullRet, List<double> idRet)
+		{
+			int n = exp.Count;
+			var res = new ExposureGapResult
+			{
+				Scope = scope, Hv = hv, N = n,
+				BaseOnUp   = Avg(onUp) * 100,   BaseFullUp = Avg(fullUp) * 100, BaseIdUp = Avg(idUp) * 100,
+				BaseOnRet  = Avg(onRet),        BaseFullRet = Avg(fullRet),     BaseIdRet = Avg(idRet),
+				CorrOnUp   = ProbCorr(exp, onUp),   CorrFullUp = ProbCorr(exp, fullUp), CorrIdUp = ProbCorr(exp, idUp),
+				CorrOnRet  = ProbCorr(exp, onRet),  CorrFullRet = ProbCorr(exp, fullRet),
+			};
+			foreach (var g in Enumerable.Range(0, n).GroupBy(i => Math.Round(exp[i], 4)).OrderBy(g => g.Key))
+			{
+				var idx = g.ToList();
+				res.Levels.Add(new ExposureGapBin
+				{
+					Exposure = g.Key, N = idx.Count,
+					OnUpPct   = idx.Average(i => onUp[i]) * 100,
+					FullUpPct = idx.Average(i => fullUp[i]) * 100,
+					IdUpPct   = idx.Average(i => idUp[i]) * 100,
+					OnRetPct   = idx.Average(i => onRet[i]),
+					FullRetPct = idx.Average(i => fullRet[i]),
+					IdRetPct   = idx.Average(i => idRet[i]),
+				});
+			}
+			return res;
+		}
+
+		private static double Avg(List<double> xs) => xs.Count > 0 ? xs.Average() : 0.0;
+
+		// ============================================================================
 		// SIGNAL SCREEN (single-name, e.g. ^GSPC).
 		// Accept that the (LT,ST) state machine has no directional edge and screen fresh,
 		// look-ahead-free features for ANY forward predictability: momentum, short-term
@@ -1984,6 +2076,28 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One exposure level: up-rate and mean return for overnight / full-day / intraday.
+	public class ExposureGapBin
+	{
+		public double Exposure;
+		public int    N;
+		public double OnUpPct, FullUpPct, IdUpPct;
+		public double OnRetPct, FullRetPct, IdRetPct;
+	}
+
+	// Exposure-vs-gap calibration for one scope (basket or symbol).
+	public class ExposureGapResult
+	{
+		public string Scope = "";
+		public double Hv;
+		public int    N;
+		public double BaseOnUp, BaseFullUp, BaseIdUp;
+		public double BaseOnRet, BaseFullRet, BaseIdRet;
+		public double CorrOnUp, CorrFullUp, CorrIdUp;     // corr(exposure, up-indicator)
+		public double CorrOnRet, CorrFullRet;             // corr(exposure, return)
+		public List<ExposureGapBin> Levels = new();
 	}
 
 	// One scalar feature screened against the next-bar return: in-sample association +

@@ -656,6 +656,36 @@ namespace StockOdds
 			return true;
 		}
 
+		// Exposure vs overnight-gap odds (open>prev close), vs full-day and intraday.
+		public static void PrintExposureGap(List<ExposureGapResult> results)
+		{
+			Console.WriteLine("\n===== EXPOSURE vs OVERNIGHT GAP: does exposure predict open > prev close? =====");
+			if (results.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("Signal = target exposure as of the PRIOR close (look-ahead-free; tradable at MOC->MOO).");
+			Console.WriteLine("Outcomes on bar i: Overnight = open_i vs close_{i-1}; Full = close_i vs close_{i-1}; Intraday = close_i vs open_i.");
+
+			foreach (var r in results)
+			{
+				Console.WriteLine($"\n-- {r.Scope} (N={r.N}) --  base up-rate: ON {r.BaseOnUp:0.0}%  Full {r.BaseFullUp:0.0}%  ID {r.BaseIdUp:0.0}%" +
+				                  $"   base ret: ON {Signed(r.BaseOnRet)}%  Full {Signed(r.BaseFullRet)}%");
+				Console.WriteLine($"   corr(exp, ON-up) {r.CorrOnUp:+0.000;-0.000}   corr(exp, Full-up) {r.CorrFullUp:+0.000;-0.000}   corr(exp, ID-up) {r.CorrIdUp:+0.000;-0.000}");
+				Console.WriteLine($"   corr(exp, ON-ret){r.CorrOnRet:+0.000;-0.000}   corr(exp, Full-ret){r.CorrFullRet:+0.000;-0.000}");
+				Console.WriteLine($"  {"Exposure",8} {"N",6} │ {"ON up%",7} {"Full up%",8} {"ID up%",7} │ {"ON ret",8} {"Full ret",9}");
+				foreach (var b in r.Levels)
+					Console.WriteLine(
+						$"  {b.Exposure,8:+0.00;-0.00} {b.N,6} │ {b.OnUpPct,6:0.0}% {b.FullUpPct,7:0.0}% {b.IdUpPct,6:0.0}% │ " +
+						$"{Signed(b.OnRetPct),7}% {Signed(b.FullRetPct),8}%");
+
+				// verdict per scope
+				double onSpread = r.Levels.Count > 0 ? r.Levels[^1].OnUpPct - r.Levels[0].OnUpPct : 0;
+				Console.WriteLine(
+					Math.Abs(r.CorrOnUp) > 0.03 && Math.Abs(r.CorrOnUp) > Math.Abs(r.CorrFullUp) + 0.02
+						? $"  => exposure predicts the OVERNIGHT gap more than the full day (ON up-spread {Signed(onSpread)}pp top-vs-bottom). Promising — walk-forward it."
+						: "  => exposure does NOT predict the overnight gap either (corr ~0, ~flat across levels); the overnight drift is unconditional.");
+			}
+			Console.WriteLine("\nNOTE: in-sample, no costs. Overnight drift is largely a constant premium — the question is whether exposure MODULATES it.");
+		}
+
 		// Signal screen for a single name: scalar features, overnight/intraday split, seasonality.
 		public static void PrintSignalScreen(List<SignalScreenResult> results)
 		{

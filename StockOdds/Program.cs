@@ -56,9 +56,11 @@ class Program
 	//   SignalScreen   -> screen fresh look-ahead-free features (momentum, reversal, dist-from-MA,
 	//                     vol regime), the overnight/intraday split, and seasonality for ANY
 	//                     forward edge, each with an OOS long/flat-vs-B&H check. For a single name.
+	//   ExposureGap    -> does target exposure predict the OVERNIGHT gap (open > prev close),
+	//                     where real drift lives, vs the full-day close (coin flip) and intraday?
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, BasketMean }
-	static GridMode GRID_MODE = GridMode.SignalScreen;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, BasketMean }
+	static GridMode GRID_MODE = GridMode.ExposureGap;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -200,7 +202,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -294,6 +296,10 @@ class Program
 				case GridMode.SignalScreen:
 					var ss = GridSearch.SignalScreen(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintSignalScreen(ss);
+					break;
+				case GridMode.ExposureGap:
+					var eg = GridSearch.ExposureGap(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintExposureGap(eg);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);
