@@ -44,9 +44,12 @@ class Program
 	//   ProbExposureStudy-> calibrate P(next close > prev close) against the per-candle TARGET
 	//                     exposure; per-level up-rate table + continuous curve + corr. Does the
 	//                     exposure signal carry directional odds we could invert to a map?
+	//   VolTargetWf    -> walk-forward: strategy vs a risk-matched PASSIVE vol-target baseline
+	//                     (exposure = clamp(targetVol/past-vol, 0, 1)), OOS. Does the active
+	//                     timing beat mechanical de-risking on out-of-sample Sharpe?
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.ProbExposureStudy;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, BasketMean }
+	static GridMode GRID_MODE = GridMode.VolTargetWf;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -186,7 +189,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -264,6 +267,10 @@ class Program
 				case GridMode.ProbExposureStudy:
 					var pe = GridSearch.ProbExposure(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintProbExposure(pe);
+					break;
+				case GridMode.VolTargetWf:
+					var vtwf = GridSearch.VolTargetWalkForward(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintVolTargetWf(vtwf);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

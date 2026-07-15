@@ -1047,6 +1047,152 @@ namespace StockOdds
 			return denom > 0 ? sxy / denom : 0.0;
 		}
 
+		// ============================================================================
+		// VOL-TARGET BASELINE, WALK-FORWARD.
+		// The decisive test: does the strategy's ACTIVE exposure timing beat a PASSIVE,
+		// risk-matched volatility-target baseline out-of-sample? The baseline is long-only
+		// and has NO directional view — it just sizes exposure inversely to past realized
+		// vol: position = clamp(targetVol / realizedVol, 0, 1). Its single knob (targetVol)
+		// is calibrated on each fold's TRAIN slice to MATCH the strategy's average exposure
+		// there (same risk budget), then scored on the next out-of-sample block. Expanding-
+		// window walk-forward; OOS blocks are pooled per symbol. Sharpe is the decider
+		// (scale-invariant, so the exposure-level match doesn't bias it). If the strategy
+		// doesn't beat this baseline OOS, its machinery isn't buying risk-adjusted edge over
+		// mechanical de-risking. Look-ahead-free: vol uses only past returns, same EWMA (and
+		// same bar-skip) as the simulator, so vols[k] aligns 1:1 with the recorded strategy
+		// bars.
+		// ============================================================================
+		public static double VolTargetWfTrainFraction = 0.50;   // first fold trains on the front half
+		public static int    VolTargetWfFolds         = 5;      // OOS test blocks over the back half
+
+		public static List<VolTargetWfRow> VolTargetWalkForward(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var rows = new List<VolTargetWfRow>();
+
+			bool savedRec = BankrollSimulator.RecordBars;
+			try
+			{
+				BankrollSimulator.RecordBars = true;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var sim = BankrollSimulator.Run(bars, initialBankroll);
+					var stratPos = sim.BarPositions;
+					var bhRet    = sim.BarBhReturns;
+					if (stratPos.Count == 0) continue;
+
+					// realized-vol series aligned 1:1 with the recorded strategy bars
+					var vols = BuildAlignedVolSeries(bars);
+					if (vols.Count != stratPos.Count) continue;   // alignment safety
+
+					int nRec  = stratPos.Count;
+					int start = (int)(nRec * VolTargetWfTrainFraction);
+					int folds = VolTargetWfFolds;
+					int blockLen = folds > 0 ? (nRec - start) / folds : 0;
+					if (start < 20 || blockLen < 10) continue;
+
+					var sR = new List<double>(); var vR = new List<double>(); var bR = new List<double>();
+					var sExp = new List<double>(); var vExp = new List<double>();
+					var tvs = new List<double>();
+					int usedFolds = 0;
+
+					for (int f = 0; f < folds; f++)
+					{
+						int trainEnd = start + f * blockLen;
+						int testEnd  = (f == folds - 1) ? nRec : trainEnd + blockLen;
+						if (testEnd <= trainEnd) break;
+
+						// calibrate targetVol on [0, trainEnd) to match the strategy's avg exposure there
+						double stratAvgExpTrain = 0.0;
+						for (int k = 0; k < trainEnd; k++) stratAvgExpTrain += stratPos[k];
+						stratAvgExpTrain /= trainEnd;
+						double tv = CalibrateTargetVol(vols, trainEnd, stratAvgExpTrain);
+						tvs.Add(tv);
+						usedFolds++;
+
+						for (int k = trainEnd; k < testEnd; k++)
+						{
+							double vtPos = Math.Min(1.0, tv / vols[k]);
+							sR.Add(stratPos[k] * bhRet[k]);
+							vR.Add(vtPos * bhRet[k]);
+							bR.Add(bhRet[k]);
+							sExp.Add(stratPos[k]);
+							vExp.Add(vtPos);
+						}
+					}
+
+					if (sR.Count == 0) continue;
+
+					rows.Add(new VolTargetWfRow
+					{
+						Symbol        = sym,
+						Hv            = Volatility.AnnualizedHistoricalPct(bars),
+						Folds         = usedFolds,
+						OosBars       = sR.Count,
+						TargetVolMean = tvs.Count > 0 ? tvs.Average() : 0.0,
+						StratSharpe = SharpeOfReturns(sR), StratDd = MaxDdOf(sR), StratRet = TotalRet(sR), StratAvgExp = sExp.Average() * 100.0,
+						VtSharpe    = SharpeOfReturns(vR), VtDd    = MaxDdOf(vR), VtRet    = TotalRet(vR), VtAvgExp    = vExp.Average() * 100.0,
+						BhSharpe    = SharpeOfReturns(bR), BhDd    = MaxDdOf(bR), BhRet    = TotalRet(bR),
+					});
+				}
+			}
+			finally { BankrollSimulator.RecordBars = savedRec; }
+
+			return rows.OrderBy(r => r.Hv).ToList();
+		}
+
+		// Realized-vol EWMA series that matches the simulator EXACTLY: same VolEmaPeriod, same
+		// annualization, and the same bar-skip (only bars where the short-term state is defined
+		// are emitted, and the EWMA only advances on those bars) — so vols[k] is the vol
+		// as-of-prev for the k-th recorded strategy bar.
+		private static List<double> BuildAlignedVolSeries(List<OhlcBar> bars)
+		{
+			var vols = new List<double>();
+			var stE = new CandleStateEngine();
+			double volAlpha = 2.0 / (BankrollSimulator.VolEmaPeriod + 1);
+			double varEwma = double.NaN;
+			for (int i = 2; i < bars.Count; i++)
+			{
+				var st = stE.Update(bars[i - 2], bars[i - 1]);
+				if (st == null) continue;
+				double lr = bars[i - 2].Close > 0 ? Math.Log(bars[i - 1].Close / bars[i - 2].Close) : 0.0;
+				double r2 = lr * lr;
+				varEwma = double.IsNaN(varEwma) ? r2 : volAlpha * r2 + (1.0 - volAlpha) * varEwma;
+				double volPct = Math.Sqrt(varEwma) * Math.Sqrt(BankrollSimulator.PeriodsPerYear) * 100.0;
+				vols.Add(Math.Max(volPct, 1e-6));
+			}
+			return vols;
+		}
+
+		// Find target vol tv so the long-only vol-target's average exposure over the first
+		// `count` records — mean_k min(1, tv/vol_k) — equals targetAvgExp. Monotonic in tv → bisect.
+		private static double CalibrateTargetVol(List<double> vols, int count, double targetAvgExp)
+		{
+			if (targetAvgExp <= 0.0) return 0.0;
+			double hi = 0.0;
+			for (int k = 0; k < count; k++) if (vols[k] > hi) hi = vols[k];
+			if (targetAvgExp >= 1.0 || hi <= 0.0) return hi;   // tv = max(vol) => everything clamps to 1
+			double lo = 0.0;
+			for (int iter = 0; iter < 60; iter++)
+			{
+				double mid = 0.5 * (lo + hi);
+				double avg = 0.0;
+				for (int k = 0; k < count; k++) avg += Math.Min(1.0, mid / vols[k]);
+				avg /= count;
+				if (avg < targetAvgExp) lo = mid; else hi = mid;
+			}
+			return 0.5 * (lo + hi);
+		}
+
+		// Compounded total return (%) of a per-bar return series.
+		private static double TotalRet(List<double> rets)
+		{
+			double eq = 1.0;
+			foreach (var r in rets) eq *= 1.0 + r;
+			return (eq - 1.0) * 100.0;
+		}
+
 		// Strategy vs buy & hold over each symbol's full window, using the parameters exactly
 		// as currently configured on BankrollSimulator (no tuning). Sorted by volatility.
 		public static List<FullWindowRow> FullWindowCompare(
@@ -1518,6 +1664,24 @@ namespace StockOdds
 	{
 		public List<ProbExposureResult> Calibration = new();   // [0] = basket, then per symbol
 		public List<RiskTimingRow>      Timing      = new();   // per symbol, sorted by HV
+	}
+
+	// One symbol's out-of-sample walk-forward: the strategy vs a risk-matched passive
+	// vol-target vs buy&hold, on pooled OOS blocks. Edge > 0 means the active timing beats
+	// the vol-target on OOS Sharpe (the scale-invariant, risk-adjusted-return decider).
+	public class VolTargetWfRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public int    Folds;
+		public int    OosBars;
+		public double TargetVolMean;   // mean calibrated targetVol across folds (diagnostic)
+
+		public double StratSharpe, StratDd, StratRet, StratAvgExp;
+		public double VtSharpe,    VtDd,    VtRet,    VtAvgExp;
+		public double BhSharpe,    BhDd,    BhRet;
+
+		public double Edge => StratSharpe - VtSharpe;   // + => active timing beats vol-target OOS
 	}
 
 	// One symbol: static-LongBias baseline vs dynamic (vol-driven) long bias at one scale.

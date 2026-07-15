@@ -656,6 +656,47 @@ namespace StockOdds
 			return true;
 		}
 
+		// Walk-forward comparison of the strategy against a risk-matched passive vol-target.
+		public static void PrintVolTargetWf(List<VolTargetWfRow> rows)
+		{
+			Console.WriteLine("\n===== VOL-TARGET BASELINE, WALK-FORWARD (does active timing beat a passive vol-target OOS?) =====");
+			if (rows.Count == 0) { Console.WriteLine("No data (need enough bars per symbol for train+OOS folds)."); return; }
+			Console.WriteLine("Baseline = long-only vol-target: exposure = clamp(targetVol / past-realized-vol, 0, 1), NO directional view.");
+			Console.WriteLine("targetVol calibrated on each fold's TRAIN slice to match the strategy's avg exposure; scored on the next OOS block.");
+			Console.WriteLine("Sharpe is the decider (scale-invariant). Edge = StratSharpe − VtSharpe (+ => active timing wins OOS).");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"  {"Symbol",-8} {"HV%",6} {"OOS",5} │ {"S.Shp",6} {"V.Shp",6} {"B.Shp",6} {"Edge",6} │ " +
+				$"{"S.DD",6} {"V.DD",6} │ {"S.Ret",8} {"V.Ret",8} │ {"S.Exp",5} {"V.Exp",5}");
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"  {r.Symbol,-8} {r.Hv,6:0.0} {r.OosBars,5} │ " +
+					$"{r.StratSharpe,6:0.00} {r.VtSharpe,6:0.00} {r.BhSharpe,6:0.00} {r.Edge,6:+0.00;-0.00} │ " +
+					$"-{r.StratDd,4:0.0}% -{r.VtDd,4:0.0}% │ {Signed(r.StratRet),8} {Signed(r.VtRet),8} │ " +
+					$"{r.StratAvgExp,4:0}% {r.VtAvgExp,4:0}%");
+			}
+
+			int n = rows.Count;
+			double mS = rows.Average(r => r.StratSharpe), mV = rows.Average(r => r.VtSharpe), mB = rows.Average(r => r.BhSharpe);
+			double mE = rows.Average(r => r.Edge);
+			var edges = rows.Select(r => r.Edge).OrderBy(x => x).ToList();
+			double medE = edges.Count % 2 == 1 ? edges[edges.Count / 2] : 0.5 * (edges[edges.Count / 2 - 1] + edges[edges.Count / 2]);
+			int wins = rows.Count(r => r.Edge > 0);
+			double mSdd = rows.Average(r => r.StratDd), mVdd = rows.Average(r => r.VtDd);
+			Console.WriteLine();
+			Console.WriteLine($"Mean OOS Sharpe — strategy {mS:0.00}  vs vol-target {mV:0.00}  vs B&H {mB:0.00}   " +
+			                  $"(edge {mE:+0.00;-0.00}, median {medE:+0.00;-0.00}, strat wins {wins}/{n})");
+			Console.WriteLine($"Mean OOS MaxDD  — strategy -{mSdd:0.0}%  vs vol-target -{mVdd:0.0}%");
+			Console.WriteLine(
+				mE > 0.05 && wins > n * 0.6
+					? "=> The active timing BEATS a risk-matched vol-target out-of-sample. The machinery earns its keep (relative to passive de-risking)."
+					: mE < -0.05 || wins < n * 0.4
+						? "=> A passive vol-target BEATS or ties the strategy OOS. The active machinery does NOT earn its keep — the value is de-risking, achievable mechanically."
+						: "=> Strategy ~ties a passive vol-target OOS. The active timing adds no reliable risk-adjusted edge over mechanical de-risking.");
+			Console.WriteLine("NOTE: expanding-window walk-forward, pooled OOS blocks, no costs. Vol-target uses only past vol (no look-ahead).");
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.
