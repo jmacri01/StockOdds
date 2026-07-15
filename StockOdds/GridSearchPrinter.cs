@@ -656,6 +656,66 @@ namespace StockOdds
 			return true;
 		}
 
+		// Signal screen for a single name: scalar features, overnight/intraday split, seasonality.
+		public static void PrintSignalScreen(List<SignalScreenResult> results)
+		{
+			Console.WriteLine("\n===== SIGNAL SCREEN: does ANYTHING predict the next bar OOS? =====");
+			if (results.Count == 0) { Console.WriteLine("No data (need >= 260 bars)."); return; }
+
+			foreach (var res in results)
+			{
+				Console.WriteLine($"\n################  {res.Symbol}  ({res.Bars} bars)  ################");
+
+				// -- scalar features --
+				Console.WriteLine("\n-- Scalar features vs NEXT-bar return --  (feature known at close of bar t, predicts r[t+1])");
+				Console.WriteLine("corr = in-sample; Q5−Q1 = top-vs-bottom-quintile spread; OOS = long/flat rule (dir from 60% train) on 40% test.");
+				Console.WriteLine($"  {"Feature",-11} {"N",6} {"corr",7} {"Q5−Q1 ret",10} {"Q5−Q1 up",9} │ {"ruleShp",8} {"bhShp",7} {"edge",7} {"%long",6}");
+				foreach (var f in res.Features)
+					Console.WriteLine(
+						$"  {f.Name,-11} {f.N,6} {f.Corr,7:+0.000;-0.000} {Signed(f.QSpreadRet) + "pp",10} " +
+						$"{Signed(f.QSpreadUp) + "pp",9} │ {f.OosRuleSharpe,8:0.00} {f.OosBhSharpe,7:0.00} {f.OosEdge,7:+0.00;-0.00} {f.PctLong,5:0}%");
+
+				// -- overnight vs intraday --
+				Console.WriteLine("\n-- Overnight (open/prev-close) vs Intraday (close/open) vs Full --  where does the return/Sharpe live?");
+				Console.WriteLine($"  {"Segment",-11} {"annMean",9} {"annVol",8} {"Sharpe",7} {"cumRet",10}");
+				foreach (var s in res.Segments)
+					Console.WriteLine($"  {s.Name,-11} {Signed(s.AnnMeanPct) + "%",9} {s.AnnVolPct,6:0.0}% {s.Sharpe,7:0.00} {Signed(s.CumRetPct) + "%",10}");
+
+				// -- seasonality --
+				Console.WriteLine("\n-- Seasonality (mean return realized on the bar) --");
+				string dh = "  Weekday : "; foreach (var d in res.Dow) dh += $"{d.Name} {Signed(d.MeanRetPct)}%  ";
+				Console.WriteLine(dh);
+				if (res.Tom != null && res.Rest != null)
+					Console.WriteLine($"  Turn-of-month: {res.Tom.Name} {Signed(res.Tom.MeanRetPct)}% (n={res.Tom.N})  vs  {res.Rest.Name} {Signed(res.Rest.MeanRetPct)}% (n={res.Rest.N})");
+
+				// -- verdict --
+				int nFeat = res.Features.Count;
+				var best = res.Features.OrderByDescending(f => f.OosEdge).FirstOrDefault();
+				var onSeg = res.Segments.FirstOrDefault(s => s.Name == "Overnight");
+				var inSeg = res.Segments.FirstOrDefault(s => s.Name == "Intraday");
+				var fullSeg = res.Segments.FirstOrDefault(s => s.Name == "Full (B&H)");
+				Console.WriteLine();
+				// a scalar feature only counts if its OOS edge clears the multiple-testing bar
+				bool featEdge = best != null && best.OosEdge > 0.25;
+				if (best != null)
+					Console.WriteLine($"Best OOS scalar feature: {best.Name} (edge {best.OosEdge:+0.00;-0.00} Sharpe) — " +
+					                  $"{(featEdge ? "clears the bar" : $"NOT convincing (1 of {nFeat} tested; within multiple-testing noise)")}.");
+				// overnight counts if it earns a >= full-day Sharpe at clearly lower vol
+				bool onEdge = onSeg != null && fullSeg != null && onSeg.Sharpe >= fullSeg.Sharpe && onSeg.AnnVolPct < 0.8 * fullSeg.AnnVolPct;
+				if (onSeg != null && inSeg != null && fullSeg != null)
+					Console.WriteLine($"Overnight Sharpe {onSeg.Sharpe:0.00} @ {onSeg.AnnVolPct:0.0}% vol  vs  intraday {inSeg.Sharpe:0.00} @ {inSeg.AnnVolPct:0.0}%  vs  full {fullSeg.Sharpe:0.00} @ {fullSeg.AnnVolPct:0.0}%.");
+				Console.WriteLine(
+					featEdge
+						? "=> A scalar feature times the tape OOS — worth a deeper, cost-aware walk-forward."
+						: onEdge
+							? "=> No scalar/seasonal edge, BUT the risk-adjusted return is earned OVERNIGHT (same/better Sharpe at ~half the\n" +
+							  "   vol of full-day; intraday is mostly noise). This is the documented overnight anomaly — the one real lead.\n" +
+							  "   Next: walk-forward a long-overnight/flat-intraday rule NET OF COSTS (daily round-trips are cost-sensitive)."
+							: "=> Nothing beats coin-flip OOS: no scalar feature and no session/seasonal split shows a durable edge.");
+			}
+			Console.WriteLine("\nNOTE: in-sample corr can be spurious; the OOS rule vs B&H is the honest column. No costs. Single name = noisy.");
+		}
+
 		// Triple-barrier (bracket) study: LT-Bull entries vs random entries.
 		public static void PrintBarrier(List<BracketResult> rows)
 		{

@@ -1007,6 +1007,164 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// SIGNAL SCREEN (single-name, e.g. ^GSPC).
+		// Accept that the (LT,ST) state machine has no directional edge and screen fresh,
+		// look-ahead-free features for ANY forward predictability: momentum, short-term
+		// reversal, distance-from-MA, vol regime; the overnight/intraday return split; and
+		// weekday / turn-of-month seasonality. Each scalar feature gets an in-sample corr +
+		// quintile spread AND an out-of-sample check: pick the sign on a 60% train slice, trade
+		// long/flat on the 40% test slice, and compare the rule's Sharpe to buy&hold. Positive
+		// OOS edge = the feature times the tape better than always-in.
+		// ============================================================================
+		public static double SignalScreenTrainFraction = 0.60;
+
+		public static List<SignalScreenResult> SignalScreen(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var results = new List<SignalScreenResult>();
+
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				int n = bars.Count;
+				if (n < 260) continue;
+				var res = new SignalScreenResult { Symbol = sym, Bars = n };
+
+				// close-to-close return r[t] (t>=1)
+				var r = new double[n];
+				for (int t = 1; t < n; t++) r[t] = bars[t - 1].Close > 0 ? bars[t].Close / bars[t - 1].Close - 1 : 0.0;
+
+				double SMA(int t, int w)
+				{
+					if (t + 1 < w) return double.NaN;
+					double s = 0; for (int k = t - w + 1; k <= t; k++) s += bars[k].Close; return s / w;
+				}
+				double Vol(int t, int w)
+				{
+					if (t < w) return double.NaN;
+					double m = 0; for (int k = t - w + 1; k <= t; k++) m += r[k]; m /= w;
+					double v = 0; for (int k = t - w + 1; k <= t; k++) { double d = r[k] - m; v += d * d; }
+					return Math.Sqrt(v / (w - 1));
+				}
+
+				void Add(string name, Func<int, double> f)
+				{
+					var feat = new double[n];
+					for (int t = 0; t < n; t++) feat[t] = f(t);
+					res.Features.Add(ScreenFeature(name, feat, r, n));
+				}
+				Add("mom20",      t => t >= 20 && bars[t - 20].Close > 0 ? bars[t].Close / bars[t - 20].Close - 1 : double.NaN);
+				Add("mom50",      t => t >= 50 && bars[t - 50].Close > 0 ? bars[t].Close / bars[t - 50].Close - 1 : double.NaN);
+				Add("ret1",       t => t >= 1 ? r[t] : double.NaN);
+				Add("ret5",       t => t >= 5 && bars[t - 5].Close > 0 ? bars[t].Close / bars[t - 5].Close - 1 : double.NaN);
+				Add("distSMA50",  t => { double s = SMA(t, 50);  return double.IsNaN(s) || s <= 0 ? double.NaN : bars[t].Close / s - 1; });
+				Add("distSMA200", t => { double s = SMA(t, 200); return double.IsNaN(s) || s <= 0 ? double.NaN : bars[t].Close / s - 1; });
+				Add("vol20",      t => Vol(t, 20));
+
+				// overnight (open/prev-close) vs intraday (close/open) decomposition
+				var overnight = new List<double>(); var intraday = new List<double>(); var full = new List<double>();
+				for (int t = 1; t < n; t++)
+					if (bars[t - 1].Close > 0 && bars[t].Open > 0)
+					{
+						overnight.Add(bars[t].Open / bars[t - 1].Close - 1);
+						intraday.Add(bars[t].Close / bars[t].Open - 1);
+						full.Add(r[t]);
+					}
+				res.Segments.Add(MakeSegment("Overnight",  overnight));
+				res.Segments.Add(MakeSegment("Intraday",   intraday));
+				res.Segments.Add(MakeSegment("Full (B&H)", full));
+
+				// day-of-week (return realized on each weekday)
+				var byDow = new Dictionary<DayOfWeek, (double sum, int n, int up)>();
+				for (int t = 1; t < n; t++)
+				{
+					var d = bars[t].Date.DayOfWeek;
+					if (!byDow.TryGetValue(d, out var e)) e = (0, 0, 0);
+					e.sum += r[t]; e.n++; if (r[t] > 0) e.up++; byDow[d] = e;
+				}
+				foreach (var d in new[] { DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday })
+					if (byDow.TryGetValue(d, out var e) && e.n > 0)
+						res.Dow.Add(new DowRow { Name = d.ToString().Substring(0, 3), N = e.n, MeanRetPct = e.sum / e.n * 100.0, UpPct = (double)e.up / e.n * 100.0 });
+
+				// turn-of-month (calendar-day approx: day <= 3 or >= 26)
+				double tomSum = 0, restSum = 0; int tomN = 0, restN = 0;
+				for (int t = 1; t < n; t++)
+				{
+					int dd = bars[t].Date.Day;
+					if (dd <= 3 || dd >= 26) { tomSum += r[t]; tomN++; } else { restSum += r[t]; restN++; }
+				}
+				res.Tom  = new DowRow { Name = "ToM(<=3,>=26)", N = tomN,  MeanRetPct = tomN  > 0 ? tomSum  / tomN  * 100.0 : 0.0 };
+				res.Rest = new DowRow { Name = "Rest",          N = restN, MeanRetPct = restN > 0 ? restSum / restN * 100.0 : 0.0 };
+
+				results.Add(res);
+			}
+
+			return results;
+		}
+
+		// Screen one scalar feature: in-sample corr + quintile spread, and an OOS long/flat
+		// rule (direction chosen on the 60% train slice) scored against buy&hold on the test.
+		private static FeatureScreenRow ScreenFeature(string name, double[] feat, double[] r, int n)
+		{
+			var fs = new List<double>(); var ys = new List<double>();
+			for (int t = 0; t < n - 1; t++) { if (double.IsNaN(feat[t])) continue; fs.Add(feat[t]); ys.Add(r[t + 1] * 100.0); }
+			int m = fs.Count;
+			var row = new FeatureScreenRow { Name = name, N = m };
+			if (m < 50) return row;
+
+			row.Corr = ProbCorr(fs, ys);
+
+			var order = Enumerable.Range(0, m).OrderBy(i => fs[i]).ToList();
+			double QMean(int q) { int lo = (int)((long)q * m / 5), hi = (int)((long)(q + 1) * m / 5); double s = 0; int c = 0; for (int i = lo; i < hi; i++) { s += ys[order[i]]; c++; } return c > 0 ? s / c : 0.0; }
+			double QUp(int q)   { int lo = (int)((long)q * m / 5), hi = (int)((long)(q + 1) * m / 5); int u = 0, c = 0; for (int i = lo; i < hi; i++) { if (ys[order[i]] > 0) u++; c++; } return c > 0 ? (double)u / c * 100.0 : 0.0; }
+			row.QSpreadRet = QMean(4) - QMean(0);
+			row.QSpreadUp  = QUp(4) - QUp(0);
+
+			int split = (int)(m * SignalScreenTrainFraction);
+			if (split >= 10 && m - split >= 10)
+			{
+				double tc = ProbCorr(fs.Take(split).ToList(), ys.Take(split).ToList());
+				double dir = tc >= 0 ? 1.0 : -1.0;
+				double tmean = fs.Take(split).Average();
+				var ruleR = new List<double>(); var bhR = new List<double>(); int longN = 0;
+				for (int i = split; i < m; i++)
+				{
+					bool lng = dir * (fs[i] - tmean) > 0;
+					ruleR.Add(lng ? ys[i] / 100.0 : 0.0);
+					bhR.Add(ys[i] / 100.0);
+					if (lng) longN++;
+				}
+				row.OosRuleSharpe = SharpeOfReturns(ruleR);
+				row.OosBhSharpe   = SharpeOfReturns(bhR);
+				row.PctLong       = (m - split) > 0 ? (double)longN / (m - split) * 100.0 : 0.0;
+			}
+			return row;
+		}
+
+		private static SegmentRow MakeSegment(string name, List<double> rets)
+		{
+			double mean = rets.Count > 0 ? rets.Average() : 0.0;
+			double sd = SegStd(rets);
+			double cum = 1.0; foreach (var x in rets) cum *= 1.0 + x;
+			double py = BankrollSimulator.PeriodsPerYear;
+			return new SegmentRow
+			{
+				Name = name,
+				AnnMeanPct = mean * py * 100.0,
+				AnnVolPct  = sd * Math.Sqrt(py) * 100.0,
+				Sharpe     = sd > 0 ? mean / sd * Math.Sqrt(py) : 0.0,
+				CumRetPct  = (cum - 1.0) * 100.0,
+			};
+		}
+
+		private static double SegStd(List<double> xs)
+		{
+			if (xs.Count < 2) return 0.0;
+			double m = xs.Average();
+			double v = xs.Sum(x => (x - m) * (x - m)) / (xs.Count - 1);
+			return Math.Sqrt(v);
+		}
+
+		// ============================================================================
 		// PROBABILITY <-> EXPOSURE calibration.
 		// Does the per-candle TARGET exposure (the (LT,ST) map value, known as of `prev`)
 		// predict the odds that the NEXT candle closes ABOVE the previous close?
@@ -1826,6 +1984,48 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One scalar feature screened against the next-bar return: in-sample association +
+	// an out-of-sample long/flat rule vs buy&hold.
+	public class FeatureScreenRow
+	{
+		public string Name = "";
+		public int    N;
+		public double Corr;            // corr(feature, next-bar return)
+		public double QSpreadRet;      // top-quintile minus bottom-quintile mean fwd return (pp)
+		public double QSpreadUp;       // top-minus-bottom up-rate (pp)
+		public double OosRuleSharpe;   // long/flat rule (dir from train) on the test slice
+		public double OosBhSharpe;     // buy&hold on the same test slice
+		public double PctLong;         // % of test bars the rule was long
+		public double OosEdge => OosRuleSharpe - OosBhSharpe;   // + => feature times the tape OOS
+	}
+
+	// One return segment (overnight / intraday / full) with annualized stats.
+	public class SegmentRow
+	{
+		public string Name = "";
+		public double AnnMeanPct, AnnVolPct, Sharpe, CumRetPct;
+	}
+
+	// One seasonality bucket (weekday, or turn-of-month vs rest).
+	public class DowRow
+	{
+		public string Name = "";
+		public int    N;
+		public double MeanRetPct, UpPct;
+	}
+
+	// Full signal-screen output for one symbol.
+	public class SignalScreenResult
+	{
+		public string Symbol = "";
+		public int    Bars;
+		public List<FeatureScreenRow> Features = new();
+		public List<SegmentRow>       Segments = new();   // overnight, intraday, full
+		public List<DowRow>           Dow      = new();
+		public DowRow? Tom;
+		public DowRow? Rest;
 	}
 
 	// One (Y-up, Z-down) bracket: outcome odds for LT-Bull entries vs random entries.
