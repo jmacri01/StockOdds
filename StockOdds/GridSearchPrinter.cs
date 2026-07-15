@@ -656,6 +656,46 @@ namespace StockOdds
 			return true;
 		}
 
+		// Real-engine A/B: current exposure engine vs the tent-mapped engine.
+		public static void PrintEngineTent(EngineTentResult res)
+		{
+			Console.WriteLine("\n===== REAL ENGINE: current exposure map vs TENT (adjEma 0.5 -> 100%, extremes -> ~25%) =====");
+			if (res.Rows.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("Full BankrollSimulator pipeline (EMA -> bias -> deadband -> clamp -> bankroll). Baseline = adjEma used directly.");
+			Console.WriteLine("Tent (headline) = 0.5 e0.25: position 100% at adjEma 0.5, ~25% at 0 and 1, ->0 beyond. Δ = tent − baseline.");
+			Console.WriteLine();
+			Console.WriteLine($"  {"Symbol",-8} {"HV%",6}   {"Base Shp",8} {"Tent",6} {"Δ",6} │ {"BaseDD",7} {"TentDD",7} {"Δpp",6} │ {"BaseRet",9} {"TentRet",9} {"B&H Shp",7}");
+			foreach (var r in res.Rows)
+				Console.WriteLine(
+					$"  {r.Symbol,-8} {r.Hv,6:0.0}   {r.BaseSharpe,8:0.00} {r.TentSharpe,6:0.00} {r.DShp,6:+0.00;-0.00} │ " +
+					$"-{r.BaseDd,5:0.0}% -{r.TentDd,5:0.0}% {r.DDd,6:+0.0;-0.0} │ {Signed(r.BaseRet),9} {Signed(r.TentRet),9} {r.BhSharpe,7:0.00}");
+
+			int n = res.Rows.Count;
+			double mBase = res.Rows.Average(r => r.BaseSharpe), mTent = res.Rows.Average(r => r.TentSharpe), mBh = res.Rows.Average(r => r.BhSharpe);
+			double mBaseDd = res.Rows.Average(r => r.BaseDd), mTentDd = res.Rows.Average(r => r.TentDd);
+			int shpW = res.Rows.Count(r => r.TentSharpe > r.BaseSharpe), ddW = res.Rows.Count(r => r.TentDd < r.BaseDd);
+			Console.WriteLine();
+			Console.WriteLine($"Mean Sharpe: baseline {mBase:0.000} -> tent {mTent:0.000} ({mTent - mBase:+0.000;-0.000}; tent higher {shpW}/{n})   B&H {mBh:0.000}");
+			Console.WriteLine($"Mean MaxDD : baseline -{mBaseDd:0.0}% -> tent -{mTentDd:0.0}% ({mBaseDd - mTentDd:+0.0;-0.0}pp; tent shallower {ddW}/{n})");
+
+			if (res.Sweep.Count > 0)
+			{
+				Console.WriteLine("\n  Edge sweep (basket mean, real engine):");
+				Console.WriteLine($"  {"config",-18} {"meanShp",8} {"meanDD",7} {"meanRet",10}");
+				foreach (var s in res.Sweep)
+					Console.WriteLine($"  {s.label,-18} {s.shp,8:0.000} -{s.dd,5:0.0}% {Signed(s.ret),10}");
+			}
+
+			Console.WriteLine();
+			Console.WriteLine(
+				mTent > mBase + 0.03
+					? "=> Inside the real engine, the tent BEATS the current map on mean Sharpe. Worth a walk-forward + cost test."
+					: mTent < mBase - 0.03
+						? "=> The tent makes the real engine WORSE on Sharpe than the current direct map."
+						: "=> Inside the real engine the tent is ~a wash on Sharpe vs the current map (any change is de-risking, not edge).");
+			Console.WriteLine("NOTE: full window, no costs. Uses the configured knobs (EMA/bias/drift/clamp) exactly as in Program.cs.");
+		}
+
 		// Exposure-shape sweep: tent ("converge on 0.5") vs monotonic vs buy&hold.
 		public static void PrintExposureShape(List<ShapeRow> rows)
 		{

@@ -1085,6 +1085,72 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// REAL-ENGINE TENT A/B.
+		// Runs the ACTUAL BankrollSimulator (full EMA -> bias -> deadband -> clamp -> bankroll
+		// pipeline, real Sharpe/DD/ledger) with the tent exposure-response ON vs OFF. Baseline
+		// is the current engine (adjEma used directly); tent maps adjEma so 0.5 -> 100% and the
+		// extremes -> ~TentEdge. Per-symbol A/B at the requested (0.5, 0.25) plus a basket-mean
+		// edge sweep. Restores all flags afterward.
+		// ============================================================================
+		public static EngineTentResult ExposureEngineTent(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var result = new EngineTentResult();
+
+			// (label, useTent, peak, edge) — index 0 is the current engine baseline
+			var configs = new (string label, bool use, double peak, double edge)[]
+			{
+				("Baseline(engine)", false, 0.0,  0.0),
+				("Tent 0.5 e0.00",   true,  0.5,  0.00),
+				("Tent 0.5 e0.10",   true,  0.5,  0.10),
+				("Tent 0.5 e0.25",   true,  0.5,  0.25),
+			};
+			int C = configs.Length;
+			var sumShp = new double[C]; var sumDd = new double[C]; var sumRet = new double[C]; int nSym = 0;
+
+			bool sU = BankrollSimulator.UseTentMap; double sP = BankrollSimulator.TentPeak, sE = BankrollSimulator.TentEdge;
+			try
+			{
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var shp = new double[C]; var dd = new double[C]; var ret = new double[C];
+					double bhShp = 0, bhDd = 0, bhRet = 0;
+
+					for (int c = 0; c < C; c++)
+					{
+						BankrollSimulator.UseTentMap = configs[c].use;
+						BankrollSimulator.TentPeak   = configs[c].peak;
+						BankrollSimulator.TentEdge   = configs[c].edge;
+						var r = BankrollSimulator.Run(bars, initialBankroll);
+						shp[c] = SharpeOf(r); dd[c] = r.MaxDrawdownPct; ret[c] = r.TotalReturnPct;
+						sumShp[c] += shp[c]; sumDd[c] += dd[c]; sumRet[c] += ret[c];
+						if (c == 0) { bhShp = double.IsNaN(r.BuyHoldSharpeRatio) ? 0 : r.BuyHoldSharpeRatio; bhDd = r.BuyHoldMaxDrawdownPct; bhRet = r.BuyHoldReturnPct; }
+					}
+					nSym++;
+
+					result.Rows.Add(new EngineTentRow
+					{
+						Symbol = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), Bars = bars.Count,
+						BaseSharpe = shp[0], BaseDd = dd[0], BaseRet = ret[0],
+						TentSharpe = shp[3], TentDd = dd[3], TentRet = ret[3],   // headline = Tent 0.5 e0.25
+						BhSharpe = bhShp, BhDd = bhDd, BhRet = bhRet,
+					});
+				}
+			}
+			finally
+			{
+				BankrollSimulator.UseTentMap = sU; BankrollSimulator.TentPeak = sP; BankrollSimulator.TentEdge = sE;
+			}
+
+			int n = Math.Max(1, nSym);
+			for (int c = 0; c < C; c++)
+				result.Sweep.Add((configs[c].label, sumShp[c] / n, sumDd[c] / n, sumRet[c] / n));
+			result.Rows = result.Rows.OrderBy(r => r.Hv).ToList();
+			return result;
+		}
+
+		// ============================================================================
 		// EXPOSURE-SHAPE SWEEP (tent / "converge on 0.5").
 		// Reshape the bias-adjusted exposure into the actual position via a TENT centered at
 		// `peak`: position = 1.0 at adjEma=peak, tapering linearly to `edge` (0 or 0.25) at
@@ -2419,6 +2485,25 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// Real-engine A/B: current exposure engine vs the tent-mapped engine, per symbol.
+	public class EngineTentRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public int    Bars;
+		public double BaseSharpe, BaseDd, BaseRet;
+		public double TentSharpe, TentDd, TentRet;
+		public double BhSharpe,   BhDd,   BhRet;
+		public double DShp => TentSharpe - BaseSharpe;   // + => tent engine better
+		public double DDd  => TentDd - BaseDd;           // - => tent engine shallower drawdown
+	}
+
+	public class EngineTentResult
+	{
+		public List<EngineTentRow> Rows = new();                                  // per symbol: baseline vs tent(0.5,0.25)
+		public List<(string label, double shp, double dd, double ret)> Sweep = new();  // basket means across edge variants
 	}
 
 	// One exposure-shape policy scored across the basket (full window).

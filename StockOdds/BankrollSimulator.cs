@@ -172,6 +172,16 @@ namespace StockOdds
 		public static bool   UseVolExposureScale = false;
 		public static double VolScalePivot       = 100.0;
 
+		// ============ Tent exposure response ("converge on peak") ============
+		// When on, the bias-adjusted exposure (adjEma) is mapped to the target position by a
+		// TENT before the deadband/clamp, instead of used directly: position = 1.0 at
+		// adjEma = TentPeak, tapering linearly to TentEdge at TentPeak±0.5 (so 0.5 -> 100%,
+		// 0 and 1 -> ~25% with the defaults), then clamped to [Min,Max]ExposurePercent. Idea:
+		// overweight moderate signals, fade the extremes. Replaces the identity map only.
+		public static bool   UseTentMap = false;
+		public static double TentPeak   = 0.5;
+		public static double TentEdge   = 0.25;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -353,8 +363,15 @@ namespace StockOdds
 				}
 
 				lastAdjEma = adjEma;
-				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
-					held = adjEma;
+
+				// tent response: map adjEma -> target position (100% at TentPeak, TentEdge at
+				// TentPeak±0.5), else use adjEma directly. Deadband + clamp act on the result.
+				double mapped = UseTentMap
+					? 1.0 - (1.0 - TentEdge) * (Math.Abs(adjEma - TentPeak) / 0.5)
+					: adjEma;
+
+				if (double.IsNaN(held) || Math.Abs(held - mapped) > driftBand)
+					held = mapped;
 				return Clamp(held, minExp, maxExp);
 			}
 
