@@ -41,9 +41,12 @@ class Program
 	//   DynMapSearch   -> grid-search the vol->LongBias mapping (pivot/scale/floor/ceil) vs
 	//                     buy&hold and fixed LongBias; does the winner even use volatility?
 	//   NormStaticStudy-> fixed LongBias A/B: plain dynBias vs normalized (bounded to [-1,1]).
+	//   ProbExposureStudy-> calibrate P(next close > prev close) against the per-candle TARGET
+	//                     exposure; per-level up-rate table + continuous curve + corr. Does the
+	//                     exposure signal carry directional odds we could invert to a map?
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.NormStaticStudy;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, BasketMean }
+	static GridMode GRID_MODE = GridMode.ProbExposureStudy;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -183,7 +186,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -257,6 +260,10 @@ class Program
 				case GridMode.NormStaticStudy:
 					var nsRows = GridSearch.NormStaticCompare(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintNormStatic(nsRows, BankrollSimulator.LongBias);
+					break;
+				case GridMode.ProbExposureStudy:
+					var pe = GridSearch.ProbExposure(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintProbExposure(pe);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);

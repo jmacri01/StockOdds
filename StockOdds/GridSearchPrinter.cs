@@ -502,6 +502,110 @@ namespace StockOdds
 			Console.WriteLine("NOTE: in-sample, full window. For a CONSTANT LongBias, normalization is just a uniform rescale of the bias skew.");
 		}
 
+		// Probability<->exposure calibration: is the per-candle TARGET exposure predictive of
+		// an up-close on the next bar? Prints the pooled calibration table + continuous curve,
+		// then a per-symbol breakdown, then a verdict.
+		public static void PrintProbExposure(List<ProbExposureResult> results)
+		{
+			Console.WriteLine("\n===== PROBABILITY <-> EXPOSURE: does target exposure predict an up-close? =====");
+			if (results.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("Outcome = next candle closes ABOVE the previous close (the move the sim trades).");
+			Console.WriteLine("Signal  = per-candle TARGET exposure = the (LT,ST) map value, known one bar early.");
+
+			var basket = results[0];
+			var levels = basket.Levels.Select(l => l.Exposure).OrderBy(x => x).ToList();
+
+			// ---- BASKET: pooled calibration ----
+			Console.WriteLine($"\n-- BASKET (pooled, N={basket.N}) --");
+			Console.WriteLine($"Base up-rate: {basket.BaseUpRatePct:0.0}%   Mean fwd ret: {Signed(basket.MeanRetPct)}%");
+			Console.WriteLine($"corr(exposure, up-close): {basket.CorrExpUp:+0.000;-0.000}      " +
+			                  $"corr(exposure, fwd return): {basket.CorrExpRet:+0.000;-0.000}");
+			Console.WriteLine();
+			Console.WriteLine($"  {"Exposure",8} {"N",7} {"Up%",7} {"±95pp",6} {"Lift",8} {"MeanRet",9}");
+			foreach (var b in basket.Levels)
+			{
+				double ci   = Ci95(b.UpRatePct, b.N);
+				double lift = b.UpRatePct - basket.BaseUpRatePct;
+				string liftStr = ((lift >= 0 ? "+" : "-") + Math.Abs(lift).ToString("0.0") + "pp");
+				Console.WriteLine(
+					$"  {b.Exposure,8:+0.00;-0.00} {b.N,7} {b.UpRatePct,6:0.0}% " +
+					$"{ci,6:0.0} {liftStr,7} {Signed(b.MeanFwdRetPct),8}%");
+			}
+
+			if (basket.Deciles.Count > 0)
+			{
+				Console.WriteLine("\n  Continuous signal (EMA-of-target, equal-count deciles):");
+				Console.WriteLine($"  {"Decile",6} {"Exp~mean",9} {"N",7} {"Up%",7} {"MeanRet",9}");
+				for (int i = 0; i < basket.Deciles.Count; i++)
+				{
+					var b = basket.Deciles[i];
+					Console.WriteLine(
+						$"  {i + 1,6} {b.Exposure,9:+0.00;-0.00} {b.N,7} {b.UpRatePct,6:0.0}% {Signed(b.MeanFwdRetPct),8}%");
+				}
+			}
+
+			// ---- PER SYMBOL ----
+			Console.WriteLine("\n-- PER SYMBOL (sorted by HV) --");
+			string hdr = $"  {"Symbol",-8} {"HV%",6} {"N",6} {"Base%",6} {"corrEU",7} ";
+			foreach (var lv in levels) hdr += $"{("U@" + lv.ToString("+0.0;-0.0")),7} ";
+			hdr += $"{"Mono?",5}";
+			Console.WriteLine(hdr);
+
+			int monoSyms = 0, totSyms = 0;
+			foreach (var r in results.Skip(1))
+			{
+				totSyms++;
+				var byLevel = r.Levels.ToDictionary(l => l.Exposure, l => l);
+				string line = $"  {r.Scope,-8} {r.Hv,6:0.0} {r.N,6} {r.BaseUpRatePct,5:0.0} {r.CorrExpUp,7:+0.00;-0.00} ";
+				var upSeq = new List<double>();
+				foreach (var lv in levels)
+				{
+					if (byLevel.TryGetValue(lv, out var b) && b.N > 0)
+					{
+						line += $"{b.UpRatePct,6:0.0} ";
+						upSeq.Add(b.UpRatePct);
+					}
+					else line += $"{"·",6} ";
+				}
+				bool mono = IsNondecreasing(upSeq, 1.0);
+				if (mono) monoSyms++;
+				line += $"{(mono ? "yes" : "no"),5}";
+				Console.WriteLine(line);
+			}
+
+			// ---- verdict ----
+			double top = basket.Levels.Count > 0 ? basket.Levels[^1].UpRatePct : 0;
+			double bot = basket.Levels.Count > 0 ? basket.Levels[0].UpRatePct : 0;
+			double spread = top - bot;
+			Console.WriteLine();
+			Console.WriteLine(
+				$"Effect size: Up% at highest exposure ({basket.Levels[^1].Exposure:+0.00;-0.00}) minus lowest " +
+				$"({basket.Levels[0].Exposure:+0.00;-0.00}) = {spread:+0.0;-0.0}pp.  Monotone in {monoSyms}/{totSyms} symbols.");
+			Console.WriteLine(
+				basket.CorrExpUp > 0.03 && spread > 2.0
+					? "=> Target exposure IS predictive: higher exposure => higher odds of an up-close. The exposure<->probability map is (weakly) invertible — validate OOS before trusting."
+					: basket.CorrExpUp > 0.01
+						? "=> Weak/marginal relationship: exposure nudges the odds but the edge is small — likely fragile OOS."
+						: "=> No usable relationship: target exposure does not predict the next up-close (odds ~ base rate at every level).");
+			Console.WriteLine("NOTE: in-sample, full window, no costs. Up-close is a coarse proxy for tradable edge (ignores magnitude).");
+		}
+
+		// 95% normal-approx CI half-width (in pp) for a percentage p over n samples.
+		private static double Ci95(double pct, int n)
+		{
+			if (n <= 0) return 0.0;
+			double p = pct / 100.0;
+			return 1.96 * Math.Sqrt(p * (1 - p) / n) * 100.0;
+		}
+
+		// Is the series nondecreasing, allowing each step to dip by up to tolPp?
+		private static bool IsNondecreasing(List<double> xs, double tolPp)
+		{
+			for (int i = 1; i < xs.Count; i++)
+				if (xs[i] < xs[i - 1] - tolPp) return false;
+			return true;
+		}
+
 		// Walk-forward: per-symbol tuned-on-train vs. one global default, both scored on the
 		// held-out test slice. The decisive question is whether TunedTest beats DefaultTest
 		// out-of-sample (TuningEdge > 0) or whether the in-sample edge was just overfitting.

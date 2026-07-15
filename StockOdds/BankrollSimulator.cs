@@ -179,7 +179,7 @@ namespace StockOdds
 		}
 
 		// target exposure for a bucket (the eight-value map above)
-		private static double TargetExposure(LongTermState lt, ShortTermState st) =>
+		public static double TargetExposure(LongTermState lt, ShortTermState st) =>
 			lt == LongTermState.Bull
 				? st switch
 				{

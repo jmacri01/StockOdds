@@ -837,6 +837,149 @@ namespace StockOdds
 		private static double SharpeOf(BankrollResult r) =>
 			double.IsNaN(r.SharpeRatio) ? 0.0 : r.SharpeRatio;
 
+		// ============================================================================
+		// PROBABILITY <-> EXPOSURE calibration.
+		// Does the per-candle TARGET exposure (the (LT,ST) map value, known as of `prev`)
+		// predict the odds that the NEXT candle closes ABOVE the previous close?
+		// For every bar we record (target exposure, forward return, up/down), bin by
+		// exposure level, and measure the empirical P(up-close). If P(up) rises
+		// monotonically with exposure, the signal is a genuine probability and the map is
+		// invertible (probability -> exposure). Look-ahead-free: states use
+		// bars[i-2],bars[i-1]; the outcome is the move into bars[i] — exactly the return the
+		// simulator trades on. LongBias/EMA smoothing don't touch the raw target, so the
+		// discrete table is independent of them; only the configured (LT,ST) bucket map sets
+		// the exposure levels. The continuous curve uses an EMA-of-target at the currently
+		// configured ExposureEmaPeriod.
+		// ============================================================================
+		public static List<ProbExposureResult> ProbExposure(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			// pooled (whole-basket) observations for the headline calibration
+			var allExp = new List<double>();
+			var allEma = new List<double>();
+			var allUp  = new List<double>();   // 1.0 = up-close, 0.0 otherwise
+			var allRet = new List<double>();   // forward return, %
+			var perSymbol = new List<ProbExposureResult>();
+
+			double alpha = 2.0 / (BankrollSimulator.ExposureEmaPeriod + 1);
+
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				if (bars.Count < 3) continue;
+
+				var ltEngine = new LongTermStateEngine();
+				var stEngine = new CandleStateEngine();
+				double ema = double.NaN;
+
+				var symExp = new List<double>();
+				var symUp  = new List<double>();
+				var symRet = new List<double>();
+
+				for (int i = 2; i < bars.Count; i++)
+				{
+					var lt = ltEngine.Update(bars[i - 2], bars[i - 1]);
+					var st = stEngine.Update(bars[i - 2], bars[i - 1]);
+					if (st == null) continue;
+
+					double target = BankrollSimulator.TargetExposure(lt, st.Value);
+					ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
+
+					double r = bars[i - 1].Close > 0
+						? (bars[i].Close - bars[i - 1].Close) / bars[i - 1].Close : 0.0;
+					double up = r > 0 ? 1.0 : 0.0;
+
+					symExp.Add(target); symUp.Add(up); symRet.Add(r * 100.0);
+					allExp.Add(target); allEma.Add(ema); allUp.Add(up); allRet.Add(r * 100.0);
+				}
+
+				if (symExp.Count == 0) continue;
+				perSymbol.Add(BuildProbResult(sym, Volatility.AnnualizedHistoricalPct(bars),
+					symExp, symUp, symRet, null));
+			}
+
+			// basket (pooled) result first, with the continuous EMA-of-target decile curve
+			var results = new List<ProbExposureResult>
+			{
+				BuildProbResult("BASKET", 0.0, allExp, allUp, allRet, allEma)
+			};
+			results.AddRange(perSymbol.OrderBy(r => r.Hv));
+			return results;
+		}
+
+		// Assemble one calibration result: base rate, exposure<->up / exposure<->return
+		// correlations, the discrete per-exposure-level table, and (basket only) the
+		// continuous EMA-of-target decile curve.
+		private static ProbExposureResult BuildProbResult(
+			string scope, double hv,
+			List<double> exp, List<double> up, List<double> ret, List<double>? ema)
+		{
+			int n = exp.Count;
+			var res = new ProbExposureResult
+			{
+				Scope         = scope,
+				Hv            = hv,
+				N             = n,
+				BaseUpRatePct = n > 0 ? up.Average() * 100.0 : 0.0,
+				MeanRetPct    = n > 0 ? ret.Average() : 0.0,
+				CorrExpUp     = ProbCorr(exp, up),
+				CorrExpRet    = ProbCorr(exp, ret),
+			};
+
+			// discrete calibration: group by the distinct target-exposure value
+			foreach (var g in Enumerable.Range(0, n)
+				.GroupBy(i => Math.Round(exp[i], 4))
+				.OrderBy(g => g.Key))
+			{
+				var idx = g.ToList();
+				res.Levels.Add(new ProbExposureBin
+				{
+					Exposure      = g.Key,
+					N             = idx.Count,
+					Ups           = idx.Count(i => up[i] > 0),
+					MeanFwdRetPct = idx.Average(i => ret[i]),
+				});
+			}
+
+			// continuous curve: EMA-of-target sorted into equal-count deciles (basket only)
+			if (ema != null && ema.Count == n && n >= 10)
+			{
+				var order = Enumerable.Range(0, n).OrderBy(i => ema[i]).ToList();
+				const int bins = 10;
+				for (int b = 0; b < bins; b++)
+				{
+					int lo = (int)((long)b * n / bins);
+					int hi = (int)((long)(b + 1) * n / bins);
+					if (hi <= lo) continue;
+					var slice = order.GetRange(lo, hi - lo);
+					res.Deciles.Add(new ProbExposureBin
+					{
+						Exposure      = slice.Average(i => ema[i]),
+						N             = slice.Count,
+						Ups           = slice.Count(i => up[i] > 0),
+						MeanFwdRetPct = slice.Average(i => ret[i]),
+					});
+				}
+			}
+
+			return res;
+		}
+
+		// Pearson correlation; 0 when either series has no variance.
+		private static double ProbCorr(List<double> xs, List<double> ys)
+		{
+			int n = Math.Min(xs.Count, ys.Count);
+			if (n < 2) return 0.0;
+			double mx = xs.Average(), my = ys.Average();
+			double sxy = 0, sxx = 0, syy = 0;
+			for (int i = 0; i < n; i++)
+			{
+				double dx = xs[i] - mx, dy = ys[i] - my;
+				sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
+			}
+			double denom = Math.Sqrt(sxx * syy);
+			return denom > 0 ? sxy / denom : 0.0;
+		}
+
 		// Strategy vs buy & hold over each symbol's full window, using the parameters exactly
 		// as currently configured on BankrollSimulator (no tuning). Sorted by volatility.
 		public static List<FullWindowRow> FullWindowCompare(
@@ -1256,6 +1399,30 @@ namespace StockOdds
 
 		public double RefBias;          // the configured default LongBias
 		public double RefSharpe;        // Sharpe at the swept value closest to RefBias
+	}
+
+	// One exposure level (or decile bin) with the empirical up-close odds measured on it.
+	public class ProbExposureBin
+	{
+		public double Exposure;        // target-exposure value, or mean EMA-exposure of the bin
+		public int    N;
+		public int    Ups;             // # of bars whose next close was above the prior close
+		public double UpRatePct => N > 0 ? (double)Ups / N * 100.0 : 0.0;
+		public double MeanFwdRetPct;
+	}
+
+	// Probability<->exposure calibration for one scope (the whole basket, or one symbol).
+	public class ProbExposureResult
+	{
+		public string Scope = "";
+		public double Hv;
+		public int    N;
+		public double BaseUpRatePct;   // unconditional odds of an up-close
+		public double MeanRetPct;
+		public double CorrExpUp;       // point-biserial corr(target exposure, up-close)
+		public double CorrExpRet;      // corr(target exposure, forward return)
+		public List<ProbExposureBin> Levels  = new();   // discrete target-exposure values
+		public List<ProbExposureBin> Deciles = new();   // continuous EMA-of-target deciles
 	}
 
 	// One symbol: static-LongBias baseline vs dynamic (vol-driven) long bias at one scale.
