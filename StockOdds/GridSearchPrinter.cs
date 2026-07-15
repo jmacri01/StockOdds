@@ -656,6 +656,55 @@ namespace StockOdds
 			return true;
 		}
 
+		// Optimal exposure per band (Kelly) + out-of-sample validation.
+		public static void PrintBandOptimize(BandOptResult res)
+		{
+			Console.WriteLine("\n===== OPTIMAL EXPOSURE PER BAND (Kelly) + OUT-OF-SAMPLE TEST =====");
+			Console.WriteLine("For each bias-adjusted-exposure band, the growth-optimal exposure = half-Kelly clamp(0.5·mean/var).");
+			Console.WriteLine("SuggExp is the exposure to HOLD when the signal is in that band. Bands are the same [-1..+0.9),[+0.9,+inf).");
+
+			// ---- descriptive map ----
+			double maxAbs = 0.0;
+			foreach (var b in res.Map) if (!double.IsNaN(b.SuggestedExp)) maxAbs = Math.Max(maxAbs, Math.Abs(b.SuggestedExp));
+			if (maxAbs <= 0) maxAbs = 1e-9;
+			Console.WriteLine($"\n-- BASKET optimal map (pooled, full window) --");
+			Console.WriteLine($"  {"band",-14} {"N",6} {"mean",8} {"Sharpe",7} {"Kelly",7} {"SuggExp",8}   {"short 0 long",0}");
+			foreach (var b in res.Map)
+			{
+				string label = double.IsPositiveInfinity(b.Hi) ? $"[{b.Lo,4:+0.0;-0.0},  +inf)" : $"[{b.Lo,4:+0.0;-0.0},{b.Hi,4:+0.0;-0.0})";
+				if (b.N == 0) { Console.WriteLine($"  {label,-14} {0,6} {"·",8} {"·",7} {"·",7} {"·",8}   {Bar(0, maxAbs, 12)}"); continue; }
+				string flag = b.N < 20 ? "*" : " ";
+				Console.WriteLine(
+					$"  {label,-14} {b.N,6} {Signed(b.MeanPct) + "%",8} {b.Sharpe,7:+0.00;-0.00} {b.Kelly,7:+0.0;-0.0} {b.SuggestedExp,7:+0.00;-0.00}{flag} {Bar(b.SuggestedExp, maxAbs, 12)}");
+			}
+			Console.WriteLine("  (in-sample optimum — descriptive only; the OOS test below is what matters.)");
+
+			// ---- OOS validation ----
+			if (res.Wf.Count == 0) { Console.WriteLine("\nNo OOS folds (need more bars)."); return; }
+			Console.WriteLine("\n-- OUT-OF-SAMPLE (learn band map on train, apply on next block; expanding folds) --");
+			Console.WriteLine("Opt = band-optimized sizing. Raw = use the signal magnitude as exposure. B&H = always long. Sharpe decides.");
+			Console.WriteLine($"  {"Symbol",-8} {"HV%",6} {"OOS",5} │ {"OptShp",7} {"BhShp",6} {"RawShp",7} {"Edge",6} │ {"OptDD",6} {"BhDD",6} │ {"OptRet",9} {"BhRet",9}");
+			foreach (var w in res.Wf)
+				Console.WriteLine(
+					$"  {w.Symbol,-8} {w.Hv,6:0.0} {w.OosBars,5} │ " +
+					$"{w.OptSharpe,7:+0.00;-0.00} {w.BhSharpe,6:0.00} {w.RawSharpe,7:+0.00;-0.00} {w.Edge,6:+0.00;-0.00} │ " +
+					$"-{w.OptDd,4:0.0}% -{w.BhDd,4:0.0}% │ {Signed(w.OptRet),9} {Signed(w.BhRet),9}");
+
+			int n = res.Wf.Count;
+			double mOpt = res.Wf.Average(w => w.OptSharpe), mBh = res.Wf.Average(w => w.BhSharpe), mRaw = res.Wf.Average(w => w.RawSharpe);
+			double mEdge = res.Wf.Average(w => w.Edge);
+			int wins = res.Wf.Count(w => w.Edge > 0);
+			Console.WriteLine();
+			Console.WriteLine($"Mean OOS Sharpe — band-optimized {mOpt:+0.00;-0.00}  vs  B&H {mBh:0.00}  vs  raw-signal {mRaw:+0.00;-0.00}   " +
+			                  $"(edge {mEdge:+0.00;-0.00}, band-opt beats B&H in {wins}/{n})");
+			Console.WriteLine(
+				mEdge > 0.05 && wins > n * 0.6
+					? "=> The band-optimized exposure map BEATS buy&hold out-of-sample. The optimal-per-band idea holds up — validate with costs next."
+					: "=> The band-optimized map does NOT beat buy&hold OOS. The in-sample 'optimal' exposures were fitting per-band noise — they don't\n" +
+					  "   generalize. (Consistent with the flat per-candle relationship: there's no stable return signal in the bands to optimize against.)");
+			Console.WriteLine("\n* band N<20 (unreliable optimum). NOTE: in-sample map is descriptive; OOS is the honest test. No costs.");
+		}
+
 		// Exposure -> average forward return curve, with an ASCII plot of the shape.
 		public static void PrintExpCurve(List<ExpCurveResult> results)
 		{

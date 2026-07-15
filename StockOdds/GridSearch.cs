@@ -1084,6 +1084,123 @@ namespace StockOdds
 			return results;
 		}
 
+		// ============================================================================
+		// OPTIMAL EXPOSURE PER BAND (Kelly) + out-of-sample validation.
+		// For each bias-adjusted-exposure band, the growth-optimal exposure to hold is the
+		// (half-)Kelly fraction f = mean/variance of the band's per-candle returns. This builds
+		// that band->exposure map descriptively (pooled, full window) AND validates it honestly:
+		// per symbol, expanding-window walk-forward — learn the band map on TRAIN, apply it on
+		// the next OOS block — vs buy&hold and vs using the raw signal magnitude as exposure.
+		// If the learned map doesn't beat buy&hold OOS, the "optimal" bands were fitting noise.
+		// ============================================================================
+		public static double BandKellyScale       = 0.5;    // half-Kelly (robustness)
+		public static double BandExpLo            = -1.0;   // clamp: allow up to fully short
+		public static double BandExpHi            =  2.0;   // clamp: allow up to 2x long
+		public static double BandOptTrainFraction = 0.50;
+		public static int    BandOptFolds         = 5;
+
+		private static double ClampD(double x, double lo, double hi) => Math.Min(Math.Max(x, lo), hi);
+
+		public static BandOptResult BandOptimize(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			int nB = ExpCurveNBins;
+			var result = new BandOptResult();
+
+			// pooled full-window accumulators for the descriptive map
+			var mSum = new double[nB]; var mSq = new double[nB]; var mN = new int[nB];
+			var series = new List<(string sym, double hv, List<double> ex, List<double> r)>();
+
+			bool saved = BankrollSimulator.RecordBars;
+			try
+			{
+				BankrollSimulator.RecordBars = true;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var sim = BankrollSimulator.Run(bars, initialBankroll);
+					var ex = sim.BarAdjEma; var r = sim.BarBhReturns;
+					if (ex.Count == 0) continue;
+					for (int k = 0; k < ex.Count; k++)
+					{
+						int b = ExpBucket(ex[k]);
+						mSum[b] += r[k]; mSq[b] += r[k] * r[k]; mN[b]++;
+					}
+					series.Add((sym, Volatility.AnnualizedHistoricalPct(bars), ex, r));
+				}
+			}
+			finally { BankrollSimulator.RecordBars = saved; }
+
+			// descriptive map: optimal exposure per band (pooled, full window)
+			for (int b = 0; b < nB; b++)
+			{
+				double lo = -1.0 + b * 0.1; bool top = b == nB - 1;
+				int n = mN[b];
+				double mean = n > 0 ? mSum[b] / n : 0.0;
+				double var  = n > 0 ? mSq[b] / n - mean * mean : 0.0;
+				double kelly = var > 1e-12 ? mean / var : 0.0;
+				result.Map.Add(new BandOptRow
+				{
+					Lo = lo, Hi = top ? double.PositiveInfinity : lo + 0.1, N = n,
+					MeanPct = mean * 100.0,
+					Sharpe = var > 0 ? mean / Math.Sqrt(var) * Math.Sqrt(BankrollSimulator.PeriodsPerYear) : 0.0,
+					Kelly = kelly,
+					SuggestedExp = ClampD(BandKellyScale * kelly, BandExpLo, BandExpHi),
+				});
+			}
+
+			// out-of-sample walk-forward per symbol
+			foreach (var (sym, hv, ex, r) in series)
+			{
+				int nRec = ex.Count;
+				int start = (int)(nRec * BandOptTrainFraction);
+				int folds = BandOptFolds;
+				int blockLen = folds > 0 ? (nRec - start) / folds : 0;
+				if (start < 30 || blockLen < 10) continue;
+
+				var optR = new List<double>(); var bhR = new List<double>(); var rawR = new List<double>();
+				for (int f = 0; f < folds; f++)
+				{
+					int trainEnd = start + f * blockLen;
+					int testEnd  = (f == folds - 1) ? nRec : trainEnd + blockLen;
+					if (testEnd <= trainEnd) break;
+
+					var tS = new double[nB]; var tSq = new double[nB]; var tN = new int[nB];
+					for (int k = 0; k < trainEnd; k++)
+					{
+						int b = ExpBucket(ex[k]);
+						tS[b] += r[k]; tSq[b] += r[k] * r[k]; tN[b]++;
+					}
+					var sug = new double[nB];
+					for (int b = 0; b < nB; b++)
+					{
+						double mean = tN[b] > 0 ? tS[b] / tN[b] : 0.0;
+						double var  = tN[b] > 0 ? tSq[b] / tN[b] - mean * mean : 0.0;
+						sug[b] = var > 1e-12 ? ClampD(BandKellyScale * mean / var, BandExpLo, BandExpHi) : 0.0;
+					}
+
+					for (int k = trainEnd; k < testEnd; k++)
+					{
+						int b = ExpBucket(ex[k]);
+						optR.Add(sug[b] * r[k]);
+						bhR.Add(r[k]);
+						rawR.Add(ClampD(ex[k], BandExpLo, BandExpHi) * r[k]);
+					}
+				}
+
+				if (optR.Count == 0) continue;
+				result.Wf.Add(new BandOptWfRow
+				{
+					Symbol = sym, Hv = hv, OosBars = optR.Count,
+					OptSharpe = SharpeOfReturns(optR), OptDd = MaxDdOf(optR), OptRet = TotalRet(optR),
+					BhSharpe  = SharpeOfReturns(bhR),  BhDd  = MaxDdOf(bhR),  BhRet  = TotalRet(bhR),
+					RawSharpe = SharpeOfReturns(rawR), RawDd = MaxDdOf(rawR), RawRet = TotalRet(rawR),
+				});
+			}
+			result.Wf = result.Wf.OrderBy(w => w.Hv).ToList();
+			return result;
+		}
+
 		// Assemble one exposure->return curve. cum[b] = COMPOUNDED return per bucket (per symbol),
 		// or the sum of per-symbol compounded returns for the pooled basket. Fits are on the raw
 		// (exposure, per-candle return) pairs, for reference only.
@@ -2223,6 +2340,35 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One exposure band with its growth-optimal (Kelly) suggested exposure.
+	public class BandOptRow
+	{
+		public double Lo, Hi;
+		public int    N;
+		public double MeanPct;       // mean per-candle return in the band
+		public double Sharpe;        // annualized Sharpe of the band's candles
+		public double Kelly;         // full Kelly fraction = mean/variance (per-bar)
+		public double SuggestedExp;  // clamped half-Kelly = the optimal exposure to hold in this band
+	}
+
+	// One symbol's out-of-sample result: band-optimized sizing vs buy&hold vs raw-signal sizing.
+	public class BandOptWfRow
+	{
+		public string Symbol = "";
+		public double Hv;
+		public int    OosBars;
+		public double OptSharpe, OptDd, OptRet;
+		public double BhSharpe,  BhDd,  BhRet;
+		public double RawSharpe, RawDd, RawRet;
+		public double Edge => OptSharpe - BhSharpe;   // + => learned band map beats buy&hold OOS
+	}
+
+	public class BandOptResult
+	{
+		public List<BandOptRow>   Map = new();   // descriptive pooled optimal map (full window)
+		public List<BandOptWfRow> Wf  = new();   // per-symbol out-of-sample validation
 	}
 
 	// One exposure bucket with the COMPOUNDED return accumulated across its candles.
