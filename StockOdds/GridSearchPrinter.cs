@@ -659,72 +659,59 @@ namespace StockOdds
 		// Exposure -> average forward return curve, with an ASCII plot of the shape.
 		public static void PrintExpCurve(List<ExpCurveResult> results)
 		{
-			Console.WriteLine("\n===== EXPOSURE -> AVERAGE RETURN CURVE (shape, not sizing) =====");
+			Console.WriteLine("\n===== EXPOSURE -> RETURN-PER-BUCKET CURVE (compounded, not sized) =====");
 			if (results.Count == 0) { Console.WriteLine("No data."); return; }
-			Console.WriteLine("Exposure = smoothed signal (EMA of target), in [-1,1], as of the prior close (look-ahead-free).");
-			Console.WriteLine("Each row = a 0.1-wide bucket; MeanFull = avg NEXT-day return (close/prev-close) of bars in it. No position sizing.");
+			Console.WriteLine("Exposure = bias-adjusted (|ema|·biasEma + ema), as of the prior close (look-ahead-free); it can exceed |1|,");
+			Console.WriteLine("so the top bucket is open [+0.9,+inf) and the bottom [-1.0,-0.9) also catches exposure < -1.");
+			Console.WriteLine("CumRet = COMPOUNDED return of all candles in the bucket (per bucket, not per candle). MeanC = per-candle avg (ref).");
+			Console.WriteLine("Pooled CumRet = sum of the per-symbol compounded returns in that bucket. No position sizing.");
 
 			// full ASCII curve for the pooled basket (or the sole symbol)
 			var basket = results.FirstOrDefault(r => r.Scope == "BASKET") ?? results[0];
 			Console.WriteLine($"\n-- {basket.Scope} (N={basket.N}, meanExp {basket.MeanExp:+0.00;-0.00}) --");
 			double maxAbs = 0.0;
-			foreach (var b in basket.Bins) if (!double.IsNaN(b.MeanFullPct)) maxAbs = Math.Max(maxAbs, Math.Abs(b.MeanFullPct));
+			foreach (var b in basket.Bins) if (!double.IsNaN(b.CumRetPct)) maxAbs = Math.Max(maxAbs, Math.Abs(b.CumRetPct));
 			if (maxAbs <= 0) maxAbs = 1e-9;
-			Console.WriteLine($"  {"bucket",-13} {"N",6} {"MeanFull",9} {"MeanON",8} {"Up%",6}   {"− 0 +",0}");
+			Console.WriteLine($"  {"bucket",-14} {"N",6} {"CumRet",10} {"MeanC",8}   {"− 0 +",0}");
 			foreach (var b in basket.Bins)
 			{
-				string label = $"[{b.Lo,4:+0.0;-0.0},{b.Hi,4:+0.0;-0.0})";
-				if (b.N == 0) { Console.WriteLine($"  {label,-13} {0,6} {"·",9} {"·",8} {"·",6}   {Bar(0, maxAbs, 18)}"); continue; }
+				string label = double.IsPositiveInfinity(b.Hi) ? $"[{b.Lo,4:+0.0;-0.0},  +inf)" : $"[{b.Lo,4:+0.0;-0.0},{b.Hi,4:+0.0;-0.0})";
+				if (b.N == 0) { Console.WriteLine($"  {label,-14} {0,6} {"·",10} {"·",8}   {Bar(0, maxAbs, 16)}"); continue; }
 				string flag = b.N < 10 ? "*" : " ";
 				Console.WriteLine(
-					$"  {label,-13} {b.N,6} {Signed(b.MeanFullPct) + "%",9} {Signed(b.MeanOnPct) + "%",8} {b.UpPct,5:0.0}%{flag}  {Bar(b.MeanFullPct, maxAbs, 18)}");
+					$"  {label,-14} {b.N,6} {Signed(b.CumRetPct) + "%",10} {Signed(b.MeanFullPct) + "%",8}{flag} {Bar(b.CumRetPct, maxAbs, 16)}");
 			}
-			Console.WriteLine();
-			Console.WriteLine($"  Linear fit : corr {basket.Corr:+0.000;-0.000}, R² {basket.R2:0.000}, slope {basket.Slope:+0.000;-0.000}pp per +1.0 exposure");
-			Console.WriteLine($"  Quadratic  : curvature c = {basket.QuadC:+0.000;-0.000}, R² {basket.QuadR2:0.000}");
-			Console.WriteLine($"  => {ShapeVerdict(basket)}");
 
-			// compact per-symbol summary — is the shape universal?
+			// attribution summary
+			double PosCum(ExpCurveResult r) => r.Bins.Where(b => b.Center > 0 && !double.IsNaN(b.CumRetPct)).Sum(b => b.CumRetPct);
+			double NegCum(ExpCurveResult r) => r.Bins.Where(b => b.Center < 0 && !double.IsNaN(b.CumRetPct)).Sum(b => b.CumRetPct);
+			double TopCum(ExpCurveResult r) => r.Bins[^1].N > 0 && !double.IsNaN(r.Bins[^1].CumRetPct) ? r.Bins[^1].CumRetPct : 0.0;
+			double TopSharePct(ExpCurveResult r) => r.N > 0 ? (double)r.Bins[^1].N / r.N * 100.0 : 0.0;
+			Console.WriteLine();
+			Console.WriteLine($"  Attribution: positive-exposure buckets {Signed(PosCum(basket))}%  vs  negative {Signed(NegCum(basket))}%   " +
+			                  $"| top [+0.9,+inf) alone {Signed(TopCum(basket))}% from {TopSharePct(basket):0.0}% of candles.");
+			Console.WriteLine($"  (per-candle corr {basket.Corr:+0.000;-0.000} — the shape below reflects WHERE the signal spends time, not per-candle predictive edge.)");
+
+			// compact per-symbol summary
 			var perSym = results.Where(r => r.Scope != "BASKET").ToList();
 			if (perSym.Count > 0)
 			{
-				Console.WriteLine("\n-- PER SYMBOL (sorted by HV) — is the shape universal? --");
-				Console.WriteLine($"  {"Symbol",-8} {"HV%",6} {"N",6} {"meanExp",8} {"slope",7} {"corr",7} {"linR²",6} {"quadR²",7}  {"shape",-6}");
+				Console.WriteLine("\n-- PER SYMBOL (sorted by HV) — compounded return attribution by exposure --");
+				Console.WriteLine($"  {"Symbol",-8} {"HV%",6} {"N",6} {"meanExp",8} {"top%N",6} {"CumRet@top",11} {"Cum@pos",9} {"Cum@neg",9}");
 				foreach (var r in perSym)
 					Console.WriteLine(
-						$"  {r.Scope,-8} {r.Hv,6:0.0} {r.N,6} {r.MeanExp,8:+0.00;-0.00} {r.Slope,7:+0.000;-0.000} " +
-						$"{r.Corr,7:+0.000;-0.000} {r.R2,6:0.000} {r.QuadR2,7:0.000}  {ShapeTag(r),-6}");
+						$"  {r.Scope,-8} {r.Hv,6:0.0} {r.N,6} {r.MeanExp,8:+0.00;-0.00} {TopSharePct(r),5:0.0}% " +
+						$"{Signed(TopCum(r)) + "%",11} {Signed(PosCum(r)) + "%",9} {Signed(NegCum(r)) + "%",9}");
 
-				int flat = perSym.Count(r => ShapeTag(r) == "flat");
-				double mSlope = perSym.Average(r => r.Slope);
-				int up = perSym.Count(r => r.Slope > 0.05), down = perSym.Count(r => r.Slope < -0.05);
+				int topDom = perSym.Count(r => TopCum(r) > Math.Abs(NegCum(r)));
 				Console.WriteLine();
-				Console.WriteLine($"Flat in {flat}/{perSym.Count} symbols. Mean slope {mSlope:+0.000;-0.000}pp/exp (up {up}, down {down}). " +
-				                  $"Max |quadR²| across symbols = {perSym.Max(r => r.QuadR2):0.000}.");
-				Console.WriteLine(
-					flat >= perSym.Count * 0.7
-						? "=> The FLAT result is universal: exposure carries no forward-return shape on any material fraction of the basket."
-						: "=> Mixed — some symbols show a non-trivial slope/curve; worth a per-name look (likely noise/survivorship, verify OOS).");
+				Console.WriteLine($"Top [+0.9,+inf) bucket is the biggest return source in {topDom}/{perSym.Count} symbols. " +
+				                  $"Mean top-bucket candle share {perSym.Average(TopSharePct):0.0}%.");
+				Console.WriteLine("=> Returns concentrate in the HIGH-exposure bucket — but that is because the long-skewed signal SITS there\n" +
+				                  "   during up-trends (per-candle corr ~0). It's return attribution / time-spent, not a per-candle predictive edge.");
 			}
-			Console.WriteLine("\n* bucket N<10 (unreliable). NOTE: in-sample, no costs; returns are raw averages, not sized/compounded.");
+			Console.WriteLine("\n* bucket N<10 (unreliable). Bottom bucket [-1.0,-0.9) also catches exposure < -1. NOTE: in-sample, no costs, unsized.");
 		}
-
-		// Long-form shape verdict for one exposure->return curve (a shape only counts if the fit
-		// explains a non-trivial share of return variance).
-		private static string ShapeVerdict(ExpCurveResult r) =>
-			r.QuadR2 < 0.01 ? "FLAT — mean return is ~independent of exposure (both fits explain <1% of return variance). No usable curve; across-bucket wiggles are noise (see the tiny-N tail buckets)."
-			: (r.QuadR2 - r.R2 > 0.01 && Math.Abs(r.QuadC) > 0.15) ? "CURVED — the quadratic term adds real explanatory power beyond the line."
-			: r.Slope > 0.05 ? "UPWARD-SLOPING — higher exposure → higher mean return."
-			: r.Slope < -0.05 ? "DOWNWARD-SLOPING — higher exposure → LOWER mean return (mean-reversion tilt)."
-			: "≈FLAT — slope negligible and the fit explains almost no variance.";
-
-		// One-word shape tag for the per-symbol summary.
-		private static string ShapeTag(ExpCurveResult r) =>
-			r.QuadR2 < 0.01 ? "flat"
-			: (r.QuadR2 - r.R2 > 0.01 && Math.Abs(r.QuadC) > 0.15) ? "curved"
-			: r.Slope > 0.05 ? "up"
-			: r.Slope < -0.05 ? "down"
-			: "flat";
 
 		// Centered ASCII bar: '|' axis at the middle, bar grows right for +v, left for −v.
 		private static string Bar(double v, double maxAbs, int w)

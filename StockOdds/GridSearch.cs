@@ -1014,85 +1014,94 @@ namespace StockOdds
 		// (no info), linearly rising (predictive & sizeable), or curved? Reports the per-bucket
 		// means plus a linear and quadratic fit over the raw observations.
 		// ============================================================================
+		// Buckets: 0..18 are [-1.0,-0.9) .. [0.8,0.9) (bucket 0 also catches exposure < -1);
+		// bucket 19 is the OPEN [0.9, +inf) — the bias-adjusted exposure routinely exceeds 1.
+		private const int ExpCurveNBins = 20;
+		private static int ExpBucket(double e)
+		{
+			if (e >= 0.9) return 19;
+			int b = (int)Math.Floor((e + 1.0) / 0.1);
+			return b < 0 ? 0 : (b > 18 ? 18 : b);
+		}
+
 		public static List<ExpCurveResult> ExposureReturnCurve(
 			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
 		{
-			const double W = 0.1;                 // bucket width
-			int nBins = (int)Math.Round(2.0 / W); // 20 buckets over [-1, 1]
-			double alpha = 2.0 / (BankrollSimulator.ExposureEmaPeriod + 1);
-
+			int nB = ExpCurveNBins;
 			var perSymbol = new List<ExpCurveResult>();
 
-			// pooled (whole-basket) accumulators
-			var pCnt = new int[nBins]; var pFull = new double[nBins]; var pOn = new double[nBins]; var pUp = new int[nBins];
+			// pooled: cnt, sum of per-symbol COMPOUNDED returns, sum of per-candle returns (for mean)
+			var pCnt = new int[nB]; var pCum = new double[nB]; var pSum = new double[nB];
 			var pxs = new List<double>(); var pys = new List<double>();
 
-			foreach (var (sym, bars) in barsBySymbol)
+			bool savedRec = BankrollSimulator.RecordBars;
+			try
 			{
-				if (bars.Count < 3) continue;
-				var ltE = new LongTermStateEngine();
-				var stE = new CandleStateEngine();
-				double ema = double.NaN;
-
-				var cnt = new int[nBins];
-				var sumFull = new double[nBins];
-				var sumOn = new double[nBins];
-				var up = new int[nBins];
-				var xs = new List<double>();   // exposure
-				var ys = new List<double>();   // full-day fwd return %
-
-				for (int i = 2; i < bars.Count; i++)
+				BankrollSimulator.RecordBars = true;
+				foreach (var (sym, bars) in barsBySymbol)
 				{
-					var lt = ltE.Update(bars[i - 2], bars[i - 1]);
-					var st = stE.Update(bars[i - 2], bars[i - 1]);
-					if (st == null) continue;
-					double target = BankrollSimulator.TargetExposure(lt, st.Value);
-					ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
+					if (bars.Count < 3) continue;
+					var sim = BankrollSimulator.Run(bars, initialBankroll);
+					var ex = sim.BarAdjEma;       // bias-adjusted exposure (can exceed |1|)
+					var rr = sim.BarBhReturns;    // aligned forward (full-day) return, fraction
+					if (ex.Count == 0) continue;
 
-					double pc = bars[i - 1].Close, cl = bars[i].Close, op = bars[i].Open;
-					if (pc <= 0 || cl <= 0) continue;
-					double full = (cl / pc - 1.0) * 100.0;
-					double on = op > 0 ? (op / pc - 1.0) * 100.0 : 0.0;
+					var cnt = new int[nB]; var fac = new double[nB]; var sum = new double[nB];
+					for (int b = 0; b < nB; b++) fac[b] = 1.0;
+					var xs = new List<double>(); var ys = new List<double>();
 
-					double e = Math.Max(-1.0, Math.Min(1.0, ema));
-					int bin = (int)Math.Floor((e + 1.0) / W);
-					if (bin < 0) bin = 0; if (bin >= nBins) bin = nBins - 1;
+					for (int k = 0; k < ex.Count; k++)
+					{
+						double e = ex[k], r = rr[k];
+						int b = ExpBucket(e);
+						cnt[b]++; fac[b] *= (1.0 + r); sum[b] += r * 100.0;
+						xs.Add(e); ys.Add(r * 100.0);
+						pxs.Add(e); pys.Add(r * 100.0);
+					}
 
-					cnt[bin]++; sumFull[bin] += full; sumOn[bin] += on; if (full > 0) up[bin]++;
-					xs.Add(e); ys.Add(full);
+					var cum = new double[nB];
+					for (int b = 0; b < nB; b++)
+					{
+						cum[b] = cnt[b] > 0 ? (fac[b] - 1.0) * 100.0 : double.NaN;
+						pCnt[b] += cnt[b];
+						if (cnt[b] > 0) pCum[b] += (fac[b] - 1.0) * 100.0;   // sum per-symbol compounded
+						pSum[b] += sum[b];
+					}
 
-					pCnt[bin]++; pFull[bin] += full; pOn[bin] += on; if (full > 0) pUp[bin]++;
-					pxs.Add(e); pys.Add(full);
+					perSymbol.Add(BuildCurveResult(sym, Volatility.AnnualizedHistoricalPct(bars), nB, cnt, cum, sum, xs, ys));
 				}
-
-				if (xs.Count == 0) continue;
-				perSymbol.Add(BuildCurveResult(sym, Volatility.AnnualizedHistoricalPct(bars), nBins, W, cnt, sumFull, sumOn, up, xs, ys));
 			}
+			finally { BankrollSimulator.RecordBars = savedRec; }
+
+			var pCumOut = new double[nB];
+			for (int b = 0; b < nB; b++) pCumOut[b] = pCnt[b] > 0 ? pCum[b] : double.NaN;
 
 			var results = new List<ExpCurveResult>
 			{
-				BuildCurveResult("BASKET", 0.0, nBins, W, pCnt, pFull, pOn, pUp, pxs, pys)
+				BuildCurveResult("BASKET", 0.0, nB, pCnt, pCumOut, pSum, pxs, pys)
 			};
 			results.AddRange(perSymbol.OrderBy(r => r.Hv));
 			return results;
 		}
 
-		// Assemble one exposure->return curve (buckets + linear & quadratic fits) from accumulators.
+		// Assemble one exposure->return curve. cum[b] = COMPOUNDED return per bucket (per symbol),
+		// or the sum of per-symbol compounded returns for the pooled basket. Fits are on the raw
+		// (exposure, per-candle return) pairs, for reference only.
 		private static ExpCurveResult BuildCurveResult(
-			string scope, double hv, int nBins, double W,
-			int[] cnt, double[] sumFull, double[] sumOn, int[] up, List<double> xs, List<double> ys)
+			string scope, double hv, int nB,
+			int[] cnt, double[] cum, double[] sum, List<double> xs, List<double> ys)
 		{
 			var res = new ExpCurveResult { Scope = scope, Hv = hv, N = xs.Count };
 			if (xs.Count > 0) res.MeanExp = xs.Average();
-			for (int b = 0; b < nBins; b++)
+			for (int b = 0; b < nB; b++)
 			{
-				double lo = -1.0 + b * W;
+				double lo = -1.0 + b * 0.1;
+				bool top = b == nB - 1;
 				res.Bins.Add(new ExpCurveBin
 				{
-					Lo = lo, Hi = lo + W, Center = lo + W / 2.0, N = cnt[b],
-					MeanFullPct = cnt[b] > 0 ? sumFull[b] / cnt[b] : double.NaN,
-					MeanOnPct   = cnt[b] > 0 ? sumOn[b] / cnt[b] : double.NaN,
-					UpPct       = cnt[b] > 0 ? (double)up[b] / cnt[b] * 100.0 : double.NaN,
+					Lo = lo, Hi = top ? double.PositiveInfinity : lo + 0.1, Center = lo + 0.05, N = cnt[b],
+					CumRetPct   = cnt[b] > 0 ? cum[b] : double.NaN,
+					MeanFullPct = cnt[b] > 0 ? sum[b] / cnt[b] : double.NaN,
 				});
 			}
 
@@ -2216,13 +2225,14 @@ namespace StockOdds
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
 	}
 
-	// One fixed-width exposure bucket with its average forward return.
+	// One exposure bucket with the COMPOUNDED return accumulated across its candles.
 	public class ExpCurveBin
 	{
 		public double Lo, Hi, Center;
 		public int    N;
-		public double MeanFullPct;   // avg full-day forward return in the bucket
-		public double MeanOnPct;     // avg overnight return
+		public double CumRetPct;     // compounded return of the candles in this bucket (per bucket, not per candle)
+		public double MeanFullPct;   // avg per-candle return (reference)
+		public double MeanOnPct;
 		public double UpPct;
 	}
 

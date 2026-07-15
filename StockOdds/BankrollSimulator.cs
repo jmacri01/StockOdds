@@ -80,6 +80,7 @@ namespace StockOdds
 		// the same AVERAGE exposure (does exposure TIMING beat plain de-risking?).
 		public List<double> BarPositions = new();   // applied signed exposure each bar
 		public List<double> BarBhReturns = new();   // raw buy&hold return each bar (prev->cur)
+		public List<double> BarAdjEma    = new();   // bias-adjusted exposure (pre-clamp; can exceed |1|)
 	}
 
 	public static class BankrollSimulator
@@ -279,6 +280,7 @@ namespace StockOdds
 			double ema = double.NaN;     // EMA of the per-candle target exposure
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
+			double lastAdjEma = 0.0;     // bias-adjusted exposure (pre-deadband/clamp; can exceed |1|)
 
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
@@ -350,6 +352,7 @@ namespace StockOdds
 					adjEma *= adjEma >= 0 ? VolScalePivot / v : v / VolScalePivot;
 				}
 
+				lastAdjEma = adjEma;
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
@@ -403,6 +406,7 @@ namespace StockOdds
 				{
 					result.BarPositions.Add(position);
 					result.BarBhReturns.Add(r);
+					result.BarAdjEma.Add(lastAdjEma);
 				}
 
 				bankroll *= (1.0 + tradeReturn);
