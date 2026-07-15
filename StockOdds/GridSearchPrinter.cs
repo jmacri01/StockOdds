@@ -656,6 +656,48 @@ namespace StockOdds
 			return true;
 		}
 
+		// Triple-barrier (bracket) study: LT-Bull entries vs random entries.
+		public static void PrintBarrier(List<BracketResult> rows)
+		{
+			Console.WriteLine("\n===== RUN OUTCOMES: reach +Y% before −Z%? — LT-Bull entry vs RANDOM entry =====");
+			if (rows.Count == 0) { Console.WriteLine("No data."); return; }
+			int maxHold = rows[0].MaxHold;
+			Console.WriteLine($"Enter long; WIN if +Y% is touched before −Z% within {maxHold} bars, LOSS if −Z% first, else TIMEOUT.");
+			Console.WriteLine("Bull = entries at the bar the LT state turns Bull. Rand = entries at every bar (unconditional null).");
+			Console.WriteLine("Edge = Bull Win% − Rand Win% (does the state time the run better than chance?). Barriers use bar H/L; no costs.");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"  {"Y/Z",-8} │ {"BullN",6} {"Win%",6} {"Loss%",6} {"TO%",6} {"Exp%",7} {"bars",5} │ " +
+				$"{"Win%",6} {"Loss%",6} {"Exp%",7} │ {"WinEdge",8} {"ExpEdge",8}");
+			foreach (var r in rows)
+			{
+				string yz = $"{r.Up:0}/{r.Down:0}";
+				Console.WriteLine(
+					$"  {yz,-8} │ {r.BullN,6} {r.BullWinPct,5:0.0}% {r.BullLossPct,5:0.0}% {r.BullTimeoutPct,5:0.0}% " +
+					$"{Signed(r.BullExpectancyPct),6}% {r.BullAvgBars,5:0} │ " +
+					$"{r.RandWinPct,5:0.0}% {r.RandLossPct,5:0.0}% {Signed(r.RandExpectancyPct),6}% │ " +
+					$"{r.WinEdge,6:+0.0;-0.0}pp {Signed(r.ExpEdge),7}pp");
+			}
+
+			double mWinEdge = rows.Average(r => r.WinEdge);
+			double mExpEdge = rows.Average(r => r.ExpEdge);
+			int winEdgeWins = rows.Count(r => r.WinEdge > 0);
+			int expEdgeWins = rows.Count(r => r.ExpEdge > 0);
+			int n = rows.Count;
+			Console.WriteLine();
+			Console.WriteLine($"Mean Win% edge (Bull−Rand): {mWinEdge:+0.0;-0.0}pp across {n} brackets (Bull higher in {winEdgeWins}/{n}).");
+			Console.WriteLine($"Mean Expectancy edge      : {Signed(mExpEdge)}pp (Bull higher in {expEdgeWins}/{n}).");
+			Console.WriteLine(
+				mWinEdge > 2.0 && winEdgeWins > n * 0.6 && mExpEdge > 0.0
+					? "=> LT-Bull entries DO show run-level asymmetry: they reach +Y before −Z more often than random, with\n" +
+					  "   positive expectancy edge. This is a tradable trend signal the per-bar test missed — WALK-FORWARD it next."
+					: Math.Abs(mWinEdge) <= 2.0
+						? "=> LT-Bull entries hit +Y-before−Z about as often as RANDOM entries — the state adds little run-level\n" +
+						  "   timing edge. The visible trends are drift shared by all entries, not skill from the state."
+						: "=> LT-Bull entries are WORSE than random at reaching +Y before −Z — the state times entries badly.");
+			Console.WriteLine("NOTE: in-sample, no costs; bar-H/L barriers are optimistic (equally for both groups, so the EDGE is fair).");
+		}
+
 		// LT state: concurrent (charted) vs forward (tradable) return separation.
 		public static void PrintStateLag(List<StateLagResult> results)
 		{

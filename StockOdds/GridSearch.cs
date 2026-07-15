@@ -909,6 +909,104 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// TRIPLE-BARRIER (bracket) study on LT-Bull entries vs random entries.
+		// The RUN-level question: entering long when the LT state turns Bull, what is the
+		// probability the trade reaches +Y% before −Z% (within a max hold)? A per-bar
+		// direction test can't see this — trend edge lives in PATH asymmetry, not next-bar
+		// sign. The honest control is the SAME brackets from RANDOM (every-bar) entries: if
+		// Bull entries hit the +Y barrier first no more often than random entries, the state
+		// adds no timing skill. Entry price is the close of the transition bar (known then);
+		// barriers are checked on later bars' High/Low (tradable, no look-ahead). Same-bar
+		// double-touch counts as a loss (conservative). Both groups share the same window,
+		// drift and symbols, so the EDGE (Bull − random) is meaningful even in-sample.
+		// ============================================================================
+		public static (double Up, double Down)[] Brackets =
+			{ (5, 5), (10, 5), (10, 10), (20, 10), (20, 20), (30, 15) };
+		public static int BracketMaxHold = 120;
+
+		private enum BarrierOutcome { Win, Loss, Timeout }
+
+		public static List<BracketResult> BarrierStudy(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var results = new List<BracketResult>();
+
+			foreach (var (up, down) in Brackets)
+			{
+				int bN = 0, bWin = 0, bLoss = 0, bTo = 0; double bRet = 0, bBars = 0;
+				int rN = 0, rWin = 0, rLoss = 0, rTo = 0; double rRet = 0, rBars = 0;
+
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+
+					// Bull-transition entries
+					var lt = new LongTermStateEngine();
+					var prev = LongTermState.Bear;
+					for (int i = 1; i < bars.Count - 1; i++)
+					{
+						var s = lt.Update(bars[i - 1], bars[i]);
+						if (s == LongTermState.Bull && prev != LongTermState.Bull)
+						{
+							var (o, ret, held) = RunBarrier(bars, i, up, down, BracketMaxHold);
+							bN++; bRet += ret; bBars += held;
+							if (o == BarrierOutcome.Win) bWin++; else if (o == BarrierOutcome.Loss) bLoss++; else bTo++;
+						}
+						prev = s;
+					}
+
+					// random / unconditional baseline: enter at EVERY bar
+					for (int i = 1; i < bars.Count - 1; i++)
+					{
+						var (o, ret, held) = RunBarrier(bars, i, up, down, BracketMaxHold);
+						rN++; rRet += ret; rBars += held;
+						if (o == BarrierOutcome.Win) rWin++; else if (o == BarrierOutcome.Loss) rLoss++; else rTo++;
+					}
+				}
+
+				results.Add(new BracketResult
+				{
+					Up = up, Down = down, MaxHold = BracketMaxHold,
+					BullN = bN,
+					BullWinPct     = bN > 0 ? 100.0 * bWin / bN : 0.0,
+					BullLossPct    = bN > 0 ? 100.0 * bLoss / bN : 0.0,
+					BullTimeoutPct = bN > 0 ? 100.0 * bTo / bN : 0.0,
+					BullExpectancyPct = bN > 0 ? bRet / bN : 0.0,
+					BullAvgBars    = bN > 0 ? bBars / bN : 0.0,
+					RandN = rN,
+					RandWinPct     = rN > 0 ? 100.0 * rWin / rN : 0.0,
+					RandLossPct    = rN > 0 ? 100.0 * rLoss / rN : 0.0,
+					RandTimeoutPct = rN > 0 ? 100.0 * rTo / rN : 0.0,
+					RandExpectancyPct = rN > 0 ? rRet / rN : 0.0,
+				});
+			}
+
+			return results;
+		}
+
+		// Walk forward from `entry` (entered at bars[entry].Close). Win if +up% is touched
+		// before −down%, Loss if −down% first, Timeout at maxHold. Uses later bars' High/Low;
+		// a same-bar double touch is scored as a Loss (conservative). Returns the realized %.
+		private static (BarrierOutcome o, double ret, int bars) RunBarrier(
+			List<OhlcBar> bars, int entry, double upPct, double downPct, int maxHold)
+		{
+			double p0 = bars[entry].Close;
+			if (p0 <= 0) return (BarrierOutcome.Timeout, 0.0, 0);
+			double tp = p0 * (1.0 + upPct / 100.0);
+			double sl = p0 * (1.0 - downPct / 100.0);
+			int last = Math.Min(entry + maxHold, bars.Count - 1);
+			for (int j = entry + 1; j <= last; j++)
+			{
+				bool hitSl = bars[j].Low <= sl;
+				bool hitTp = bars[j].High >= tp;
+				if (hitSl) return (BarrierOutcome.Loss, -downPct, j - entry);   // SL checked first => conservative
+				if (hitTp) return (BarrierOutcome.Win, upPct, j - entry);
+			}
+			double ret = (bars[last].Close - p0) / p0 * 100.0;
+			return (BarrierOutcome.Timeout, ret, last - entry);
+		}
+
+		// ============================================================================
 		// PROBABILITY <-> EXPOSURE calibration.
 		// Does the per-candle TARGET exposure (the (LT,ST) map value, known as of `prev`)
 		// predict the odds that the NEXT candle closes ABOVE the previous close?
@@ -1728,6 +1826,22 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One (Y-up, Z-down) bracket: outcome odds for LT-Bull entries vs random entries.
+	public class BracketResult
+	{
+		public double Up, Down;
+		public int    MaxHold;
+
+		public int    BullN;
+		public double BullWinPct, BullLossPct, BullTimeoutPct, BullExpectancyPct, BullAvgBars;
+
+		public int    RandN;
+		public double RandWinPct, RandLossPct, RandTimeoutPct, RandExpectancyPct;
+
+		public double WinEdge => BullWinPct - RandWinPct;              // + => Bull hits +Y first more often
+		public double ExpEdge => BullExpectancyPct - RandExpectancyPct; // + => Bull entries more profitable
 	}
 
 	// One LT state's mean return / up-rate across the measured offsets (parallel to
