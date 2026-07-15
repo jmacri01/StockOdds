@@ -921,7 +921,7 @@ namespace StockOdds
 		// drift and symbols, so the EDGE (Bull − random) is meaningful even in-sample.
 		// ============================================================================
 		public static (double Up, double Down)[] Brackets =
-			{ (5, 5), (10, 5), (10, 10), (20, 10), (20, 20), (30, 15) };
+			{ (2, 2), (3, 3), (5, 3), (5, 5), (7, 5), (10, 5), (10, 10) };
 		public static int BracketMaxHold = 120;
 
 		private enum BarrierOutcome { Win, Loss, Timeout }
