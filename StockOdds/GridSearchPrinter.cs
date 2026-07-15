@@ -656,6 +656,43 @@ namespace StockOdds
 			return true;
 		}
 
+		// Exposure-shape sweep: tent ("converge on 0.5") vs monotonic vs buy&hold.
+		public static void PrintExposureShape(List<ShapeRow> rows)
+		{
+			Console.WriteLine("\n===== EXPOSURE SHAPE: tent (\"converge on 0.5\") vs monotonic vs buy&hold =====");
+			if (rows.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("position = tent(adjEma): 100% at the peak, tapering to the floor (edge) at peak±0.5, clamped [0,1] (MinExp=0).");
+			Console.WriteLine("Monotonic(cur) = clamp(adjEma,0,1) — what the strategy does now. Full window; Sharpe is scale-invariant.");
+			Console.WriteLine();
+
+			double bh = rows.First(r => r.Label == "BuyHold").MeanSharpe;
+			double mono = rows.First(r => r.Label == "Monotonic(cur)").MeanSharpe;
+			Console.WriteLine($"  {"policy",-16} {"meanShp",8} {"meanDD",7} {"meanRet",10} {"vsMono",7} {">BH",5} {">Mono",6}");
+			foreach (var r in rows)
+			{
+				string tag = r.Label == "BuyHold" || r.Label == "Monotonic(cur)" ? "  <<" : "";
+				Console.WriteLine(
+					$"  {r.Label,-16} {r.MeanSharpe,8:0.000} -{r.MeanDd,5:0.0}% {Signed(r.MeanRet),10} " +
+					$"{r.MeanSharpe - mono,7:+0.000;-0.000} {r.BeatsBh,3}/{r.N} {r.BeatsMono,3}/{r.N}{tag}");
+			}
+
+			var tents = rows.Where(r => r.Label.StartsWith("Tent")).ToList();
+			var best = tents.OrderByDescending(r => r.MeanSharpe).First();
+			var peak05 = tents.Where(r => r.Label.Contains("p0.5")).OrderByDescending(r => r.MeanSharpe).FirstOrDefault();
+			Console.WriteLine();
+			Console.WriteLine($"Baselines: BuyHold Sharpe {bh:0.000}, Monotonic {mono:0.000}.");
+			Console.WriteLine($"Best tent: {best.Label} → Sharpe {best.MeanSharpe:0.000} (vs mono {best.MeanSharpe - mono:+0.000;-0.000}, vs B&H {best.MeanSharpe - bh:+0.000;-0.000}).");
+			if (peak05 != null)
+				Console.WriteLine($"Your peak-0.5 tent: {peak05.Label} → Sharpe {peak05.MeanSharpe:0.000} (vs mono {peak05.MeanSharpe - mono:+0.000;-0.000}).");
+			Console.WriteLine(
+				best.MeanSharpe > mono + 0.03 && best.MeanSharpe > bh + 0.03
+					? $"=> A tent shape BEATS both the current monotonic map and buy&hold on mean Sharpe — the 'fade the extremes' idea has legs. Walk-forward it next."
+					: best.MeanSharpe > mono + 0.03
+						? "=> The tent beats the current MONOTONIC map but not buy&hold — reshaping helps the signal, though nothing beats B&H Sharpe in this bull window."
+						: "=> The tent does NOT beat the current monotonic map on Sharpe. Reshaping toward 0.5 doesn't help; the peak location isn't special (see the sweep).");
+			Console.WriteLine("NOTE: full window, no costs. Peak was swept 0.3–0.7 so a special-looking 0.5 can't hide as an in-sample pick. Validate OOS.");
+		}
+
 		// Optimal exposure per band (Kelly) + out-of-sample validation.
 		public static void PrintBandOptimize(BandOptResult res)
 		{

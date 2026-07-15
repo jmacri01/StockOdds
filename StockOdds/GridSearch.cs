@@ -1085,6 +1085,85 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// EXPOSURE-SHAPE SWEEP (tent / "converge on 0.5").
+		// Reshape the bias-adjusted exposure into the actual position via a TENT centered at
+		// `peak`: position = 1.0 at adjEma=peak, tapering linearly to `edge` (0 or 0.25) at
+		// peak±0.5, clamped to [0,1] (MinExposure stays 0). Idea: overweight moderate signals,
+		// fade the extremes. Compared full-window across the basket vs the current MONOTONIC
+		// map (clamp(adjEma,0,1)) and buy&hold. The peak is swept 0.3..0.7 so "0.5 is best"
+		// can't hide as an in-sample pick. Fixed shape (no per-band fitting), so full-window is
+		// a fair test; still validate OOS before trusting.
+		// ============================================================================
+		private static double Tent(double e, double peak, double edge) =>
+			Math.Max(0.0, Math.Min(1.0, 1.0 - (1.0 - edge) * (Math.Abs(e - peak) / 0.5)));
+
+		public static List<ShapeRow> ExposureShapeSweep(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			// policy list: label + adjEma->position map
+			var policies = new List<(string label, Func<double, double> map)>
+			{
+				("BuyHold",         _ => 1.0),
+				("Monotonic(cur)",  e => Math.Max(0.0, Math.Min(1.0, e))),
+			};
+			foreach (var edge in new[] { 0.0, 0.25 })
+				foreach (var peak in new[] { 0.3, 0.4, 0.5, 0.6, 0.7 })
+				{
+					double pk = peak, ed = edge;
+					policies.Add(($"Tent p{pk:0.0} e{ed:0.00}", e => Tent(e, pk, ed)));
+				}
+
+			int P = policies.Count;
+			var sumShp = new double[P]; var sumDd = new double[P]; var sumRet = new double[P];
+			var winBh = new int[P]; var winMono = new int[P]; var nSym = new int[P];
+
+			bool saved = BankrollSimulator.RecordBars;
+			try
+			{
+				BankrollSimulator.RecordBars = true;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var sim = BankrollSimulator.Run(bars, initialBankroll);
+					var ex = sim.BarAdjEma; var r = sim.BarBhReturns;
+					if (ex.Count == 0) continue;
+
+					// baseline sharpes for this symbol (index 0 = BuyHold, 1 = Monotonic)
+					double bhShp = 0, monoShp = 0;
+					var polShp = new double[P];
+					for (int p = 0; p < P; p++)
+					{
+						var rets = new List<double>(ex.Count);
+						for (int k = 0; k < ex.Count; k++) rets.Add(policies[p].map(ex[k]) * r[k]);
+						double shp = SharpeOfReturns(rets);
+						polShp[p] = shp;
+						sumShp[p] += shp; sumDd[p] += MaxDdOf(rets); sumRet[p] += TotalRet(rets); nSym[p]++;
+						if (p == 0) bhShp = shp; if (p == 1) monoShp = shp;
+					}
+					for (int p = 0; p < P; p++)
+					{
+						if (polShp[p] > bhShp) winBh[p]++;
+						if (polShp[p] > monoShp) winMono[p]++;
+					}
+				}
+			}
+			finally { BankrollSimulator.RecordBars = saved; }
+
+			var rows = new List<ShapeRow>();
+			for (int p = 0; p < P; p++)
+			{
+				int n = Math.Max(1, nSym[p]);
+				rows.Add(new ShapeRow
+				{
+					Label = policies[p].label,
+					MeanSharpe = sumShp[p] / n, MeanDd = sumDd[p] / n, MeanRet = sumRet[p] / n,
+					BeatsBh = winBh[p], BeatsMono = winMono[p], N = nSym[p],
+				});
+			}
+			return rows;
+		}
+
+		// ============================================================================
 		// OPTIMAL EXPOSURE PER BAND (Kelly) + out-of-sample validation.
 		// For each bias-adjusted-exposure band, the growth-optimal exposure to hold is the
 		// (half-)Kelly fraction f = mean/variance of the band's per-candle returns. This builds
@@ -2340,6 +2419,14 @@ namespace StockOdds
 		public double StratDd, ConstDd, BhDd;
 		public double StratSharpe, ConstSharpe;
 		public double DdSaved => ConstDd - StratDd;   // + => timing beats matched de-risking
+	}
+
+	// One exposure-shape policy scored across the basket (full window).
+	public class ShapeRow
+	{
+		public string Label = "";
+		public double MeanSharpe, MeanDd, MeanRet;
+		public int    BeatsBh, BeatsMono, N;
 	}
 
 	// One exposure band with its growth-optimal (Kelly) suggested exposure.

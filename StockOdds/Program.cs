@@ -62,9 +62,11 @@ class Program
 	//                     plot avg forward return per bucket: flat / linear / curved? (no sizing)
 	//   BandOptimize   -> derive the growth-optimal (Kelly) exposure to HOLD in each exposure
 	//                     band, then walk-forward validate the learned map vs buy&hold OOS.
+	//   ExposureShape  -> reshape adjEma into position via a TENT centered at `peak` ("converge
+	//                     on 0.5"), sweep the peak, compare vs monotonic(cur) and buy&hold.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, ExpCurve, BandOptimize, BasketMean }
-	static GridMode GRID_MODE = GridMode.BandOptimize;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, ExpCurve, BandOptimize, ExposureShape, BasketMean }
+	static GridMode GRID_MODE = GridMode.ExposureShape;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -204,7 +206,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap or GridMode.ExpCurve or GridMode.BandOptimize)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap or GridMode.ExpCurve or GridMode.BandOptimize or GridMode.ExposureShape)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -310,6 +312,10 @@ class Program
 				case GridMode.BandOptimize:
 					var bo = GridSearch.BandOptimize(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintBandOptimize(bo);
+					break;
+				case GridMode.ExposureShape:
+					var esh = GridSearch.ExposureShapeSweep(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintExposureShape(esh);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);
