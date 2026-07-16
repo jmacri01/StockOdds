@@ -85,6 +85,10 @@ namespace StockOdds
 		public List<DateTime> ReturnDates { get; set; } = new();
 		public List<double>   StratReturns { get; set; } = new();
 		public List<double>   BhReturns { get; set; } = new();
+
+		// per-bar effective LongBias actually applied (aligned with ReturnDates). With a fixed
+		// LongBias this is constant; with DynamicLongBias it is the per-candle scaled value.
+		public List<double>   AppliedLongBias { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -271,6 +275,8 @@ namespace StockOdds
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
+			var appliedLB = new List<double>();
+			double lastAppliedLongBias = LongBias;   // effLongBias from the latest StepExposure
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
 			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
@@ -367,6 +373,7 @@ namespace StockOdds
 					effLongBias = Clamp(DynLongBiasIntercept + DynLongBiasSlope * (zHv + zP),
 						DynLongBiasMin, DynLongBiasMax);
 				}
+				lastAppliedLongBias = effLongBias;
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
 				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
@@ -498,6 +505,7 @@ namespace StockOdds
 				stratReturns.Add(tradeReturn);
 				bhReturns.Add(r);
 				returnDates.Add(bar.Date);
+				appliedLB.Add(lastAppliedLongBias);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -530,6 +538,7 @@ namespace StockOdds
 			result.StratReturns = stratReturns;
 			result.BhReturns = bhReturns;
 			result.ReturnDates = returnDates;
+			result.AppliedLongBias = appliedLB;
 
 			// Sharpe ratios (risk-free = 0) and buy & hold drawdown over the same bars.
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);

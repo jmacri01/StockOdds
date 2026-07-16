@@ -713,6 +713,21 @@ namespace StockOdds
 				Bkt("HV 40-70",   rows.Where(r => r.HistoricalVolatilityPct >= 40 && r.HistoricalVolatilityPct < 70).ToList());
 				Bkt("HV 70-100",  rows.Where(r => r.HistoricalVolatilityPct >= 70 && r.HistoricalVolatilityPct < 100).ToList());
 				Bkt("HV >= 100",  rows.Where(r => r.HistoricalVolatilityPct >= 100).ToList());
+
+				// per-symbol detail (avg over folds) for a focus set — realized applied LongBias
+				var focus = new[] { "asst", "asts", "open", "smci", "aehr", "coin", "smr", "nvda", "ko", "^gspc" };
+				Console.WriteLine();
+				Console.WriteLine("Per-symbol (avg over folds) — realized dynamic LongBias vs the fixed baselines:");
+				Console.WriteLine($"{"Symbol",-8} {"folds",5} {"HV%",6} {"trainZ",7} {"applied LBias",13} {"Fix0.5",7} {"BestFix",7} {"Dyn",7}");
+				foreach (var sym in focus)
+				{
+					var g = rows.Where(r => string.Equals(r.Symbol, sym, StringComparison.OrdinalIgnoreCase)).ToList();
+					if (g.Count == 0) continue;
+					Console.WriteLine(
+						$"{sym,-8} {g.Count,5} {g.Average(r => r.HistoricalVolatilityPct),6:0.0} {g.Average(r => r.TrainZ),7:+0.00;-0.00} " +
+						$"{g.Average(r => r.MeanAppliedLongBias),13:0.00} {g.Average(r => r.FixSharpe),7:0.000} " +
+						$"{g.Average(r => r.BestFixSharpe),7:0.000} {g.Average(r => r.DynSharpe),7:0.000}");
+				}
 			}
 
 			Console.WriteLine();

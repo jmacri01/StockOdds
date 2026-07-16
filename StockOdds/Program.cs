@@ -61,7 +61,7 @@ class Program
 		"dkng", "pypl", "net", "ddog", "snow", "crwd", "pltr", "rblx", "mrvl", "mu", "lrcx",
 		// high-HV speculative / small
 		"coin", "hood", "sofi", "afrm", "upst", "mstr", "mara", "riot", "clsk", "smci", "aehr",
-		"asts", "smr", "oklo", "ionq", "rgti", "qbts", "soun", "ai", "bbai", "rivn", "lcid",
+		"asts", "asst", "smr", "oklo", "ionq", "rgti", "qbts", "soun", "ai", "bbai", "rivn", "lcid",
 		"nio", "plug", "be", "cvna", "gme", "amc", "open", "grpn", "atai", "nok", "tsm", "rklb",
 	};
 

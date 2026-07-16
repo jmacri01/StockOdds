@@ -626,7 +626,9 @@ namespace StockOdds
 						BankrollSimulator.LongBias = bestFixedLB;
 						var bSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
 						BankrollSimulator.DynamicLongBias = true;
-						var dSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
+						var dRun = BankrollSimulator.Run(slice, initialBankroll);
+						var dSeries = SliceReturns(dRun, testDates);
+						double meanAppliedLB = SliceMean(dRun.AppliedLongBias, dRun.ReturnDates, testDates);
 						if (fSeries.Count < 20 || dSeries.Count < 20 || bSeries.Count < 20) continue;
 
 						double fS = SeriesSharpe(fSeries), dS = SeriesSharpe(dSeries), bS = SeriesSharpe(bSeries);
@@ -645,6 +647,7 @@ namespace StockOdds
 								HistoricalVolatilityPct = symHv.TryGetValue(sym, out var hvv) ? hvv : 0.0,
 								PredLongBias = Math.Min(Math.Max(icept + slope * zv,
 									BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax),
+								MeanAppliedLongBias = meanAppliedLB,
 								FixSharpe = fS, DynSharpe = dS, BestFixSharpe = bS,
 							});
 					}
@@ -696,6 +699,15 @@ namespace StockOdds
 			for (int i = 0; i < r.ReturnDates.Count; i++)
 				if (dates.Contains(r.ReturnDates[i])) outp.Add(r.StratReturns[i]);
 			return outp;
+		}
+
+		// mean of a per-bar series over just the bars whose date is in `dates`.
+		private static double SliceMean(List<double> series, List<DateTime> seriesDates, HashSet<DateTime> dates)
+		{
+			double sum = 0.0; int n = 0;
+			for (int i = 0; i < seriesDates.Count && i < series.Count; i++)
+				if (dates.Contains(seriesDates[i])) { sum += series[i]; n++; }
+			return n > 0 ? sum / n : 0.0;
 		}
 
 		private static double SeriesSharpe(List<double> rets)
@@ -1206,7 +1218,8 @@ namespace StockOdds
 		public string Symbol = "";
 		public double TrainZ;
 		public double HistoricalVolatilityPct;
-		public double PredLongBias;
+		public double PredLongBias;             // LongBias the line predicts at the train z
+		public double MeanAppliedLongBias;      // realized per-candle mean over the test bars
 		public double FixSharpe, DynSharpe, BestFixSharpe;
 	}
 
