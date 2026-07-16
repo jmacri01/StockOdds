@@ -125,6 +125,33 @@ namespace StockOdds
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
+		// ============ Dynamic (per-candle) LongBias ============
+		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
+		// LongBias is instead recomputed every candle from a combined trait z-score:
+		//   z          = (rollingHV - HvRefMean)/HvRefStd + (rollingPersist - PersRefMean)/PersRefStd
+		//   LongBias_t = clamp( Exponential : DynBase * exp(-DynDecay * z)
+		//                       Linear      : DynBase + DynSlope * z ,  DynMin, DynMax )
+		// z is on an ABSOLUTE scale via FIXED reference constants, so a quiet/steady name reads
+		// z<0 -> a large LongBias (leans toward staying long) and a hot high-HV, high-persistence
+		// name reads z>0 -> a small LongBias (lets the active signal run). rollingHV = annualized
+		// stdev of log returns over HvWindow (same convention as Volatility.AnnualizedHistoricalPct);
+		// rollingPersist = Kaufman efficiency ratio of the pre-bias exposure EMA over PersistWindow
+		// (1 = the exposure trends and holds, 0 = it round-trips). All knobs are hand-set, not fit.
+		public enum DynScaleMode { Linear, Exponential }
+		public static bool         DynamicLongBias = false;
+		public static DynScaleMode DynScale        = DynScaleMode.Exponential;
+		public static int    HvWindow      = 60;
+		public static int    PersistWindow = 63;
+		public static double HvRefMean     = 76.0;
+		public static double HvRefStd      = 41.3;
+		public static double PersRefMean   = 0.1467;
+		public static double PersRefStd    = 0.0186;
+		public static double DynBase       = 5.0;    // LongBias at z = 0
+		public static double DynDecay      = 0.6;    // exponential mode: decay rate
+		public static double DynSlope      = -1.28;  // linear mode: per unit z
+		public static double DynMin        = 0.0;
+		public static double DynMax        = 15.0;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -226,6 +253,35 @@ namespace StockOdds
 			double biasSum = 0.0;
 			double biasEma = double.NaN;   // EMA of the dynamic bias
 
+			// per-candle dynamic-LongBias state: rolling HV (log-return sample stdev, annualized)
+			// as of the decision bar, plus rolling exposure-EMA persistence over PersistWindow.
+			var hvRetWindow = new Queue<double>(Math.Max(1, HvWindow));
+			double hvSum = 0.0, hvSqSum = 0.0;
+			double curHvPct = HvRefMean;              // rolling annualized HV %, refreshed each bar
+			var perEmaWindow = new Queue<double>(Math.Max(1, PersistWindow) + 1);
+			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
+			double perAbsSum = 0.0, perEmaPrev = double.NaN;
+
+			// updates curHvPct from the completed return into `latest` (no look-ahead)
+			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
+			{
+				if (!DynamicLongBias || prevBar.Close <= 0 || latest.Close <= 0) return;
+				double lr = Math.Log(latest.Close / prevBar.Close);
+				hvRetWindow.Enqueue(lr);
+				hvSum += lr; hvSqSum += lr * lr;
+				while (hvRetWindow.Count > HvWindow)
+				{
+					double old = hvRetWindow.Dequeue();
+					hvSum -= old; hvSqSum -= old * old;
+				}
+				int n = hvRetWindow.Count;
+				if (n >= 2)
+				{
+					double v = (hvSqSum - hvSum * hvSum / n) / (n - 1);
+					curHvPct = Math.Sqrt(Math.Max(0.0, v)) * Math.Sqrt(PeriodsPerYear) * 100.0;
+				}
+			}
+
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
 
 			// current (LT, ST) run being accumulated for the ledger
@@ -247,10 +303,44 @@ namespace StockOdds
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
+				// per-candle LongBias: the fixed LongBias, or the trait-scaled dynamic value
+				double effLongBias = LongBias;
+				if (DynamicLongBias)
+				{
+					// rolling persistence (Kaufman efficiency ratio) of the pre-bias exposure EMA
+					if (!double.IsNaN(perEmaPrev))
+					{
+						double d = Math.Abs(ema - perEmaPrev);
+						perAbsWindow.Enqueue(d);
+						perAbsSum += d;
+						while (perAbsWindow.Count > PersistWindow)
+							perAbsSum -= perAbsWindow.Dequeue();
+					}
+					perEmaPrev = ema;
+					perEmaWindow.Enqueue(ema);
+					while (perEmaWindow.Count > PersistWindow + 1)
+						perEmaWindow.Dequeue();
+
+					// each z-term only once its rolling window has warmed (else that term is 0)
+					double zHv = hvRetWindow.Count >= 20 && HvRefStd > 0 ? (curHvPct - HvRefMean) / HvRefStd : 0.0;
+					double zP = 0.0;
+					if (perEmaWindow.Count > PersistWindow && PersRefStd > 0)
+					{
+						double pers = perAbsSum > 1e-9
+							? Math.Min(1.0, Math.Abs(ema - perEmaWindow.Peek()) / perAbsSum) : 1.0;
+						zP = (pers - PersRefMean) / PersRefStd;
+					}
+					double z = zHv + zP;
+					double raw = DynScale == DynScaleMode.Exponential
+						? DynBase * Math.Exp(-DynDecay * z)
+						: DynBase + DynSlope * z;
+					effLongBias = Clamp(raw, DynMin, DynMax);
+				}
+
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
-				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (LongBias + 1), a Bear candle -1.
+				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
-				double sig = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindow.Enqueue(sig);
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
@@ -275,6 +365,7 @@ namespace StockOdds
 				if (st == null)
 					continue;
 
+				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
 				position = StepExposure(lt, st.Value);
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
@@ -348,6 +439,7 @@ namespace StockOdds
 			var lastSt = stEngine.Update(bars[^2], bars[^1]);
 			if (lastSt != null)
 			{
+				UpdateHv(bars[^2], bars[^1]);
 				position = StepExposure(lastLt, lastSt.Value);
 				result.OpenBucket = (lastLt, lastSt.Value);
 				result.OpenStake = position;

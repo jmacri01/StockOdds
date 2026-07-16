@@ -61,6 +61,31 @@ That raw target is then:
 
 ---
 
+## Long bias: fixed or dynamic (per-candle)
+
+The **long bias** controls how hard a bullish LT regime is leaned into: a Bull candle contributes `(LongBias + 1)` to the running trend sum, a Bear candle `−1`. A larger `LongBias` pushes exposure up harder in uptrends.
+
+You can run it two ways:
+
+- **Fixed** *(default)* — one `LongBias` for the whole run (`BankrollSimulator.LongBias`, default `0.5`). `DynamicLongBias = false`.
+- **Dynamic** *(per-candle)* — set `BankrollSimulator.DynamicLongBias = true` and the bias is recomputed every candle from a **combined trait z-score**:
+
+  ```
+  z          = z(rolling HV) + z(rolling exposure-persistence)
+  LongBias_t = clamp( DynBase · e^(−DynDecay · z) ,  DynMin, DynMax )     // Exponential (default)
+             = clamp( DynBase + DynSlope · z      ,  DynMin, DynMax )     // Linear
+  ```
+
+  `z` is on an **absolute** scale (fixed reference constants), so it reflects a name's volatility/persistence in absolute terms, not relative to its own recent history. A **quiet, steady** name reads `z < 0` → a **large** bias (lean toward staying long); a **hot, high-volatility, high-persistence** name reads `z > 0` → a **small** bias (let the active signal do the work). `rolling HV` is annualized log-return stdev over `HvWindow`; `rolling persistence` is the Kaufman efficiency ratio of the pre-bias exposure EMA over `PersistWindow` (1 = the exposure trends and holds, 0 = it round-trips).
+
+  Knobs (all on `BankrollSimulator`, hand-set — *not* fitted): `DynScale` (`Exponential`/`Linear`), `DynBase` (bias at `z = 0`, default `5`), `DynDecay`/`DynSlope`, `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow`, and the `HvRef*` / `PersRef*` reference constants.
+
+  > Note: on the tested basket over a bull-heavy window this did **not** beat a well-chosen *fixed* bias out-of-sample; it is provided as an option, off by default. The regime where a per-candle bias should help (dialing risk down on hot names into a drawdown) isn't covered by the available ~5-year history.
+
+The dynamic bias is mirrored in the Pine scripts — enable **"Use dynamic long bias"** in the indicator to watch `LongBias` change per candle (the orange stepline, the table row, and the Data Window).
+
+---
+
 ## What to expect
 
 Backtested over each name's full available history (~5 years, **including the 2022 bear market**), fixed parameters, no per-symbol tuning:

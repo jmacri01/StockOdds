@@ -124,6 +124,16 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
+			// Long bias: either the fixed LongBias set above, OR a per-candle dynamic bias
+			// scaled by each candle's z = z(HV) + z(persistence). Leave DynamicLongBias = false
+			// to use the fixed value; set it true to let the bias scale with volatility &
+			// exposure persistence (high-vol/high-persistence -> small bias, quiet -> large).
+			BankrollSimulator.DynamicLongBias = false;
+			// BankrollSimulator.DynScale = BankrollSimulator.DynScaleMode.Exponential; // or Linear
+			// BankrollSimulator.DynBase  = 5.0;   // LongBias at z = 0
+			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
+			// BankrollSimulator.DynMax   = 15.0;  // clamp
+
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
 		//BankrollSimulator.BullBearNeutral = 0.0;

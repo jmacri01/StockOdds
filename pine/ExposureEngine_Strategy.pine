@@ -67,6 +67,24 @@ minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step
 maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
 
+// -- Dynamic (per-candle) long bias: scale LongBias by z = z(HV) + z(persistence)
+grpDyn = "Dynamic long bias"
+useDynLB = input.bool(false, "Use dynamic long bias", group = grpDyn,
+     tooltip = "Off = fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet names (z<0) get a LARGE bias, hot high-vol/high-persistence names (z>0) get a SMALL bias.")
+dynScaleMode = input.string("Exponential", "Scale shape", options = ["Exponential", "Linear"], group = grpDyn,
+     tooltip = "Exponential: LongBias = Base * exp(-Decay * z). Linear: LongBias = Base + Slope * z.")
+dynBase  = input.float(5.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
+dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
+dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
+dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
+dynMax   = input.float(15.0, "LongBias max", step = 0.5, group = grpDyn)
+hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
+persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
+hvRefMean   = input.float(76.0,   "HV ref mean",          group = grpDyn)
+hvRefStd    = input.float(41.3,   "HV ref std",           group = grpDyn)
+persRefMean = input.float(0.1467, "Persistence ref mean", group = grpDyn)
+persRefStd  = input.float(0.0186, "Persistence ref std",  group = grpDyn)
+
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
 // #############################################################################
@@ -175,10 +193,24 @@ var float emaExp = na
 if not na(target)
     emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
 
+// Per-candle LongBias: fixed, or scaled by z = z(HV) + z(persistence) with FIXED refs
+// (absolute scale): quiet name (z<0) -> large bias, hot name (z>0) -> small bias.
+// Mirrors BankrollSimulator's DynamicLongBias.
+hvRet  = na(close[1]) or close[1] <= 0 or close <= 0 ? na : math.log(close / close[1])
+rollHv = ta.stdev(hvRet, hvWindow, false) * math.sqrt(252) * 100
+zHv    = not na(rollHv) and hvRefStd > 0 ? (rollHv - hvRefMean) / hvRefStd : 0.0
+netMove = math.abs(emaExp - emaExp[persistWindow])
+pathLen = math.sum(math.abs(emaExp - emaExp[1]), persistWindow)
+er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
+zP      = not na(emaExp[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
+zTrait  = zHv + zP
+dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
+effLongBias = useDynLB ? math.min(math.max(dynLBraw, dynMin), dynMax) : longBias
+
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
-// A Bull candle contributes (longBias + 1), a Bear candle -1; longBias skews
+// A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = ltState == 1 ? (longBias + 1) : ltState == 0 ? -1 : 0
+biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0
@@ -284,3 +316,5 @@ plot(target,      "DBG ST Value",  display = display.data_window)
 plot(emaExp,      "DBG EMA",       display = display.data_window)
 plot(adjEma,      "DBG Adj EMA",   display = display.data_window)
 plot(position,    "DBG Exposure",  display = display.data_window)
+plot(effLongBias, "DBG Dyn LongBias",  display = display.data_window)
+plot(useDynLB ? zTrait : na, "DBG z (HV+persist)", display = display.data_window)
