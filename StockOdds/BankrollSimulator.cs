@@ -155,6 +155,11 @@ namespace StockOdds
 		public static double DynMin          = 0.0;
 		public static double DynMax          = 15.0;
 		public static int    DynSmoothPeriod = 10;     // EMA smoothing of the per-candle bias (1 = off)
+		// Blend of two exposure skews: the DEFENSIVE leg (fixed LongBias — halves drawdown but
+		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
+		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
+		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
+		public static double BiasBlend       = 0.75;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -255,7 +260,11 @@ namespace StockOdds
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
 			double biasSum = 0.0;
-			double biasEma = double.NaN;   // EMA of the dynamic bias
+			double biasEma = double.NaN;   // EMA of the dynamic-leg bias
+			// defensive leg: same machinery but on the fixed LongBias (for the BiasBlend)
+			var biasWindowFix = new Queue<double>(BiasPeriod);
+			double biasSumFix = 0.0;
+			double biasEmaFix = double.NaN;
 
 			// per-candle dynamic-LongBias state: rolling HV (log-return sample stdev, annualized)
 			// as of the decision bar, plus rolling exposure-EMA persistence over PersistWindow.
@@ -359,7 +368,18 @@ namespace StockOdds
 				double dynBias = biasSum / BiasPeriod;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				double adjEma = Math.Abs(ema) * biasEma + ema;
+				// DEFENSIVE leg: same accumulation on the fixed LongBias
+				double sigFix = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				biasWindowFix.Enqueue(sigFix);
+				biasSumFix += sigFix;
+				while (biasWindowFix.Count > BiasPeriod)
+					biasSumFix -= biasWindowFix.Dequeue();
+				double dynBiasFix = biasSumFix / BiasPeriod;
+				biasEmaFix = double.IsNaN(biasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1.0 - biasAlpha) * biasEmaFix;
+
+				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
+				double blendedBiasEma = BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix;
+				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
