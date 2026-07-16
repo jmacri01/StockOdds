@@ -644,8 +644,9 @@ namespace StockOdds
 
 		// Walk-forward OOS: dynamic LongBias (refs + line fit on each train window) vs fixed
 		// LongBias on the held-out test window, one row per fold, with the aggregate verdict.
-		public static void PrintDynLongBiasWalkForward(List<DynWfFold> folds)
+		public static void PrintDynLongBiasWalkForward(DynWfResult result)
 		{
+			var folds = result.Folds;
 			Console.WriteLine("\n===== DYNAMIC LONGBIAS — WALK-FORWARD (refs+line fit on train, scored on test) =====");
 			if (folds.Count == 0)
 			{
@@ -676,6 +677,36 @@ namespace StockOdds
 			Console.WriteLine($"Mean OOS Return% — fixed {Signed(mFixRt),9}   dynamic {Signed(mDynRt),9}");
 			Console.WriteLine($"Mean OOS MaxDD%  — fixed -{mFixDd,5:0.0}%    dynamic -{mDynDd,5:0.0}%");
 			Console.WriteLine($"Folds where dynamic beats fixed (mean Sharpe) : {foldWins}/{folds.Count}");
+
+			// ---- where does the lift come from? split the per-symbol OOS delta by train z sign ----
+			var rows = result.SymbolRows;
+			if (rows.Count > 0)
+			{
+				Console.WriteLine();
+				Console.WriteLine("Lift by z sign (per-symbol OOS, pooled across folds):");
+				Console.WriteLine($"{"group",-14} {"n",4} {"predLBias",9} {"Shp:Fix",8} {"Dyn",7} {"dShp",7}");
+				void Grp(string label, List<DynWfSymbolRow> g)
+				{
+					if (g.Count == 0) { Console.WriteLine($"{label,-14} {0,4}   (none)"); return; }
+					double f = g.Average(r => r.FixSharpe), d = g.Average(r => r.DynSharpe);
+					Console.WriteLine($"{label,-14} {g.Count,4} {g.Average(r => r.PredLongBias),9:0.0} " +
+					                  $"{f,8:0.000} {d,7:0.000} {d - f,7:+0.000;-0.000}");
+				}
+				Grp("z < 0", rows.Where(r => r.TrainZ < 0).ToList());
+				Grp("z >= 0", rows.Where(r => r.TrainZ >= 0).ToList());
+				Grp("all", rows);
+
+				double dNeg = rows.Where(r => r.TrainZ < 0).DefaultIfEmpty().Average(r => r == null ? 0 : r.DynSharpe - r.FixSharpe);
+				double dPos = rows.Where(r => r.TrainZ >= 0).DefaultIfEmpty().Average(r => r == null ? 0 : r.DynSharpe - r.FixSharpe);
+				Console.WriteLine();
+				Console.WriteLine(
+					dNeg > dPos * 1.5 && dNeg > 0.05
+						? "=> The lift is concentrated in z<0 names (their LongBias is pushed up most) => it is largely a 'more long' effect, not the per-candle tilt."
+					: dPos > dNeg * 1.5 && dPos > 0.05
+						? "=> The lift is concentrated in z>0 names => the damping side is doing the work, not just 'more long'."
+						: "=> The lift is spread across both z signs => not purely a 'more long' effect.");
+			}
+
 			Console.WriteLine();
 			Console.WriteLine(
 				dShp > 0.05 && foldWins > folds.Count / 2

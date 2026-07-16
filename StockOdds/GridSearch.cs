@@ -541,7 +541,7 @@ namespace StockOdds
 		public static int DynWfStepBars   = 189;   // advance
 		public static int DynWfWarmupBars = 63;    // pre-roll so rolling windows are warm
 
-		public static List<DynWfFold> DynLongBiasWalkForward(
+		public static DynWfResult DynLongBiasWalkForward(
 			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
 		{
 			var sDyn = BankrollSimulator.DynamicLongBias; var sMode = BankrollSimulator.ChopMeasureMode;
@@ -552,6 +552,7 @@ namespace StockOdds
 			double fixedLB = sLB;   // baseline fixed LongBias = the caller's configured value
 
 			var folds = new List<DynWfFold>();
+			var symRows = new List<DynWfSymbolRow>();
 			try
 			{
 				BankrollSimulator.ChopMeasureMode   = BankrollSimulator.ChopMeasure.LtTransitions;
@@ -569,7 +570,7 @@ namespace StockOdds
 
 					// ---- FIT on TRAIN: refs (pooled HV & persistence) + the LongBias line ----
 					var hvs = new List<double>(); var pes = new List<double>();
-					var zTargetLB = new List<(double hv, double pe, double bestLB)>();
+					var zTargetLB = new List<(string sym, double hv, double pe, double bestLB)>();
 					BankrollSimulator.DynamicLongBias = false;
 					foreach (var (sym, bars) in barsBySymbol)
 					{
@@ -585,12 +586,13 @@ namespace StockOdds
 							double sh = SharpeOf(BankrollSimulator.Run(tr, initialBankroll));
 							if (sh > bestSh) { bestSh = sh; bestLB = lb; }
 						}
-						hvs.Add(hv); pes.Add(pe); zTargetLB.Add((hv, pe, bestLB));
+						hvs.Add(hv); pes.Add(pe); zTargetLB.Add((sym, hv, pe, bestLB));
 					}
 					if (zTargetLB.Count < 3) continue;
 
 					double hm = hvs.Average(), hs = Std(hvs), pm = pes.Average(), ps = Std(pes);
 					if (hs <= 0) hs = 1; if (ps <= 0) ps = 1;
+					var symZ = zTargetLB.ToDictionary(r => r.sym, r => (r.hv - hm) / hs + (r.pe - pm) / ps);
 					var zs = zTargetLB.Select(r => (r.hv - hm) / hs + (r.pe - pm) / ps).ToList();
 					var lbTargets = zTargetLB.Select(r => r.bestLB).ToList();
 					var (slope, icept) = LinFit(zs, lbTargets);
@@ -623,6 +625,16 @@ namespace StockOdds
 						fRt.Add(SeriesRet(fSeries)); dRt.Add(SeriesRet(dSeries));
 						if (dS > fS) dynWins++;
 						n++;
+
+						// per-symbol detail, classified by its train z (for the by-sign split)
+						if (symZ.TryGetValue(sym, out double zv))
+							symRows.Add(new DynWfSymbolRow
+							{
+								Fold = fold, Symbol = sym, TrainZ = zv,
+								PredLongBias = Math.Min(Math.Max(icept + slope * zv,
+									BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax),
+								FixSharpe = fS, DynSharpe = dS,
+							});
 					}
 					if (n == 0) continue;
 
@@ -647,7 +659,7 @@ namespace StockOdds
 				BankrollSimulator.PersRefMean = sPm; BankrollSimulator.PersRefStd = sPs;
 				BankrollSimulator.DynLongBiasIntercept = sIc; BankrollSimulator.DynLongBiasSlope = sSl;
 			}
-			return folds;
+			return new DynWfResult { Folds = folds, SymbolRows = symRows };
 		}
 
 		private static double Std(List<double> a)
@@ -1165,6 +1177,24 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// Walk-forward output: per-fold aggregates plus per-symbol detail (for the z-sign split).
+	public class DynWfResult
+	{
+		public List<DynWfFold> Folds = new();
+		public List<DynWfSymbolRow> SymbolRows = new();
+	}
+
+	// One (fold, symbol) OOS outcome, tagged with the symbol's train z and the LongBias the
+	// line predicted for it — so the dynamic-vs-fixed lift can be split by z sign.
+	public class DynWfSymbolRow
+	{
+		public int    Fold;
+		public string Symbol = "";
+		public double TrainZ;
+		public double PredLongBias;
+		public double FixSharpe, DynSharpe;
 	}
 
 	// One walk-forward fold: dynamic (train-fit refs+line) vs fixed LongBias on the held-out
