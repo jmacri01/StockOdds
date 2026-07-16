@@ -159,7 +159,7 @@ namespace StockOdds
 		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
 		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
-		public static double BiasBlend       = 0.75;
+		public static double BiasBlend       = 1.0;
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
