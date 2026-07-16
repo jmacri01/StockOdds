@@ -139,14 +139,14 @@ namespace StockOdds
 		// (1 = the exposure trends and holds, 0 = it round-trips). All knobs are hand-set, not fit.
 		public enum DynScaleMode { Linear, Exponential }
 		public static bool         DynamicLongBias = false;
-		public static DynScaleMode DynScale        = DynScaleMode.Linear;
+		public static DynScaleMode DynScale        = DynScaleMode.Exponential;
 		public static int    HvWindow      = 60;
 		public static int    PersistWindow = 63;
-		public static double HvRefMean     = 76.0;
-		public static double HvRefStd      = 41.3;
-		public static double PersRefMean   = 0.1467;
-		public static double PersRefStd    = 0.0186;
-		public static double DynBase       = 0.0;    // LongBias at z = 0 (high-vol names -> 0)
+		public static double HvRefMean     = 57.0;
+		public static double HvRefStd      = 34.6;
+		public static double PersRefMean   = 0.142;
+		public static double PersRefStd    = 0.017;
+		public static double DynBase       = 1.0;    // LongBias at z = 0
 		public static double DynDecay      = 0.6;    // exponential mode: decay rate
 		public static double DynSlope      = -1.28;  // linear mode: per unit z
 		public static double DynMin        = 0.0;
