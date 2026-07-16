@@ -642,6 +642,42 @@ namespace StockOdds
 					: "=> Not supported: optimal LongBias does not fall with HV+persistence on this basket (correlation ~0 or positive).");
 		}
 
+		// Dynamic (per-candle trait-scaled) LongBias vs the fixed LongBias, per symbol and in
+		// aggregate, on Sharpe / return / drawdown. Sorted by HV.
+		public static void PrintDynLongBias(List<DynLongBiasRow> rows)
+		{
+			Console.WriteLine("\n===== DYNAMIC (per-candle) LONGBIAS vs FIXED =====");
+			if (rows.Count == 0) { Console.WriteLine("No symbols."); return; }
+			Console.WriteLine("LongBias_t = clamp(intercept + slope * z), z = z(rollingHV) + z(rollingPersistence), fixed refs.");
+			Console.WriteLine();
+			Console.WriteLine($"{"Symbol",-8} {"HV%",6}   {"Shp:Fix",8} {"Dyn",7} {"dShp",7} │ {"Ret:Fix",9} {"Dyn",9} │ {"DD:Fix",7} {"Dyn",7}");
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.0}   " +
+					$"{r.StaticSharpe,8:0.000} {r.DynSharpe,7:0.000} {r.DynSharpe - r.StaticSharpe,7:+0.000;-0.000} │ " +
+					$"{Signed(r.StaticReturnPct),9} {Signed(r.DynReturnPct),9} │ " +
+					$"-{r.StaticMaxDdPct,5:0.0}% -{r.DynMaxDdPct,5:0.0}%");
+			}
+
+			double mFixShp = rows.Average(r => r.StaticSharpe), mDynShp = rows.Average(r => r.DynSharpe);
+			double mFixRet = rows.Average(r => r.StaticReturnPct), mDynRet = rows.Average(r => r.DynReturnPct);
+			double mFixDd  = rows.Average(r => r.StaticMaxDdPct),  mDynDd  = rows.Average(r => r.DynMaxDdPct);
+			int shpWins = rows.Count(r => r.DynSharpe > r.StaticSharpe);
+			Console.WriteLine();
+			Console.WriteLine($"Mean Sharpe  — fixed {mFixShp,6:0.000}   dynamic {mDynShp,6:0.000}   ({shpWins}/{rows.Count} symbols improved)");
+			Console.WriteLine($"Mean Return% — fixed {Signed(mFixRet),9}   dynamic {Signed(mDynRet),9}");
+			Console.WriteLine($"Mean MaxDD%  — fixed -{mFixDd,5:0.0}%    dynamic -{mDynDd,5:0.0}%");
+			Console.WriteLine();
+			double dShp = mDynShp - mFixShp;
+			Console.WriteLine(
+				dShp > 0.05 && shpWins > rows.Count / 2
+					? "=> Per-candle trait-scaled LongBias improves the basket. Worth a walk-forward OOS test before trusting it."
+				: dShp > 0.0
+					? "=> Marginal improvement from dynamic LongBias; likely noise — confirm OOS."
+					: "=> Dynamic LongBias does NOT beat a fixed LongBias on this basket at these settings.");
+		}
+
 		// z-score two series and return their elementwise sum (a simple combined trait score).
 		private static List<double> ZSum(List<double> a, List<double> b)
 		{

@@ -155,6 +155,30 @@ namespace StockOdds
 		public static int    TransitionPeriod  = 60;
 		public static double TransitionPenalty = 0.0;
 
+		// ============ Dynamic (per-candle) LongBias ============
+		// Instead of one fixed LongBias, scale it every candle by a combined trait z-score:
+		//   z          = (rollingHV - HvRefMean)/HvRefStd + (rollingPersist - PersRefMean)/PersRefStd
+		//   LongBias_t = clamp(DynLongBiasIntercept + DynLongBiasSlope * z, min, max)
+		// z is on an ABSOLUTE (cross-sectional) scale via FIXED reference constants, so a
+		// chronically quiet name reads z<0 -> elevated bias (~ just hold), and a hot high-HV,
+		// high-persistence name reads z>0 -> damped bias (let the active signal run). The
+		// default intercept/slope are the basket-fit "orange line" (LongBias = 6.92 - 1.28 z);
+		// the refs are the basket means/stds of full-window HV and mean rolling persistence.
+		// rollingHV = annualized stdev of log returns over HvWindow (same convention as
+		// Volatility.AnnualizedHistoricalPct); rollingPersist = Kaufman efficiency ratio of the
+		// pre-bias exposure EMA over PersistWindow. Off by default (uses the fixed LongBias).
+		public static bool   DynamicLongBias      = false;
+		public static int    HvWindow             = 60;
+		public static int    PersistWindow        = 63;
+		public static double HvRefMean            = 76.0;
+		public static double HvRefStd             = 41.3;
+		public static double PersRefMean          = 0.1467;
+		public static double PersRefStd           = 0.0186;
+		public static double DynLongBiasIntercept = 6.92;   // LongBias at z = 0
+		public static double DynLongBiasSlope     = -1.28;  // per unit z (negative: z up -> bias down)
+		public static double DynLongBiasMin       = 0.0;
+		public static double DynLongBiasMax       = 12.0;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -268,6 +292,15 @@ namespace StockOdds
 			double absDeltaSum = 0.0;                     // sum(|d ema|) inside the window
 			double emaPrevForEr = double.NaN;            // last bar's ema, for the delta
 
+			// dynamic per-candle LongBias: rolling HV (log-return sample stdev, annualized %)
+			// as of the decision bar, plus rolling exposure-EMA persistence over PersistWindow.
+			var hvRetWindow = new Queue<double>(Math.Max(1, HvWindow));
+			double hvSum = 0.0, hvSqSum = 0.0;
+			double curHvPct = HvRefMean;                 // rolling annualized HV %, set each bar
+			var dynEmaWindow = new Queue<double>(Math.Max(1, PersistWindow) + 1);
+			var dynAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
+			double dynAbsSum = 0.0, dynEmaPrev = double.NaN;
+
 			// persistence diagnostic: mean rolling efficiency ratio of the exposure EMA over
 			// a fixed 63-bar (~quarter) window, independent of the penalty knobs.
 			const int erWin = 63;
@@ -297,10 +330,41 @@ namespace StockOdds
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
+				// per-candle LongBias: fixed, or scaled by the combined trait z-score.
+				double effLongBias = LongBias;
+				if (DynamicLongBias)
+				{
+					// rolling persistence (Kaufman ER) of the pre-bias exposure EMA
+					if (!double.IsNaN(dynEmaPrev))
+					{
+						double dd = Math.Abs(ema - dynEmaPrev);
+						dynAbsWindow.Enqueue(dd);
+						dynAbsSum += dd;
+						while (dynAbsWindow.Count > PersistWindow)
+							dynAbsSum -= dynAbsWindow.Dequeue();
+					}
+					dynEmaPrev = ema;
+					dynEmaWindow.Enqueue(ema);
+					while (dynEmaWindow.Count > PersistWindow + 1)
+						dynEmaWindow.Dequeue();
+
+					// z only once each window is warmed (else that term is neutral, z-part = 0)
+					double zHv = hvRetWindow.Count >= 20 && HvRefStd > 0 ? (curHvPct - HvRefMean) / HvRefStd : 0.0;
+					double zP = 0.0;
+					if (dynEmaWindow.Count > PersistWindow && PersRefStd > 0)
+					{
+						double pers = dynAbsSum > 1e-9
+							? Math.Min(1.0, Math.Abs(ema - dynEmaWindow.Peek()) / dynAbsSum) : 1.0;
+						zP = (pers - PersRefMean) / PersRefStd;
+					}
+					effLongBias = Clamp(DynLongBiasIntercept + DynLongBiasSlope * (zHv + zP),
+						DynLongBiasMin, DynLongBiasMax);
+				}
+
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
-				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (LongBias + 1), a Bear candle -1.
+				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
-				double sig = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindow.Enqueue(sig);
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
@@ -361,6 +425,25 @@ namespace StockOdds
 				var st = stEngine.Update(prevPrev, prev);
 				if (st == null)
 					continue;
+
+				// rolling HV (annualized log-return sample stdev, %) as of `prev` — no look-ahead
+				if (prevPrev.Close > 0 && prev.Close > 0)
+				{
+					double lr = Math.Log(prev.Close / prevPrev.Close);
+					hvRetWindow.Enqueue(lr);
+					hvSum += lr; hvSqSum += lr * lr;
+					while (hvRetWindow.Count > HvWindow)
+					{
+						double old = hvRetWindow.Dequeue();
+						hvSum -= old; hvSqSum -= old * old;
+					}
+					int nHv = hvRetWindow.Count;
+					if (nHv >= 2)
+					{
+						double v = (hvSqSum - hvSum * hvSum / nHv) / (nHv - 1);
+						curHvPct = Math.Sqrt(Math.Max(0.0, v)) * Math.Sqrt(PeriodsPerYear) * 100.0;
+					}
+				}
 
 				position = StepExposure(lt, st.Value);
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
@@ -453,6 +536,23 @@ namespace StockOdds
 			var lastSt = stEngine.Update(bars[^2], bars[^1]);
 			if (lastSt != null)
 			{
+				if (bars[^2].Close > 0 && bars[^1].Close > 0)
+				{
+					double lr = Math.Log(bars[^1].Close / bars[^2].Close);
+					hvRetWindow.Enqueue(lr);
+					hvSum += lr; hvSqSum += lr * lr;
+					while (hvRetWindow.Count > HvWindow)
+					{
+						double old = hvRetWindow.Dequeue();
+						hvSum -= old; hvSqSum -= old * old;
+					}
+					int nHv = hvRetWindow.Count;
+					if (nHv >= 2)
+					{
+						double v = (hvSqSum - hvSum * hvSum / nHv) / (nHv - 1);
+						curHvPct = Math.Sqrt(Math.Max(0.0, v)) * Math.Sqrt(PeriodsPerYear) * 100.0;
+					}
+				}
 				position = StepExposure(lastLt, lastSt.Value);
 				result.OpenBucket = (lastLt, lastSt.Value);
 				result.OpenStake = position;

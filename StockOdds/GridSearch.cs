@@ -489,6 +489,46 @@ namespace StockOdds
 			return cell;
 		}
 
+		// ===================== DYNAMIC LONGBIAS =====================
+		// Per symbol, compare the fixed LongBias (caller's config) against the per-candle
+		// trait-scaled LongBias (BankrollSimulator.DynamicLongBias), on Sharpe / return /
+		// drawdown, so we can see whether scaling LongBias by each candle's z helps the basket.
+		public static List<DynLongBiasRow> DynLongBiasStudy(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var savedDyn  = BankrollSimulator.DynamicLongBias;
+			var savedMode = BankrollSimulator.ChopMeasureMode;
+			double savedPen = BankrollSimulator.TransitionPenalty;
+			var rows = new List<DynLongBiasRow>();
+			try
+			{
+				BankrollSimulator.ChopMeasureMode   = BankrollSimulator.ChopMeasure.LtTransitions;
+				BankrollSimulator.TransitionPenalty = 0.0;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					BankrollSimulator.DynamicLongBias = false;
+					var s = BankrollSimulator.Run(bars, initialBankroll);
+					BankrollSimulator.DynamicLongBias = true;
+					var d = BankrollSimulator.Run(bars, initialBankroll);
+					rows.Add(new DynLongBiasRow
+					{
+						Symbol = sym, Bars = bars.Count,
+						HistoricalVolatilityPct = Volatility.AnnualizedHistoricalPct(bars),
+						StaticSharpe = SharpeOf(s), StaticReturnPct = s.TotalReturnPct, StaticMaxDdPct = s.MaxDrawdownPct,
+						DynSharpe    = SharpeOf(d), DynReturnPct    = d.TotalReturnPct, DynMaxDdPct    = d.MaxDrawdownPct,
+						BhReturnPct  = s.BuyHoldReturnPct,
+					});
+				}
+			}
+			finally
+			{
+				BankrollSimulator.DynamicLongBias   = savedDyn;
+				BankrollSimulator.ChopMeasureMode   = savedMode;
+				BankrollSimulator.TransitionPenalty = savedPen;
+			}
+			return rows.OrderByDescending(r => r.HistoricalVolatilityPct).ToList();
+		}
+
 		// ===================== LONGBIAS vs TRAITS =====================
 		// Tests "high HV + high persistence names want a SMALLER LongBias, and vice versa."
 		// For each symbol, holds every knob at the caller's config and sweeps LongBias only,
@@ -957,6 +997,17 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// One symbol's fixed-LongBias vs per-candle dynamic-LongBias performance.
+	public class DynLongBiasRow
+	{
+		public string Symbol = "";
+		public int    Bars;
+		public double HistoricalVolatilityPct;
+		public double StaticSharpe, StaticReturnPct, StaticMaxDdPct;
+		public double DynSharpe,    DynReturnPct,    DynMaxDdPct;
+		public double BhReturnPct;
 	}
 
 	// One symbol's best LongBias (other knobs fixed) alongside its traits, for the

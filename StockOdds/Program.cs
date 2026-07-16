@@ -38,8 +38,10 @@ class Program
 	//                     long periods" actually predict which stocks are tradable?
 	//   LongBiasTraits -> per-symbol best LongBias vs HV & persistence: does optimal LongBias
 	//                     fall as HV and persistence rise (needs less amplification)?
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep, TradabilityStudy, LongBiasTraits }
-	static GridMode GRID_MODE = GridMode.LongBiasTraits;
+	//   DynLongBias    -> per-symbol fixed LongBias vs the per-candle trait-scaled LongBias
+	//                     (z(HV)+z(persistence) -> orange-line LongBias each candle).
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep, TradabilityStudy, LongBiasTraits, DynLongBias }
+	static GridMode GRID_MODE = GridMode.DynLongBias;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -187,7 +189,8 @@ class Program
 			}
 
 			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep
-			              or GridMode.TransitionSweep or GridMode.TradabilityStudy or GridMode.LongBiasTraits)
+			              or GridMode.TransitionSweep or GridMode.TradabilityStudy or GridMode.LongBiasTraits
+			              or GridMode.DynLongBias)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -217,6 +220,10 @@ class Program
 				case GridMode.LongBiasTraits:
 					var lbt = GridSearch.LongBiasVsTraits(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintLongBiasVsTraits(lbt);
+					break;
+				case GridMode.DynLongBias:
+					var dlb = GridSearch.DynLongBiasStudy(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintDynLongBias(dlb);
 					break;
 				case GridMode.KnobRank:
 					var kr = GridSearch.KnobRank(barsBySymbol, initialBankroll: 10_000.0);
