@@ -213,7 +213,11 @@ er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
 zP      = not na(target[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
 zTrait  = zHv + zP
 dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
-effLongBias = useDynLB ? math.min(math.max(dynLBraw, dynMin), dynMax) : longBias
+dynLBc  = math.min(math.max(dynLBraw, dynMin), dynMax)
+// EMA-smooth the per-candle bias over dynSmooth (C#-faithful, seeded on the first bar)
+var float dynLbEma = na
+dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
+effLongBias = useDynLB ? dynLbEma : longBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
