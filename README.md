@@ -1,22 +1,22 @@
 # StockOdds
 
-**A three-level trend-following exposure engine — a defensive overlay that roughly halves drawdown on volatile names while holding risk-adjusted return.**
+**A three-level trend-following exposure engine — a risk-adjusted overlay that beats buy-&-hold on Sharpe across volatile names while cutting drawdown ~25%.**
 
 > Companion write-up: [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
-StockOdds classifies each candle, rolls that up into a short-term and a long-term trend state, and maps the combined state to a **target market exposure** (0–100%). The result is not a return-maximizing signal — it's a **capital-preservation overlay**: it sits in cash through sustained downtrends and re-enters as trends confirm, trading some bull-market upside for materially smaller drawdowns.
+StockOdds classifies each candle, rolls that up into a short-term and a long-term trend state, and maps the combined state to a **target market exposure** (0–100%), then scales how hard it leans long by each name's volatility and trend-persistence (the [dynamic long bias](#long-bias-fixed-or-dynamic-per-candle)). It sits in cash through sustained downtrends and re-enters as trends confirm — trading a slice of raw bull-market return for a **higher Sharpe and materially lower drawdown**.
 
 ---
 
 ## Goal
 
-The strategy is **not** trying to beat buy-and-hold on raw return. Its objective is **risk reduction**:
+Deliver **better risk-adjusted return than buy-and-hold** on volatile names, while keeping drawdowns well below simply holding:
 
-- **Cut max drawdown** by stepping aside during confirmed downtrends.
-- **Preserve risk-adjusted return** (Sharpe) and improve **return-per-drawdown** (Calmar) versus simply holding.
+- **Raise Sharpe** and **return-per-drawdown** (Calmar) versus buy-&-hold.
+- **Cut max drawdown** by stepping aside during confirmed downtrends (roughly a quarter shallower, on average).
 - Do this **without shorting** — bearish states mean "go to cash," not "go short."
 
-It is most useful on **high-volatility, drawdown-prone names** where tail risk actually hurts. On calm, low-volatility names it tends to *underperform* (sitting in cash just forfeits steady gains), so it should be deployed selectively — see [When to deploy](#when-to-deploy-it).
+It is most useful on **high-volatility names** where the trend timing and drawdown control both pay off. On calm, low-volatility names it tends to *underperform* buy-&-hold (there's no deep drawdown to dodge, so leaning long just tracks it at best), so deploy selectively — see [When to deploy](#when-to-deploy-it).
 
 ---
 
@@ -89,28 +89,29 @@ The dynamic bias is mirrored in the Pine scripts (on by default): watch `LongBia
 
 ## What to expect
 
-Backtested over each name's full available history (~5 years, **including the 2022 bear market**), fixed parameters, no per-symbol tuning:
+Backtested over each name's full available history (~5 years, **including the 2022 bear market**), default parameters with the **dynamic long bias on**, no per-symbol tuning:
 
 | Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| KO | 16 | 0.09 | 0.57 | **−13%** | −21% | 0.14 | 2.48 |
-| ^GSPC | 17 | 0.77 | 0.75 | **−8%** | −25% | 3.39 | 2.89 |
-| NVDA | 51 | **1.31** | 1.19 | **−28%** | −66% | 13.1 | 14.2 |
-| MSTR | 91 | **0.82** | 0.57 | **−33%** | −84% | 6.81 | 0.75 |
-| ASTS | 104 | 0.76 | 0.84 | **−48%** | −86% | 5.85 | 5.70 |
-| SMR | 99 | **0.66** | 0.47 | **−60%** | −88% | 2.57 | −0.12 |
-| OPEN | 109 | **0.69** | 0.33 | **−40%** | −98% | 5.38 | −0.71 |
+| KO | 16 | 0.38 | **0.54** | −19% | −21% | 1.2 | **2.3** |
+| ^GSPC | 17 | **0.88** | 0.74 | **−18%** | −25% | **4.1** | 3.1 |
+| NVDA | 51 | **1.31** | 1.18 | **−54%** | −66% | **18.2** | 15.5 |
+| MSTR | 91 | **0.71** | 0.53 | **−76%** | −84% | **3.2** | 1.1 |
+| ASTS | 104 | **0.93** | 0.83 | **−51%** | −86% | **16.1** | 6.0 |
+| SMR | 99 | **0.66** | 0.45 | **−75%** | −87% | **2.1** | −0.2 |
+| OPEN | 109 | **0.68** | 0.33 | **−77%** | −98% | **3.4** | −0.7 |
 
-**Basket aggregate (18 symbols):** mean Sharpe **0.57 vs 0.49** (strategy higher on 12/18), mean max drawdown **−34.5% vs −70.1%** — the strategy had a **shallower drawdown on 18 of 18 names.**
+**Basket aggregate (18 symbols):** mean Sharpe **0.65 vs 0.49** (strategy higher on **13/18**), mean max drawdown **−52.8% vs −70.1%** — a **shallower drawdown on 18 of 18 names** (≈ a quarter less, on average).
 
 ### The trade-off, honestly
-- **Expect lower raw returns in a straight bull run.** Example — ASTS full history: strategy **+279%** vs buy-&-hold **+488%**. The strategy sat out pullbacks and missed part of the run… but cut max drawdown from **−86% to −48%** and slightly *beat* buy-&-hold on return-per-drawdown.
-- **The win is drawdown, and it's consistent.** Roughly half the drawdown across the board.
-- **On low-vol names it lags** (KO, AAPL): no deep drawdowns to avoid, so cash just costs you return. Don't run it there.
+- **It now captures the high-vol runs rather than sitting them out.** The dynamic bias leans hard-long into volatile names that trend (ASTS: Sharpe **0.93 vs 0.83**, drawdown **−51% vs −86%**, Ret/DD **16.1 vs 6.0**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
+- **The drawdown cut is real but more modest than a pure cash-heavy config.** ≈ 25% shallower vs buy-&-hold (was ~half with a fixed low bias). Running more long buys return at the cost of some drawdown protection — a deliberate trade. If you want maximum capital preservation instead, set `DynamicLongBias = false` with a low fixed `LongBias`.
+- **On low-vol names it still lags** (KO: 0.38 vs 0.54): no deep drawdown to dodge, so leaning long just tracks buy-&-hold at best. Don't run it there.
+- **This 18-name set is high-vol-favorable.** Across a broad ~110-name universe the strategy *ties* buy-&-hold on Sharpe (≈0.43) while still cutting drawdown — the drawdown edge generalizes; the Sharpe outperformance is strongest on volatile names.
 
 ### When to deploy it
-- **Deploy on high-volatility names (roughly HV ≥ 50).** That's where drawdown protection is valuable and where the strategy matches or beats buy-and-hold on Sharpe *and* Calmar.
-- **Skip low-volatility names.** The strategy's edge grows monotonically with volatility; below ~HV 25 it's only a drawdown reducer with no risk-adjusted benefit.
+- **Deploy on high-volatility names (roughly HV ≥ 50).** That's where the dynamic bias, trend timing, and drawdown control all pay off — the strategy beats buy-and-hold on Sharpe *and* Calmar there.
+- **Skip low-volatility names.** Below ~HV 25 it tracks or lags buy-&-hold; there's no drawdown to protect against.
 - **Long-or-cash only.** Allowing shorts (`MinExposure = −100%`) was tested and made every metric *worse* — bearish signals are best expressed as cash.
 
 ---
