@@ -600,6 +600,7 @@ namespace StockOdds
 					double hm = hvs.Average(), hs = Std(hvs), pm = pes.Average(), ps = Std(pes);
 					if (hs <= 0) hs = 1; if (ps <= 0) ps = 1;
 					var symZ = zTargetLB.ToDictionary(r => r.sym, r => (r.hv - hm) / hs + (r.pe - pm) / ps);
+					var symHv = zTargetLB.ToDictionary(r => r.sym, r => r.hv);
 					var zs = zTargetLB.Select(r => (r.hv - hm) / hs + (r.pe - pm) / ps).ToList();
 					var lbTargets = zTargetLB.Select(r => r.bestLB).ToList();
 					var (slope, icept) = LinFit(zs, lbTargets);
@@ -641,6 +642,7 @@ namespace StockOdds
 							symRows.Add(new DynWfSymbolRow
 							{
 								Fold = fold, Symbol = sym, TrainZ = zv,
+								HistoricalVolatilityPct = symHv.TryGetValue(sym, out var hvv) ? hvv : 0.0,
 								PredLongBias = Math.Min(Math.Max(icept + slope * zv,
 									BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax),
 								FixSharpe = fS, DynSharpe = dS, BestFixSharpe = bS,
@@ -1203,6 +1205,7 @@ namespace StockOdds
 		public int    Fold;
 		public string Symbol = "";
 		public double TrainZ;
+		public double HistoricalVolatilityPct;
 		public double PredLongBias;
 		public double FixSharpe, DynSharpe, BestFixSharpe;
 	}

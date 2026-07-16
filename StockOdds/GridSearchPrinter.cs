@@ -697,6 +697,22 @@ namespace StockOdds
 				Grp("z < 0", rows.Where(r => r.TrainZ < 0).ToList());
 				Grp("z >= 0", rows.Where(r => r.TrainZ >= 0).ToList());
 				Grp("all", rows);
+
+				// the decisive cut for the user's question: dynamic vs best-fixed BY HV bucket
+				Console.WriteLine();
+				Console.WriteLine("By HV bucket (dynamic vs best-fixed — does per-candle win for high-IV names?):");
+				Console.WriteLine($"{"bucket",-14} {"n",4} {"predLBias",9} {"BestFix",7} {"Dyn",7} {"D-Best",7}");
+				void Bkt(string label, List<DynWfSymbolRow> g)
+				{
+					if (g.Count == 0) { Console.WriteLine($"{label,-14} {0,4}   (none)"); return; }
+					double b = g.Average(r => r.BestFixSharpe), d = g.Average(r => r.DynSharpe);
+					Console.WriteLine($"{label,-14} {g.Count,4} {g.Average(r => r.PredLongBias),9:0.0} " +
+					                  $"{b,7:0.000} {d,7:0.000} {d - b,7:+0.000;-0.000}");
+				}
+				Bkt("HV < 40",    rows.Where(r => r.HistoricalVolatilityPct < 40).ToList());
+				Bkt("HV 40-70",   rows.Where(r => r.HistoricalVolatilityPct >= 40 && r.HistoricalVolatilityPct < 70).ToList());
+				Bkt("HV 70-100",  rows.Where(r => r.HistoricalVolatilityPct >= 70 && r.HistoricalVolatilityPct < 100).ToList());
+				Bkt("HV >= 100",  rows.Where(r => r.HistoricalVolatilityPct >= 100).ToList());
 			}
 
 			Console.WriteLine();
