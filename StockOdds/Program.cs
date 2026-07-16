@@ -124,6 +124,12 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
+		// LT-transition chop penalty: drag the long bias down for names that flip LT state
+		// often (choppy underperformers like AEHR/SMCI). transWeight = 1 - penalty * (flips /
+		// TransitionPeriod), applied to the rolling bias sum. 0 = off (prior behavior).
+		BankrollSimulator.TransitionPeriod  = 60;
+		BankrollSimulator.TransitionPenalty = 5.0;
+
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
 		//BankrollSimulator.BullBearNeutral = 0.0;

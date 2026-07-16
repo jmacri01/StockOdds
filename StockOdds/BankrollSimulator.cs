@@ -112,7 +112,8 @@ namespace StockOdds
 
 		// Dynamic long bias: a directional skew applied to the EMA before the drift/clamp
 		// stage, driven by how one-sided the recent LT trend has been.
-		//   dynBias     = sum(LT dir over BiasPeriod) / BiasPeriod
+		//   rollingSum  = sum(LT dir over BiasPeriod)
+		//   dynBias     = (rollingSum / BiasPeriod) * transWeight   (transWeight: see below)
 		//   biasEma     = EMA(dynBias, BiasEmaPeriod)
 		//   adjustedEma = |ema| * biasEma + ema
 		// LT dir is (LongBias + 1) on a Bull candle, -1 on a Bear candle. LongBias
@@ -124,6 +125,20 @@ namespace StockOdds
 		public static double LongBias      = 2.0;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
+
+		// ============ LT-transition chop penalty ============
+		// Choppy names (frequent Bull<->Bear LT flips, e.g. AEHR / SMCI) tend to be
+		// extreme underperformers for this trend-following exposure map. We penalize the
+		// dynamic long bias by how often the LT state has flipped recently:
+		//   transFrac = (# LT flips in the last TransitionPeriod bars) / TransitionPeriod
+		//   transWeight = 1 - TransitionPenalty * transFrac
+		//   dynBias   = (rollingSum / BiasPeriod) * transWeight
+		// A low flip count leaves transWeight ~= 1 (bias untouched, positive); a high flip
+		// count drives transWeight down and, past 1/transFrac, negative (the long bias is
+		// dampened, then inverted). Unclamped, mirroring the rest of the bias math.
+		// TransitionPenalty = 0 disables the penalty and exactly reproduces the prior model.
+		public static int    TransitionPeriod  = 60;
+		public static double TransitionPenalty = 0.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -226,6 +241,11 @@ namespace StockOdds
 			double biasSum = 0.0;
 			double biasEma = double.NaN;   // EMA of the dynamic bias
 
+			// rolling LT-transition (flip) window for the chop penalty
+			var transWindow = new Queue<double>(Math.Max(1, TransitionPeriod));
+			double transSum = 0.0;                       // # LT flips inside the window
+			LongTermState? prevLt = null;                // last bar's LT state, for flip detection
+
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
 
 			// current (LT, ST) run being accumulated for the ledger
@@ -255,7 +275,19 @@ namespace StockOdds
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
 					biasSum -= biasWindow.Dequeue();
-				double dynBias = biasSum / BiasPeriod;
+				// LT-transition chop penalty: count Bull<->Bear flips over TransitionPeriod
+				// bars, then weight the rolling bias sum down (toward/through zero) the more
+				// often the LT state has flipped. Matches the Pine sliding-window math.
+				double flip = prevLt.HasValue && lt != prevLt.Value ? 1.0 : 0.0;
+				prevLt = lt;
+				transWindow.Enqueue(flip);
+				transSum += flip;
+				while (transWindow.Count > TransitionPeriod)
+					transSum -= transWindow.Dequeue();
+				double transFrac = TransitionPeriod > 0 ? transSum / TransitionPeriod : 0.0;
+				double transWeight = 1.0 - TransitionPenalty * transFrac;
+
+				double dynBias = (biasSum / BiasPeriod) * transWeight;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				double adjEma = Math.Abs(ema) * biasEma + ema;

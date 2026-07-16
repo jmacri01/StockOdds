@@ -72,6 +72,10 @@ longBias  = input.float(0.5, "Long bias (amplify)", step = 0.05, group = grpSmoo
      tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
 biasEmaPeriod = input.int(150, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
+transPeriod = input.int(60, "LT transition period", minval = 1, group = grpSmooth,
+     tooltip = "Look-back for the LT-transition chop penalty. LT Bull<->Bear flips are counted over this many candles.")
+transPenalty = input.float(5.0, "LT transition penalty", minval = 0, step = 0.5, group = grpSmooth,
+     tooltip = "Penalize the long bias for choppy names. transWeight = 1 - penalty * (LT flips / transition period); dynBias = (rollingSum / bias period) * transWeight. Few flips -> weight ~1 (bias untouched); many flips -> weight drops toward/through 0 (bias dampened, then inverted). 0 = off.")
 driftPct  = input.float(30, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
 minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
@@ -211,7 +215,17 @@ var float biasSum = 0.0
 biasSum += biasSig
 if bar_index >= biasPeriod
     biasSum -= biasSig[biasPeriod]
-dynBias = biasSum / biasPeriod
+// LT-transition chop penalty: count Bull<->Bear LT flips over transPeriod (same
+// C#-faithful sliding-window sum as biasSum), then weight the rolling bias sum down
+// the more often LT has flipped. flip guarded on bar_index>0 to mirror C# prevLt=null.
+flipSig = (bar_index > 0 and ltState != ltState[1]) ? 1.0 : 0.0
+var float transSum = 0.0
+transSum += flipSig
+if bar_index >= transPeriod
+    transSum -= flipSig[transPeriod]
+transFrac = transPeriod > 0 ? transSum / transPeriod : 0.0
+transWeight = 1.0 - transPenalty * transFrac
+dynBias = (biasSum / biasPeriod) * transWeight
 // C#-faithful EMA seeded on the first bar. (ta.ema warms up ~biasEmaPeriod bars, leaving
 // `position` na and the whole strategy dormant until then — with period 200 that skipped
 // ~200 bars, re-anchoring the buy&hold and hiding the crash-protection window. C# seeds
