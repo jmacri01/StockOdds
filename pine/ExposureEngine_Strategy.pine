@@ -67,6 +67,30 @@ minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step
 maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). 100 = fully long.")
 
+// -- Dynamic (per-candle) long bias: scale LongBias by z = z(HV) + z(persistence)
+grpDyn = "Dynamic long bias"
+useDynLB = input.bool(true, "Use dynamic long bias", group = grpDyn,
+     tooltip = "Off = fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet names (z<0) get a LARGE bias, hot high-vol/high-persistence names (z>0) get a SMALL bias.")
+dynScaleMode = input.string("Exponential", "Scale shape", options = ["Exponential", "Linear"], group = grpDyn,
+     tooltip = "Linear: LongBias = Base + Slope * z. Exponential: LongBias = Base * exp(-Decay * z).")
+dynBase  = input.float(1.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
+dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
+dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
+dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
+dynMax   = input.float(15.0, "LongBias max", step = 0.5, group = grpDyn)
+biasBlend = input.float(0.75, "Defensive/dynamic blend", minval = 0, maxval = 1, step = 0.05, group = grpDyn,
+     tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
+defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
+     tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
+dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
+     tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
+hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
+persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
+hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn)
+hvRefStd    = input.float(34.6,   "HV ref std",           group = grpDyn)
+persRefMean = input.float(0.072, "Persistence ref mean", group = grpDyn)
+persRefStd  = input.float(0.010, "Persistence ref std",  group = grpDyn)
+
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
 // #############################################################################
@@ -175,10 +199,24 @@ var float emaExp = na
 if not na(target)
     emaExp := na(emaExp) ? target : alpha * target + (1 - alpha) * emaExp
 
+// Per-candle LongBias: fixed, or scaled by z = z(HV) + z(persistence) with FIXED refs
+// (absolute scale): quiet name (z<0) -> large bias, hot name (z>0) -> small bias.
+// Mirrors BankrollSimulator's DynamicLongBias.
+hvRet  = na(close[1]) or close[1] <= 0 or close <= 0 ? na : math.log(close / close[1])
+rollHv = ta.stdev(hvRet, hvWindow, false) * math.sqrt(252) * 100
+zHv    = not na(rollHv) and hvRefStd > 0 ? (rollHv - hvRefMean) / hvRefStd : 0.0
+netMove = math.abs(target - target[persistWindow])
+pathLen = math.sum(math.abs(target - target[1]), persistWindow)
+er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
+zP      = not na(target[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
+zTrait  = zHv + zP
+dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
+effLongBias = useDynLB ? math.min(math.max(dynLBraw, dynMin), dynMax) : longBias
+
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
-// A Bull candle contributes (longBias + 1), a Bear candle -1; longBias skews
+// A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = ltState == 1 ? (longBias + 1) : ltState == 0 ? -1 : 0
+biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0
@@ -193,7 +231,17 @@ dynBias = biasSum / biasPeriod
 biasAlpha = 2.0 / (biasEmaPeriod + 1)
 var float dynBiasEma = na
 dynBiasEma := na(dynBiasEma) ? dynBias : biasAlpha * dynBias + (1 - biasAlpha) * dynBiasEma
-adjEma  = na(emaExp) ? na : math.abs(emaExp) * dynBiasEma + emaExp
+// DEFENSIVE leg: same sliding sum + EMA on the fixed longBias, then blend the two skews
+biasSigFix = ltState == 1 ? (defensiveBias + 1) : ltState == 0 ? -1 : 0
+var float biasSumFix = 0.0
+biasSumFix += biasSigFix
+if bar_index >= biasPeriod
+    biasSumFix -= biasSigFix[biasPeriod]
+dynBiasFix = biasSumFix / biasPeriod
+var float dynBiasEmaFix = na
+dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - biasAlpha) * dynBiasEmaFix
+blendedBiasEma = useDynLB ? biasBlend * dynBiasEma + (1 - biasBlend) * dynBiasEmaFix : dynBiasEma
+adjEma  = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
 
 driftBand = driftPct / 100.0
 var float held = na
@@ -284,3 +332,5 @@ plot(target,      "DBG ST Value",  display = display.data_window)
 plot(emaExp,      "DBG EMA",       display = display.data_window)
 plot(adjEma,      "DBG Adj EMA",   display = display.data_window)
 plot(position,    "DBG Exposure",  display = display.data_window)
+plot(effLongBias, "DBG Dyn LongBias",  display = display.data_window)
+plot(useDynLB ? zTrait : na, "DBG z (HV+persist)", display = display.data_window)

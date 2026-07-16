@@ -124,6 +124,19 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
+			// Long bias: ON by default — a per-candle dynamic bias scaled by each candle's
+			// z = z(HV) + z(persistence), EMA-smoothed. Set DynamicLongBias = false to fall back
+			// to the fixed LongBias above. Defaults are exp / base 1 / decay 0.6, refs calibrated
+			// to a ~110-name universe. Quiet/low-vol names get a larger bias, hot names a smaller one.
+			BankrollSimulator.DynamicLongBias = true;
+			// BankrollSimulator.DynScale = BankrollSimulator.DynScaleMode.Exponential; // or Linear
+			// BankrollSimulator.DynBase  = 1.0;   // LongBias at z = 0
+			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
+			// BankrollSimulator.DynSmoothPeriod = 10;  // EMA smoothing of the per-candle bias
+			// BankrollSimulator.DynMax   = 15.0;  // clamp
+			// BankrollSimulator.BiasBlend = 0.75; // 1 = pure dynamic, 0 = pure defensive
+			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
+
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
 		//BankrollSimulator.BullBearNeutral = 0.0;
