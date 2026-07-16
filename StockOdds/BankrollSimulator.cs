@@ -167,6 +167,12 @@ namespace StockOdds
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
+		// LT-Bear penalty. A Bull candle adds (bias+1) to the rolling skew but a Bear candle
+		// only subtracts 1 — so a big long bias built in a bull regime unwinds slowly and can
+		// leave the exposure skewed long well into a confirmed LT-Bear downtrend. This scales
+		// the Bear contribution to -(1 + BearPenalty*bias): 0 = old behavior (-1), 1 = fully
+		// symmetric (unwinds as fast as it built). Sharpens the LT-Bear de-risk / drawdown cut.
+		public static double BearPenalty     = 0.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -368,7 +374,7 @@ namespace StockOdds
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
 				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
-				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -(1.0 + BearPenalty * effLongBias) : 0.0;
 				biasWindow.Enqueue(sig);
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
@@ -377,7 +383,7 @@ namespace StockOdds
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				// DEFENSIVE leg: same accumulation on the fixed LongBias
-				double sigFix = lt == LongTermState.Bull ? DefensiveBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sigFix = lt == LongTermState.Bull ? DefensiveBias + 1.0 : lt == LongTermState.Bear ? -(1.0 + BearPenalty * DefensiveBias) : 0.0;
 				biasWindowFix.Enqueue(sigFix);
 				biasSumFix += sigFix;
 				while (biasWindowFix.Count > BiasPeriod)
