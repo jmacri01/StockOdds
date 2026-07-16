@@ -72,13 +72,13 @@ You can run it two ways:
 
   ```
   z          = z(rolling HV) + z(rolling exposure-persistence)
-  LongBias_t = clamp( DynBase · e^(−DynDecay · z) ,  DynMin, DynMax )     // Exponential (default)
-             = clamp( DynBase + DynSlope · z      ,  DynMin, DynMax )     // Linear
+  LongBias_t = clamp( DynBase + DynSlope · z      ,  DynMin, DynMax )     // Linear (default)
+             = clamp( DynBase · e^(−DynDecay · z) ,  DynMin, DynMax )     // Exponential
   ```
 
   `z` is on an **absolute** scale (fixed reference constants), so it reflects a name's volatility/persistence in absolute terms, not relative to its own recent history. A **quiet, steady** name reads `z < 0` → a **large** bias (lean toward staying long); a **hot, high-volatility, high-persistence** name reads `z > 0` → a **small** bias (let the active signal do the work). `rolling HV` is annualized log-return stdev over `HvWindow`; `rolling persistence` is the Kaufman efficiency ratio of the pre-bias exposure EMA over `PersistWindow` (1 = the exposure trends and holds, 0 = it round-trips).
 
-  Knobs (all on `BankrollSimulator`, hand-set — *not* fitted): `DynScale` (`Exponential`/`Linear`), `DynBase` (bias at `z = 0`, default `5`), `DynDecay`/`DynSlope`, `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow`, and the `HvRef*` / `PersRef*` reference constants.
+  Knobs (all on `BankrollSimulator`, hand-set — *not* fitted): `DynScale` (`Linear`/`Exponential`, default `Linear`), `DynBase` (bias at `z = 0`, default `0` — so high-vol names go to `0` and only quiet names get a bias), `DynSlope`/`DynDecay`, `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow`, and the `HvRef*` / `PersRef*` reference constants.
 
   > Note: on the tested basket over a bull-heavy window this did **not** beat a well-chosen *fixed* bias out-of-sample; it is provided as an option, off by default. The regime where a per-candle bias should help (dialing risk down on hot names into a drawdown) isn't covered by the available ~5-year history.
 

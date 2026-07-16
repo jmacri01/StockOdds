@@ -85,9 +85,9 @@ useDynLB = input.bool(false, "Use dynamic long bias", group = grpDyn,
      tooltip = "Off = use the fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet/steady names (z<0) get a LARGE bias (lean long); hot high-vol/high-persistence names (z>0) get a SMALL bias.")
 showDynLB = input.bool(false, "Plot dynamic long bias line", group = grpDyn,
      tooltip = "Plots the per-candle LongBias. It is on a 0..max scale, not -1..1, so it rescales this pane — turn off the exposure/EMA lines to view it cleanly. It is always in the Data Window and the table regardless.")
-dynScaleMode = input.string("Exponential", "Scale shape", options = ["Exponential", "Linear"], group = grpDyn,
-     tooltip = "Exponential: LongBias = Base * exp(-Decay * z) (never < 0, saturates). Linear: LongBias = Base + Slope * z.")
-dynBase  = input.float(5.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
+dynScaleMode = input.string("Linear", "Scale shape", options = ["Exponential", "Linear"], group = grpDyn,
+     tooltip = "Linear: LongBias = Base + Slope * z. Exponential: LongBias = Base * exp(-Decay * z) (never < 0, saturates).")
+dynBase  = input.float(0.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
 dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
 dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
