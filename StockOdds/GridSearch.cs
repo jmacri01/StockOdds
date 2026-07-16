@@ -489,6 +489,59 @@ namespace StockOdds
 			return cell;
 		}
 
+		// ===================== LONGBIAS vs TRAITS =====================
+		// Tests "high HV + high persistence names want a SMALLER LongBias, and vice versa."
+		// For each symbol, holds every knob at the caller's config and sweeps LongBias only,
+		// recording the best-Sharpe LongBias plus how much LongBias actually moves Sharpe
+		// (spread), the persistence (efficiency ratio), and HV. The caller then correlates
+		// the best LongBias against HV, persistence, and the two combined.
+		public static double[] LongBiasScan = { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0 };
+
+		public static List<LongBiasTraitRow> LongBiasVsTraits(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var savedMode = BankrollSimulator.ChopMeasureMode;
+			double savedPen = BankrollSimulator.TransitionPenalty;
+			double savedLB  = BankrollSimulator.LongBias;
+			var rows = new List<LongBiasTraitRow>();
+			try
+			{
+				BankrollSimulator.ChopMeasureMode   = BankrollSimulator.ChopMeasure.LtTransitions;
+				BankrollSimulator.TransitionPenalty = 0.0;
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					double bestSh = double.NegativeInfinity, worstSh = double.PositiveInfinity;
+					double bestLB = LongBiasScan[0], eff = 0.0;
+					foreach (var lb in LongBiasScan)
+					{
+						BankrollSimulator.LongBias = lb;
+						var r = BankrollSimulator.Run(bars, initialBankroll);
+						double sh = SharpeOf(r);
+						eff = r.MeanExposureEfficiency;   // independent of LongBias
+						if (sh > bestSh) { bestSh = sh; bestLB = lb; }
+						if (sh < worstSh) worstSh = sh;
+					}
+					rows.Add(new LongBiasTraitRow
+					{
+						Symbol                  = sym,
+						Bars                    = bars.Count,
+						HistoricalVolatilityPct = Volatility.AnnualizedHistoricalPct(bars),
+						ExposureEfficiency      = eff,
+						BestLongBias            = bestLB,
+						BestSharpe              = bestSh,
+						SharpeSpread            = bestSh - worstSh,
+					});
+				}
+			}
+			finally
+			{
+				BankrollSimulator.ChopMeasureMode   = savedMode;
+				BankrollSimulator.TransitionPenalty = savedPen;
+				BankrollSimulator.LongBias          = savedLB;
+			}
+			return rows.OrderByDescending(r => r.HistoricalVolatilityPct).ToList();
+		}
+
 		// ===================== TRADABILITY STUDY =====================
 		// Tests the hypothesis "a stock whose exposure trends for long periods is tradable;
 		// one whose exposure round-trips quickly is not." For each symbol (penalty OFF), it
@@ -904,6 +957,19 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// One symbol's best LongBias (other knobs fixed) alongside its traits, for the
+	// "traits -> optimal LongBias" relationship.
+	public class LongBiasTraitRow
+	{
+		public string Symbol = "";
+		public int    Bars;
+		public double HistoricalVolatilityPct;
+		public double ExposureEfficiency;
+		public double BestLongBias;
+		public double BestSharpe;
+		public double SharpeSpread;   // best - worst across the LongBias scan (does it matter?)
 	}
 
 	// One symbol's exposure persistence vs. its strategy performance (penalty off).

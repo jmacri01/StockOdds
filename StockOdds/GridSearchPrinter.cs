@@ -585,6 +585,73 @@ namespace StockOdds
 					: "=> Exposure persistence does NOT predict performance on this basket; it is not a useful tradability screen here.");
 		}
 
+		// LongBias-vs-traits: per-symbol best LongBias with HV / persistence, then the
+		// correlations that test "high HV + high persistence -> smaller LongBias". A combined
+		// trait score (z(HV) + z(persistence)) is correlated against the best LongBias too.
+		public static void PrintLongBiasVsTraits(List<LongBiasTraitRow> rows)
+		{
+			Console.WriteLine("\n===== LONGBIAS vs TRAITS — does optimal LongBias fall as HV & persistence rise? =====");
+			if (rows.Count < 2)
+			{
+				Console.WriteLine("Not enough symbols.");
+				return;
+			}
+			Console.WriteLine("Best LongBias = the Sharpe-maximizing LongBias per symbol (other knobs fixed). Spread = best-worst Sharpe over the scan (how much LongBias matters).");
+			Console.WriteLine();
+			Console.WriteLine($"{"Symbol",-8} {"HV%",6} {"ExpEff",7} {"BestLBias",9} {"BestShp",8} {"Spread",7}");
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.0} {r.ExposureEfficiency,7:0.000} " +
+					$"{r.BestLongBias,9:0.0} {r.BestSharpe,8:0.000} {r.SharpeSpread,7:0.000}");
+			}
+
+			var hv  = rows.Select(r => r.HistoricalVolatilityPct).ToList();
+			var eff = rows.Select(r => r.ExposureEfficiency).ToList();
+			var lb  = rows.Select(r => r.BestLongBias).ToList();
+			var combined = ZSum(hv, eff);   // z(HV) + z(persistence)
+
+			double rHv  = Corr(hv,  lb);
+			double rEff = Corr(eff, lb);
+			double rCmb = Corr(combined, lb);
+
+			// restrict to symbols where LongBias actually moves Sharpe (spread >= 0.10)
+			var mat = rows.Where(r => r.SharpeSpread >= 0.10).ToList();
+			string matNote;
+			if (mat.Count >= 3)
+			{
+				double rCmbM = Corr(
+					ZSum(mat.Select(r => r.HistoricalVolatilityPct).ToList(),
+					     mat.Select(r => r.ExposureEfficiency).ToList()),
+					mat.Select(r => r.BestLongBias).ToList());
+				matNote = $"{rCmbM:+0.000;-0.000}  (n={mat.Count} where spread>=0.10)";
+			}
+			else matNote = $"n/a (only {mat.Count} symbols move Sharpe by >=0.10)";
+
+			Console.WriteLine();
+			Console.WriteLine($"Corr( HV          , best LongBias ) : {rHv:+0.000;-0.000}");
+			Console.WriteLine($"Corr( persistence , best LongBias ) : {rEff:+0.000;-0.000}");
+			Console.WriteLine($"Corr( HV+persist  , best LongBias ) : {rCmb:+0.000;-0.000}");
+			Console.WriteLine($"Corr( HV+persist  , best LongBias ) : {matNote}");
+			Console.WriteLine();
+			Console.WriteLine(
+				rCmb <= -0.4
+					? "=> Confirms the read: higher HV+persistence names prefer a SMALLER LongBias (strong negative). A trait-scaled LongBias is worth trying."
+				: rCmb <= -0.15
+					? "=> Weak support: optimal LongBias tends down as HV+persistence rise, but it is noisy — check the Spread column (if most spreads are tiny, LongBias barely matters)."
+					: "=> Not supported: optimal LongBias does not fall with HV+persistence on this basket (correlation ~0 or positive).");
+		}
+
+		// z-score two series and return their elementwise sum (a simple combined trait score).
+		private static List<double> ZSum(List<double> a, List<double> b)
+		{
+			double ma = a.Average(), mb = b.Average();
+			double sa = Math.Sqrt(a.Sum(x => (x - ma) * (x - ma)) / Math.Max(1, a.Count - 1));
+			double sb = Math.Sqrt(b.Sum(x => (x - mb) * (x - mb)) / Math.Max(1, b.Count - 1));
+			sa = sa > 0 ? sa : 1; sb = sb > 0 ? sb : 1;
+			return a.Select((x, i) => (x - ma) / sa + (b[i] - mb) / sb).ToList();
+		}
+
 		// Pearson correlation coefficient; returns 0 when either series has no variance.
 		private static double Corr(IEnumerable<double> xs, IEnumerable<double> ys)
 		{
