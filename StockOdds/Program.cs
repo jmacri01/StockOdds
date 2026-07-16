@@ -136,9 +136,8 @@ class Program
 			// BankrollSimulator.DynMax   = 15.0;  // clamp
 			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
 			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
-			// BankrollSimulator.BearPenalty = 0.0; // scales the Bear contribution to -(1 + BearPenalty*bias) so the long
-			//                                      // skew unwinds faster into LT-Bear (0 = off, 1 = symmetric). Risk dial:
-			//                                      // ~2.5pts less drawdown per 0.25, at ~0.08 Sharpe OOS.
+			// BankrollSimulator.BearPenalty = 0.0; // while LT is Bear, shrink the long lean by (1-BearPenalty):
+			//                                      // 1 = no long bias in Bear (raw target), 0 = off. Targeted risk dial.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
