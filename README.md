@@ -76,10 +76,10 @@ LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
 ```
 
 - **`z` is absolute, not relative** — it uses fixed reference constants for the mean/std of HV and persistence, calibrated to the cross-sectional distribution of a ~110-name universe. So a stock's z reflects "how volatile / persistent is this name in absolute terms," not "vs its own recent history" (a chronically quiet name must read low, not drift to zero).
-- **What it does:** a **quiet, steady** name (`z < 0`) gets a **large** bias — lean toward staying long, since it grinds up. A **hot** name (`z > 0`) gets a **small** bias — let the active signal do the work. `rolling HV` = annualized log-return stdev over `HvWindow`; `rolling persistence` = Kaufman efficiency ratio of the pre-bias exposure EMA over `PersistWindow` (1 = exposure trends and holds, 0 = it round-trips).
+- **What it does:** a **quiet, steady** name (`z < 0`) gets a **large** bias — lean toward staying long, since it grinds up. A **hot** name (`z > 0`) gets a **small** bias — let the active signal do the work. `rolling HV` = annualized log-return stdev over `HvWindow`; `rolling persistence` = Kaufman efficiency ratio of the **raw `(LT,ST)` target exposure** over `PersistWindow` (1 = the state sequence trends and holds, 0 = it round-trips). It's measured on the raw target, *not* the exposure EMA, so the bias is **independent of `ExposureEmaPeriod`** — changing one smoothing knob doesn't move the other.
 - **Smoothed:** the raw per-candle bias is jumpy (the persistence ratio moves fast on state transitions and the exponential is convex), so it's EMA-smoothed over `DynSmoothPeriod` to avoid whipsaw.
 
-**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynScale` (default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynSmoothPeriod` (default **10**), `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow` (**60 / 63**), and refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.142 / 0.017**). Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynScale` (default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynSmoothPeriod` (default **10**), `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow` (**60 / 63**), and refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**). Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
 
 **Why it's the default — and its honest limits.** On a 110-name walk-forward (~5y OOS) the default `exp / 1 / 0.6` **beats a fixed `LongBias = 0.5`** (mean OOS Sharpe **0.43 vs 0.16**, return **+17% vs +10%**) *and* cuts drawdown — a real, out-of-sample improvement, so it's on by default. It also finally handles the high-vol, low-persistence names (e.g. AEHR/SMCI) that a fixed low bias whipsawed: their low persistence pulls z negative, so they get a high bias and stay long through their runs. Two caveats kept in view: (1) it does **not** beat a *high* fixed bias (~10) on raw Sharpe/return — that captures more of a bull run but gives back drawdown protection; (2) the piece that **provably generalizes OOS is the drawdown reduction**, not return outperformance vs buy-&-hold. This is a risk overlay, not an alpha engine — consistent with the strategy's stated goal.
 
@@ -93,18 +93,18 @@ Backtested over each name's full available history (~5 years, **including the 20
 
 | Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| KO | 16 | 0.38 | **0.54** | −19% | −21% | 1.2 | **2.3** |
-| ^GSPC | 17 | **0.88** | 0.74 | **−18%** | −25% | **4.1** | 3.1 |
-| NVDA | 51 | **1.31** | 1.18 | **−54%** | −66% | **18.2** | 15.5 |
-| MSTR | 91 | **0.71** | 0.53 | **−76%** | −84% | **3.2** | 1.1 |
-| ASTS | 104 | **0.93** | 0.83 | **−51%** | −86% | **16.1** | 6.0 |
-| SMR | 99 | **0.66** | 0.45 | **−75%** | −87% | **2.1** | −0.2 |
-| OPEN | 109 | **0.68** | 0.33 | **−77%** | −98% | **3.4** | −0.7 |
+| KO | 16 | 0.33 | **0.54** | −22% | −21% | 0.9 | **2.3** |
+| ^GSPC | 17 | **0.99** | 0.74 | **−16%** | −25% | **5.3** | 3.1 |
+| NVDA | 51 | **1.30** | 1.18 | **−53%** | −66% | **17.9** | 15.5 |
+| MSTR | 91 | **0.89** | 0.53 | **−63%** | −84% | **7.6** | 1.1 |
+| ASTS | 104 | **0.84** | 0.83 | **−60%** | −86% | **9.1** | 6.0 |
+| SMR | 99 | **0.64** | 0.45 | **−76%** | −87% | **1.8** | −0.2 |
+| OPEN | 109 | **0.56** | 0.33 | **−66%** | −98% | **2.1** | −0.7 |
 
-**Basket aggregate (18 symbols):** mean Sharpe **0.65 vs 0.49** (strategy higher on **13/18**), mean max drawdown **−52.8% vs −70.1%** — a **shallower drawdown on 18 of 18 names** (≈ a quarter less, on average).
+**Basket aggregate (18 symbols):** mean Sharpe **0.65 vs 0.49** (strategy higher on **14/18**), mean max drawdown **−50.6% vs −70.1%** — a **shallower drawdown on 17 of 18 names** (≈ a quarter less, on average).
 
 ### The trade-off, honestly
-- **It now captures the high-vol runs rather than sitting them out.** The dynamic bias leans hard-long into volatile names that trend (ASTS: Sharpe **0.93 vs 0.83**, drawdown **−51% vs −86%**, Ret/DD **16.1 vs 6.0**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
+- **It now captures the high-vol runs rather than sitting them out.** The dynamic bias leans hard-long into volatile names that trend (ASTS: Sharpe **0.84 vs 0.83**, drawdown **−60% vs −86%**, Ret/DD **9.1 vs 6.0**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
 - **The drawdown cut is real but more modest than a pure cash-heavy config.** ≈ 25% shallower vs buy-&-hold (was ~half with a fixed low bias). Running more long buys return at the cost of some drawdown protection — a deliberate trade. If you want maximum capital preservation instead, set `DynamicLongBias = false` with a low fixed `LongBias`.
 - **On low-vol names it still lags** (KO: 0.38 vs 0.54): no deep drawdown to dodge, so leaning long just tracks buy-&-hold at best. Don't run it there.
 - **This 18-name set is high-vol-favorable.** Across a broad ~110-name universe the strategy *ties* buy-&-hold on Sharpe (≈0.43) while still cutting drawdown — the drawdown edge generalizes; the Sharpe outperformance is strongest on volatile names.

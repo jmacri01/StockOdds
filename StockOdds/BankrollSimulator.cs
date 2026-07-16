@@ -135,8 +135,9 @@ namespace StockOdds
 		// z<0 -> a large LongBias (leans toward staying long) and a hot high-HV, high-persistence
 		// name reads z>0 -> a small LongBias (lets the active signal run). rollingHV = annualized
 		// stdev of log returns over HvWindow (same convention as Volatility.AnnualizedHistoricalPct);
-		// rollingPersist = Kaufman efficiency ratio of the pre-bias exposure EMA over PersistWindow
-		// (1 = the exposure trends and holds, 0 = it round-trips). Finally the per-candle bias is
+		// rollingPersist = Kaufman efficiency ratio of the RAW (LT,ST) target exposure over
+		// PersistWindow (1 = the state sequence trends and holds, 0 = it round-trips) — measured
+		// on the raw target, not the EMA, so it is independent of ExposureEmaPeriod. Finally the per-candle bias is
 		// EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps because the
 		// persistence ratio is jumpy and the exp map is convex). All knobs are hand-set, not fit.
 		public enum DynScaleMode { Linear, Exponential }
@@ -146,8 +147,8 @@ namespace StockOdds
 		public static int    PersistWindow   = 63;
 		public static double HvRefMean       = 57.0;
 		public static double HvRefStd        = 34.6;
-		public static double PersRefMean     = 0.142;
-		public static double PersRefStd      = 0.017;
+		public static double PersRefMean     = 0.072;
+		public static double PersRefStd      = 0.010;
 		public static double DynBase         = 1.0;    // LongBias at z = 0
 		public static double DynDecay        = 0.6;    // exponential mode: decay rate
 		public static double DynSlope        = -1.28;  // linear mode: per unit z
@@ -261,9 +262,9 @@ namespace StockOdds
 			var hvRetWindow = new Queue<double>(Math.Max(1, HvWindow));
 			double hvSum = 0.0, hvSqSum = 0.0;
 			double curHvPct = HvRefMean;              // rolling annualized HV %, refreshed each bar
-			var perEmaWindow = new Queue<double>(Math.Max(1, PersistWindow) + 1);
+			var perTgtWindow = new Queue<double>(Math.Max(1, PersistWindow) + 1);
 			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
-			double perAbsSum = 0.0, perEmaPrev = double.NaN;
+			double perAbsSum = 0.0, perTgtPrev = double.NaN;
 			double dynLbAlpha = 2.0 / (Math.Max(1, DynSmoothPeriod) + 1);
 			double dynLbEma = double.NaN;             // EMA-smoothed per-candle LongBias
 
@@ -312,27 +313,29 @@ namespace StockOdds
 				double effLongBias = LongBias;
 				if (DynamicLongBias)
 				{
-					// rolling persistence (Kaufman efficiency ratio) of the pre-bias exposure EMA
-					if (!double.IsNaN(perEmaPrev))
+					// rolling persistence (Kaufman efficiency ratio) of the RAW target exposure —
+					// deliberately NOT the exposure EMA, so it is independent of ExposureEmaPeriod
+					// (measures how much the (LT,ST) state sequence trends vs. round-trips).
+					if (!double.IsNaN(perTgtPrev))
 					{
-						double d = Math.Abs(ema - perEmaPrev);
+						double d = Math.Abs(target - perTgtPrev);
 						perAbsWindow.Enqueue(d);
 						perAbsSum += d;
 						while (perAbsWindow.Count > PersistWindow)
 							perAbsSum -= perAbsWindow.Dequeue();
 					}
-					perEmaPrev = ema;
-					perEmaWindow.Enqueue(ema);
-					while (perEmaWindow.Count > PersistWindow + 1)
-						perEmaWindow.Dequeue();
+					perTgtPrev = target;
+					perTgtWindow.Enqueue(target);
+					while (perTgtWindow.Count > PersistWindow + 1)
+						perTgtWindow.Dequeue();
 
 					// each z-term only once its rolling window has warmed (else that term is 0)
 					double zHv = hvRetWindow.Count >= 20 && HvRefStd > 0 ? (curHvPct - HvRefMean) / HvRefStd : 0.0;
 					double zP = 0.0;
-					if (perEmaWindow.Count > PersistWindow && PersRefStd > 0)
+					if (perTgtWindow.Count > PersistWindow && PersRefStd > 0)
 					{
 						double pers = perAbsSum > 1e-9
-							? Math.Min(1.0, Math.Abs(ema - perEmaWindow.Peek()) / perAbsSum) : 1.0;
+							? Math.Min(1.0, Math.Abs(target - perTgtWindow.Peek()) / perAbsSum) : 1.0;
 						zP = (pers - PersRefMean) / PersRefStd;
 					}
 					double z = zHv + zP;

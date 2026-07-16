@@ -84,8 +84,8 @@ hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn)
 hvRefStd    = input.float(34.6,   "HV ref std",           group = grpDyn)
-persRefMean = input.float(0.142, "Persistence ref mean", group = grpDyn)
-persRefStd  = input.float(0.017, "Persistence ref std",  group = grpDyn)
+persRefMean = input.float(0.072, "Persistence ref mean", group = grpDyn)
+persRefStd  = input.float(0.010, "Persistence ref std",  group = grpDyn)
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -201,10 +201,10 @@ if not na(target)
 hvRet  = na(close[1]) or close[1] <= 0 or close <= 0 ? na : math.log(close / close[1])
 rollHv = ta.stdev(hvRet, hvWindow, false) * math.sqrt(252) * 100
 zHv    = not na(rollHv) and hvRefStd > 0 ? (rollHv - hvRefMean) / hvRefStd : 0.0
-netMove = math.abs(emaExp - emaExp[persistWindow])
-pathLen = math.sum(math.abs(emaExp - emaExp[1]), persistWindow)
+netMove = math.abs(target - target[persistWindow])
+pathLen = math.sum(math.abs(target - target[1]), persistWindow)
 er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
-zP      = not na(emaExp[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
+zP      = not na(target[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
 zTrait  = zHv + zP
 dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
 effLongBias = useDynLB ? math.min(math.max(dynLBraw, dynMin), dynMax) : longBias
