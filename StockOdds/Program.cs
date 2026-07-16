@@ -136,6 +136,9 @@ class Program
 			// BankrollSimulator.DynMax   = 15.0;  // clamp
 			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
 			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
+			// BankrollSimulator.BiasNoInvert = true; // stop the bias flipping a bearish EMA into a net long when
+			//                                        // biasEma > 1 (it may trim to flat, not invert). Near-free on
+			//                                        // high-vol names; removes the leverage-into-a-crash tail risk.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
