@@ -167,11 +167,6 @@ namespace StockOdds
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
-		// LT-Bear penalty [0..1]. While in a confirmed LT-Bear regime, scale DOWN the long
-		// skew (the accumulated bias lean) by (1 - BearPenalty): 1 = no long bias in Bear
-		// (exposure follows the raw target), 0.75 = keep 25%, 0 = unchanged. Only shrinks a
-		// POSITIVE (long) lean, never a protective negative skew. Sharpens the LT-Bear de-risk.
-		public static double BearPenalty     = 0.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -392,10 +387,6 @@ namespace StockOdds
 
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
 				double blendedBiasEma = DynamicLongBias ? BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix : biasEma;
-				// LT-Bear penalty: while in a confirmed LT-Bear regime, shrink the LONG lean by
-				// (1 - BearPenalty). Only a positive skew is reduced; protective negative skew is left alone.
-				if (lt == LongTermState.Bear && blendedBiasEma > 0.0)
-					blendedBiasEma *= (1.0 - BearPenalty);
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;

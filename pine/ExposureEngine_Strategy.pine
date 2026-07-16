@@ -82,8 +82,6 @@ biasBlend = input.float(1.0, "Defensive/dynamic blend", minval = 0, maxval = 1, 
      tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
 defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
      tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
-bearPenalty = input.float(0.0, "LT-Bear penalty", minval = 0, maxval = 1, step = 0.25, group = grpDyn,
-     tooltip = "While inside a confirmed LT-Bear regime, scale down the long lean by (1 - penalty): 1 = no long bias in Bear (exposure follows the raw target), 0.75 = keep 25%, 0 = unchanged. Only shrinks a positive (long) lean, never protective negative skew. Sharpens the LT-Bear de-risk / drawdown cut.")
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
@@ -243,9 +241,7 @@ dynBiasFix = biasSumFix / biasPeriod
 var float dynBiasEmaFix = na
 dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - biasAlpha) * dynBiasEmaFix
 blendedBiasEma = useDynLB ? biasBlend * dynBiasEma + (1 - biasBlend) * dynBiasEmaFix : dynBiasEma
-// LT-Bear penalty: while in a confirmed LT-Bear regime, shrink a positive (long) lean by (1 - bearPenalty)
-blendedBiasEmaP = (ltState == 0 and blendedBiasEma > 0) ? blendedBiasEma * (1 - bearPenalty) : blendedBiasEma
-adjEma  = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEmaP + emaExp
+adjEma  = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
 
 driftBand = driftPct / 100.0
 var float held = na

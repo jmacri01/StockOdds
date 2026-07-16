@@ -136,8 +136,6 @@ class Program
 			// BankrollSimulator.DynMax   = 15.0;  // clamp
 			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
 			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
-			// BankrollSimulator.BearPenalty = 0.0; // while LT is Bear, shrink the long lean by (1-BearPenalty):
-			//                                      // 1 = no long bias in Bear (raw target), 0 = off. Targeted risk dial.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
