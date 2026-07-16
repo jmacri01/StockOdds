@@ -529,6 +529,174 @@ namespace StockOdds
 			return rows.OrderByDescending(r => r.HistoricalVolatilityPct).ToList();
 		}
 
+		// ===================== DYNAMIC LONGBIAS — WALK-FORWARD =====================
+		// The honest OOS test of the per-candle dynamic LongBias. Each fold FITS everything on
+		// the train window only — the HV/persistence reference constants AND the LongBias line
+		// (regress each symbol's train-best LongBias on its train combined-z) — then applies
+		// those on the following test window, scoring dynamic vs fixed LongBias on Sharpe /
+		// return / drawdown. Test runs pre-roll a warmup so the rolling HV/persistence windows
+		// are warm at test start; only the test bars are scored (via BankrollResult.ReturnDates).
+		public static int DynWfTrainBars  = 378;   // ~1.5y fit
+		public static int DynWfTestBars   = 189;   // ~9mo score
+		public static int DynWfStepBars   = 189;   // advance
+		public static int DynWfWarmupBars = 63;    // pre-roll so rolling windows are warm
+
+		public static List<DynWfFold> DynLongBiasWalkForward(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var sDyn = BankrollSimulator.DynamicLongBias; var sMode = BankrollSimulator.ChopMeasureMode;
+			double sPen = BankrollSimulator.TransitionPenalty, sLB = BankrollSimulator.LongBias;
+			double sHm = BankrollSimulator.HvRefMean, sHs = BankrollSimulator.HvRefStd,
+			       sPm = BankrollSimulator.PersRefMean, sPs = BankrollSimulator.PersRefStd,
+			       sIc = BankrollSimulator.DynLongBiasIntercept, sSl = BankrollSimulator.DynLongBiasSlope;
+			double fixedLB = sLB;   // baseline fixed LongBias = the caller's configured value
+
+			var folds = new List<DynWfFold>();
+			try
+			{
+				BankrollSimulator.ChopMeasureMode   = BankrollSimulator.ChopMeasure.LtTransitions;
+				BankrollSimulator.TransitionPenalty = 0.0;
+
+				var reference = barsBySymbol.Values.OrderByDescending(b => b.Count).First();
+				int fold = 0;
+				for (int start = 0; start + DynWfTrainBars + DynWfTestBars <= reference.Count; start += DynWfStepBars)
+				{
+					DateTime trStart = reference[start].Date;
+					DateTime teStart = reference[start + DynWfTrainBars].Date;
+					int teEndIdx = start + DynWfTrainBars + DynWfTestBars;
+					DateTime teEnd = teEndIdx < reference.Count ? reference[teEndIdx].Date : DateTime.MaxValue;
+					DateTime warmStart = reference[Math.Max(0, start + DynWfTrainBars - DynWfWarmupBars)].Date;
+
+					// ---- FIT on TRAIN: refs (pooled HV & persistence) + the LongBias line ----
+					var hvs = new List<double>(); var pes = new List<double>();
+					var zTargetLB = new List<(double hv, double pe, double bestLB)>();
+					BankrollSimulator.DynamicLongBias = false;
+					foreach (var (sym, bars) in barsBySymbol)
+					{
+						var tr = bars.Where(b => b.Date >= trStart && b.Date < teStart).ToList();
+						if (tr.Count < 63) continue;
+						double hv = Volatility.AnnualizedHistoricalPct(tr);
+						BankrollSimulator.LongBias = fixedLB;
+						double pe = BankrollSimulator.Run(tr, initialBankroll).MeanExposureEfficiency;
+						double bestSh = double.NegativeInfinity, bestLB = LongBiasScan[0];
+						foreach (var lb in LongBiasScan)
+						{
+							BankrollSimulator.LongBias = lb;
+							double sh = SharpeOf(BankrollSimulator.Run(tr, initialBankroll));
+							if (sh > bestSh) { bestSh = sh; bestLB = lb; }
+						}
+						hvs.Add(hv); pes.Add(pe); zTargetLB.Add((hv, pe, bestLB));
+					}
+					if (zTargetLB.Count < 3) continue;
+
+					double hm = hvs.Average(), hs = Std(hvs), pm = pes.Average(), ps = Std(pes);
+					if (hs <= 0) hs = 1; if (ps <= 0) ps = 1;
+					var zs = zTargetLB.Select(r => (r.hv - hm) / hs + (r.pe - pm) / ps).ToList();
+					var lbTargets = zTargetLB.Select(r => r.bestLB).ToList();
+					var (slope, icept) = LinFit(zs, lbTargets);
+
+					BankrollSimulator.HvRefMean = hm; BankrollSimulator.HvRefStd = hs;
+					BankrollSimulator.PersRefMean = pm; BankrollSimulator.PersRefStd = ps;
+					BankrollSimulator.DynLongBiasIntercept = icept; BankrollSimulator.DynLongBiasSlope = slope;
+
+					// ---- APPLY on TEST (warmup pre-roll, score test bars only) ----
+					var fSh = new List<double>(); var dSh = new List<double>();
+					var fDd = new List<double>(); var dDd = new List<double>();
+					var fRt = new List<double>(); var dRt = new List<double>();
+					int dynWins = 0, n = 0;
+					foreach (var (sym, bars) in barsBySymbol)
+					{
+						var slice = bars.Where(b => b.Date >= warmStart && b.Date < teEnd).ToList();
+						var testDates = bars.Where(b => b.Date >= teStart && b.Date < teEnd)
+							.Select(b => b.Date).ToHashSet();
+						if (slice.Count < DynWfWarmupBars + 10 || testDates.Count < 20) continue;
+
+						BankrollSimulator.DynamicLongBias = false; BankrollSimulator.LongBias = fixedLB;
+						var fSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
+						BankrollSimulator.DynamicLongBias = true;
+						var dSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
+						if (fSeries.Count < 20 || dSeries.Count < 20) continue;
+
+						double fS = SeriesSharpe(fSeries), dS = SeriesSharpe(dSeries);
+						fSh.Add(fS); dSh.Add(dS);
+						fDd.Add(SeriesMaxDd(fSeries)); dDd.Add(SeriesMaxDd(dSeries));
+						fRt.Add(SeriesRet(fSeries)); dRt.Add(SeriesRet(dSeries));
+						if (dS > fS) dynWins++;
+						n++;
+					}
+					if (n == 0) continue;
+
+					folds.Add(new DynWfFold
+					{
+						Index = fold, TestStart = teStart,
+						TestEnd = teEndIdx < reference.Count ? reference[teEndIdx - 1].Date : reference[^1].Date,
+						Symbols = n, Slope = slope, Intercept = icept,
+						MeanFixSharpe = fSh.Average(), MeanDynSharpe = dSh.Average(),
+						MeanFixMaxDd = fDd.Average(), MeanDynMaxDd = dDd.Average(),
+						MeanFixReturnPct = fRt.Average(), MeanDynReturnPct = dRt.Average(),
+						DynWinFraction = (double)dynWins / n,
+					});
+					fold++;
+				}
+			}
+			finally
+			{
+				BankrollSimulator.DynamicLongBias = sDyn; BankrollSimulator.ChopMeasureMode = sMode;
+				BankrollSimulator.TransitionPenalty = sPen; BankrollSimulator.LongBias = sLB;
+				BankrollSimulator.HvRefMean = sHm; BankrollSimulator.HvRefStd = sHs;
+				BankrollSimulator.PersRefMean = sPm; BankrollSimulator.PersRefStd = sPs;
+				BankrollSimulator.DynLongBiasIntercept = sIc; BankrollSimulator.DynLongBiasSlope = sSl;
+			}
+			return folds;
+		}
+
+		private static double Std(List<double> a)
+		{
+			if (a.Count < 2) return 0.0;
+			double m = a.Average();
+			return Math.Sqrt(a.Sum(x => (x - m) * (x - m)) / (a.Count - 1));
+		}
+
+		private static (double slope, double intercept) LinFit(List<double> x, List<double> y)
+		{
+			double mx = x.Average(), my = y.Average();
+			double sxx = 0, sxy = 0;
+			for (int i = 0; i < x.Count; i++) { sxx += (x[i] - mx) * (x[i] - mx); sxy += (x[i] - mx) * (y[i] - my); }
+			double slope = sxx > 0 ? sxy / sxx : 0.0;
+			return (slope, my - slope * mx);
+		}
+
+		private static List<double> SliceReturns(BankrollResult r, HashSet<DateTime> dates)
+		{
+			var outp = new List<double>(dates.Count);
+			for (int i = 0; i < r.ReturnDates.Count; i++)
+				if (dates.Contains(r.ReturnDates[i])) outp.Add(r.StratReturns[i]);
+			return outp;
+		}
+
+		private static double SeriesSharpe(List<double> rets)
+		{
+			if (rets.Count < 2) return 0.0;
+			double m = rets.Average();
+			double v = rets.Sum(x => (x - m) * (x - m)) / (rets.Count - 1);
+			double sd = Math.Sqrt(v);
+			return sd > 0 ? m / sd * Math.Sqrt(BankrollSimulator.PeriodsPerYear) : 0.0;
+		}
+
+		private static double SeriesMaxDd(List<double> rets)
+		{
+			double eq = 1.0, peak = 1.0, mdd = 0.0;
+			foreach (var r in rets) { eq *= 1.0 + r; if (eq > peak) peak = eq; double dd = (peak - eq) / peak * 100.0; if (dd > mdd) mdd = dd; }
+			return mdd;
+		}
+
+		private static double SeriesRet(List<double> rets)
+		{
+			double eq = 1.0;
+			foreach (var r in rets) eq *= 1.0 + r;
+			return (eq - 1.0) * 100.0;
+		}
+
 		// ===================== LONGBIAS vs TRAITS =====================
 		// Tests "high HV + high persistence names want a SMALLER LongBias, and vice versa."
 		// For each symbol, holds every knob at the caller's config and sweeps LongBias only,
@@ -997,6 +1165,21 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// One walk-forward fold: dynamic (train-fit refs+line) vs fixed LongBias on the held-out
+	// test window, plus the line fitted on that fold's train.
+	public class DynWfFold
+	{
+		public int      Index;
+		public DateTime TestStart;
+		public DateTime TestEnd;
+		public int      Symbols;
+		public double   Slope, Intercept;      // LongBias line fit on this fold's train
+		public double   MeanFixSharpe, MeanDynSharpe;
+		public double   MeanFixMaxDd,  MeanDynMaxDd;
+		public double   MeanFixReturnPct, MeanDynReturnPct;
+		public double   DynWinFraction;        // fraction of symbols where dyn Sharpe > fixed
 	}
 
 	// One symbol's fixed-LongBias vs per-candle dynamic-LongBias performance.

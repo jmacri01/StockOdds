@@ -79,6 +79,12 @@ namespace StockOdds
 		// the Kaufman efficiency ratio of the pre-bias exposure EMA measured over a fixed
 		// window. ~1 => exposure trends and holds (tradable); ~0 => it round-trips / whips.
 		public double MeanExposureEfficiency { get; set; }
+
+		// Per-bar return series (aligned), so a walk-forward can score just a sub-window
+		// (e.g. test bars only, after a warmup pre-roll). Date is the bar the move lands on.
+		public List<DateTime> ReturnDates { get; set; } = new();
+		public List<double>   StratReturns { get; set; } = new();
+		public List<double>   BhReturns { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -264,6 +270,7 @@ namespace StockOdds
 			// over the exact same bars so the two ratios are comparable.
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
+			var returnDates = new List<DateTime>();
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
 			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
@@ -490,6 +497,7 @@ namespace StockOdds
 
 				stratReturns.Add(tradeReturn);
 				bhReturns.Add(r);
+				returnDates.Add(bar.Date);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -519,6 +527,9 @@ namespace StockOdds
 			result.FinalBankroll = bankroll;
 			result.MaxDrawdownPct = maxDd;
 			result.MeanExposureEfficiency = erCount > 0 ? erSum / erCount : 0.0;
+			result.StratReturns = stratReturns;
+			result.BhReturns = bhReturns;
+			result.ReturnDates = returnDates;
 
 			// Sharpe ratios (risk-free = 0) and buy & hold drawdown over the same bars.
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);

@@ -642,6 +642,49 @@ namespace StockOdds
 					: "=> Not supported: optimal LongBias does not fall with HV+persistence on this basket (correlation ~0 or positive).");
 		}
 
+		// Walk-forward OOS: dynamic LongBias (refs + line fit on each train window) vs fixed
+		// LongBias on the held-out test window, one row per fold, with the aggregate verdict.
+		public static void PrintDynLongBiasWalkForward(List<DynWfFold> folds)
+		{
+			Console.WriteLine("\n===== DYNAMIC LONGBIAS — WALK-FORWARD (refs+line fit on train, scored on test) =====");
+			if (folds.Count == 0)
+			{
+				Console.WriteLine("No folds — not enough history for the configured train/test/warmup window.");
+				return;
+			}
+			Console.WriteLine(
+				$"{"Fold",4} {"Test window",23} {"Sym",4}   {"line (int/slope)",17}   " +
+				$"{"Shp:Fix",8} {"Dyn",7} {"dShp",7}   {"DD:Fix",7} {"Dyn",7}   {"Dyn>Fix",7}");
+			foreach (var f in folds)
+			{
+				string win = $"{f.TestStart:yyyy-MM-dd}..{f.TestEnd:yyyy-MM-dd}";
+				Console.WriteLine(
+					$"{f.Index,4} {win,23} {f.Symbols,4}   {$"{f.Intercept,5:0.0}/{f.Slope,5:0.00}",17}   " +
+					$"{f.MeanFixSharpe,8:0.000} {f.MeanDynSharpe,7:0.000} {f.MeanDynSharpe - f.MeanFixSharpe,7:+0.000;-0.000}   " +
+					$"-{f.MeanFixMaxDd,5:0.0}% -{f.MeanDynMaxDd,5:0.0}%   {f.DynWinFraction * 100.0,5:0.}%");
+			}
+
+			double mFix = folds.Average(f => f.MeanFixSharpe), mDyn = folds.Average(f => f.MeanDynSharpe);
+			double mFixDd = folds.Average(f => f.MeanFixMaxDd), mDynDd = folds.Average(f => f.MeanDynMaxDd);
+			double mFixRt = folds.Average(f => f.MeanFixReturnPct), mDynRt = folds.Average(f => f.MeanDynReturnPct);
+			int foldWins = folds.Count(f => f.MeanDynSharpe > f.MeanFixSharpe);
+			double dShp = mDyn - mFix;
+
+			Console.WriteLine();
+			Console.WriteLine($"Folds                         : {folds.Count}");
+			Console.WriteLine($"Mean OOS Sharpe  — fixed {mFix,6:0.000}   dynamic {mDyn,6:0.000}   (delta {dShp:+0.000;-0.000})");
+			Console.WriteLine($"Mean OOS Return% — fixed {Signed(mFixRt),9}   dynamic {Signed(mDynRt),9}");
+			Console.WriteLine($"Mean OOS MaxDD%  — fixed -{mFixDd,5:0.0}%    dynamic -{mDynDd,5:0.0}%");
+			Console.WriteLine($"Folds where dynamic beats fixed (mean Sharpe) : {foldWins}/{folds.Count}");
+			Console.WriteLine();
+			Console.WriteLine(
+				dShp > 0.05 && foldWins > folds.Count / 2
+					? "=> Dynamic LongBias holds up OUT-OF-SAMPLE => the trait-scaled bias carries a real edge."
+				: dShp > 0.0
+					? "=> Dynamic LongBias is roughly break-even OOS => the in-sample edge was mostly fit; not worth the added drawdown."
+					: "=> Dynamic LongBias does NOT survive OOS => it was in-sample overfitting. Keep the fixed LongBias.");
+		}
+
 		// Dynamic (per-candle trait-scaled) LongBias vs the fixed LongBias, per symbol and in
 		// aggregate, on Sharpe / return / drawdown. Sorted by HV.
 		public static void PrintDynLongBias(List<DynLongBiasRow> rows)

@@ -40,8 +40,10 @@ class Program
 	//                     fall as HV and persistence rise (needs less amplification)?
 	//   DynLongBias    -> per-symbol fixed LongBias vs the per-candle trait-scaled LongBias
 	//                     (z(HV)+z(persistence) -> orange-line LongBias each candle).
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep, TradabilityStudy, LongBiasTraits, DynLongBias }
-	static GridMode GRID_MODE = GridMode.DynLongBias;
+	//   DynLongBiasWF  -> walk-forward OOS test of the dynamic LongBias: fit refs+line on each
+	//                     train window, score dynamic vs fixed on the held-out test window.
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep, TradabilityStudy, LongBiasTraits, DynLongBias, DynLongBiasWF }
+	static GridMode GRID_MODE = GridMode.DynLongBiasWF;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -224,6 +226,10 @@ class Program
 				case GridMode.DynLongBias:
 					var dlb = GridSearch.DynLongBiasStudy(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintDynLongBias(dlb);
+					break;
+				case GridMode.DynLongBiasWF:
+					var dwf = GridSearch.DynLongBiasWalkForward(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintDynLongBiasWalkForward(dwf);
 					break;
 				case GridMode.KnobRank:
 					var kr = GridSearch.KnobRank(barsBySymbol, initialBankroll: 10_000.0);
