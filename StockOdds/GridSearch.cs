@@ -421,27 +421,41 @@ namespace StockOdds
 		// holding EVERY other knob at whatever the caller configured. Penalty 0 is the
 		// baseline (period is irrelevant there) and is emitted once for reference, so the
 		// table answers "does penalizing choppy names improve the basket, and by how much?".
+		// Penalty grids per measure. LtTransitions' chopFrac is small (few flips / window) so
+		// it needs large penalties to bite; ExposureEfficiency's chopFrac is 1-ER (typically
+		// 0.5..0.9) so much smaller penalties are the right scale.
 		public static double[] TransitionPenaltyGrid = { 1.0, 2.0, 5.0, 10.0, 20.0 };
+		public static double[] EfficiencyPenaltyGrid = { 0.25, 0.5, 1.0, 1.5, 2.0 };
 		public static int[]    TransitionPeriodGrid  = { 60, 120, 250, 500, 750 };
 
 		public static List<TransitionSweepCell> TransitionSweep(
-			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+			Dictionary<string, List<OhlcBar>> barsBySymbol,
+			BankrollSimulator.ChopMeasure measure = BankrollSimulator.ChopMeasure.LtTransitions,
+			double[]? penalties = null,
+			double initialBankroll = 10_000.0)
 		{
+			penalties ??= measure == BankrollSimulator.ChopMeasure.ExposureEfficiency
+				? EfficiencyPenaltyGrid : TransitionPenaltyGrid;
+
+			var savedMode = BankrollSimulator.ChopMeasureMode;
 			double savedPen = BankrollSimulator.TransitionPenalty;
 			int    savedPer = BankrollSimulator.TransitionPeriod;
 
 			var cells = new List<TransitionSweepCell>();
 			try
 			{
+				BankrollSimulator.ChopMeasureMode = measure;
+
 				// baseline: penalty off (period irrelevant, reuse the caller's value as a tag)
 				cells.Add(EvalTransition(barsBySymbol, 0.0, savedPer, initialBankroll, isBaseline: true));
 
 				foreach (var per in TransitionPeriodGrid)
-				foreach (var pen in TransitionPenaltyGrid)
+				foreach (var pen in penalties)
 					cells.Add(EvalTransition(barsBySymbol, pen, per, initialBankroll, isBaseline: false));
 			}
 			finally
 			{
+				BankrollSimulator.ChopMeasureMode   = savedMode;
 				BankrollSimulator.TransitionPenalty = savedPen;
 				BankrollSimulator.TransitionPeriod  = savedPer;
 			}
@@ -473,6 +487,45 @@ namespace StockOdds
 			cell.MeanReturnPct = returns.Count > 0 ? returns.Average() : 0.0;
 			cell.MeanMaxDdPct  = dds.Count > 0 ? dds.Average() : 0.0;
 			return cell;
+		}
+
+		// ===================== TRADABILITY STUDY =====================
+		// Tests the hypothesis "a stock whose exposure trends for long periods is tradable;
+		// one whose exposure round-trips quickly is not." For each symbol (penalty OFF), it
+		// records the mean rolling exposure-EMA efficiency ratio (persistence) alongside the
+		// strategy's Sharpe/return, then the caller correlates the two. If persistence
+		// predicts Sharpe, it is a stock SCREEN (like the HV/volume filter), not a bias knob.
+		public static List<TradabilityRow> TradabilityStudy(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var savedMode = BankrollSimulator.ChopMeasureMode;
+			double savedPen = BankrollSimulator.TransitionPenalty;
+			var rows = new List<TradabilityRow>();
+			try
+			{
+				BankrollSimulator.ChopMeasureMode   = BankrollSimulator.ChopMeasure.LtTransitions;
+				BankrollSimulator.TransitionPenalty = 0.0;   // measure the un-penalized engine
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					var r = BankrollSimulator.Run(bars, initialBankroll);
+					rows.Add(new TradabilityRow
+					{
+						Symbol                  = sym,
+						Bars                    = bars.Count,
+						HistoricalVolatilityPct = Volatility.AnnualizedHistoricalPct(bars),
+						ExposureEfficiency      = r.MeanExposureEfficiency,
+						StratSharpe             = SharpeOf(r),
+						StratReturnPct          = r.TotalReturnPct,
+						BhReturnPct             = r.BuyHoldReturnPct,
+					});
+				}
+			}
+			finally
+			{
+				BankrollSimulator.ChopMeasureMode   = savedMode;
+				BankrollSimulator.TransitionPenalty = savedPen;
+			}
+			return rows.OrderByDescending(x => x.ExposureEfficiency).ToList();
 		}
 
 		// One symbol's walk-forward outcome: tuned on the train slice, then both the tuned
@@ -851,6 +904,18 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// One symbol's exposure persistence vs. its strategy performance (penalty off).
+	public class TradabilityRow
+	{
+		public string Symbol = "";
+		public int    Bars;
+		public double HistoricalVolatilityPct;
+		public double ExposureEfficiency;   // mean rolling ER of the exposure EMA (0..1)
+		public double StratSharpe;
+		public double StratReturnPct;
+		public double BhReturnPct;
 	}
 
 	// One (TransitionPenalty, TransitionPeriod) combo scored across the basket, with the

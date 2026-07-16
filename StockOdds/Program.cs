@@ -33,8 +33,11 @@ class Program
 	//   TransitionSweep-> sweep the LT-transition chop penalty (TransitionPenalty x
 	//                     TransitionPeriod) across the basket, other knobs fixed, with a
 	//                     per-symbol baseline-vs-best breakdown for the flip-prone names.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep }
-	static GridMode GRID_MODE = GridMode.TransitionSweep;
+	//   TradabilityStudy-> per-symbol exposure persistence (mean rolling efficiency ratio)
+	//                     vs. strategy Sharpe/return + correlation: does "exposure trends for
+	//                     long periods" actually predict which stocks are tradable?
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep, TradabilityStudy }
+	static GridMode GRID_MODE = GridMode.TradabilityStudy;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -181,7 +184,8 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.TransitionSweep)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep
+			              or GridMode.TransitionSweep or GridMode.TradabilityStudy)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -196,8 +200,17 @@ class Program
 					GridSearchPrinter.PrintBiasSweep(bs);
 					break;
 				case GridMode.TransitionSweep:
-					var ts = GridSearch.TransitionSweep(barsBySymbol, initialBankroll: 10_000.0);
-					GridSearchPrinter.PrintTransitionSweep(ts, barsBySymbol.Keys);
+					var tsLt = GridSearch.TransitionSweep(barsBySymbol,
+						BankrollSimulator.ChopMeasure.LtTransitions, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintTransitionSweep(tsLt, barsBySymbol.Keys, "LT-TRANSITION");
+
+					var tsEff = GridSearch.TransitionSweep(barsBySymbol,
+						BankrollSimulator.ChopMeasure.ExposureEfficiency, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintTransitionSweep(tsEff, barsBySymbol.Keys, "EXPOSURE-EFFICIENCY");
+					break;
+				case GridMode.TradabilityStudy:
+					var trd = GridSearch.TradabilityStudy(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintTradabilityStudy(trd);
 					break;
 				case GridMode.KnobRank:
 					var kr = GridSearch.KnobRank(barsBySymbol, initialBankroll: 10_000.0);

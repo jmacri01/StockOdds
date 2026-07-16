@@ -472,10 +472,11 @@ namespace StockOdds
 		// combos ranked by mean Sharpe), followed by a per-symbol Sharpe breakdown of the
 		// best combo vs the baseline so the flip-prone names that motivated the penalty
 		// (e.g. AEHR, SMCI) can be checked directly.
-		public static void PrintTransitionSweep(List<TransitionSweepCell> cells, IEnumerable<string> symbols)
+		public static void PrintTransitionSweep(
+			List<TransitionSweepCell> cells, IEnumerable<string> symbols, string measureLabel = "LT-TRANSITION")
 		{
 			var syms = symbols.ToList();
-			Console.WriteLine("\n===== LT-TRANSITION CHOP-PENALTY SWEEP (all other knobs fixed) =====");
+			Console.WriteLine($"\n===== {measureLabel} CHOP-PENALTY SWEEP (all other knobs fixed) =====");
 			Console.WriteLine($"Symbols ({syms.Count}) : {string.Join(", ", syms)}");
 
 			var baseline = cells.FirstOrDefault(c => c.IsBaseline);
@@ -533,6 +534,55 @@ namespace StockOdds
 				: dShp > 0.0
 					? "=> The chop penalty helps only marginally on this basket; treat as noise until it survives OOS."
 					: "=> The chop penalty does NOT improve the basket at these settings; leave TransitionPenalty = 0.");
+		}
+
+		// Tradability study: per-symbol exposure persistence (mean rolling efficiency ratio)
+		// vs. the strategy's Sharpe/return, sorted most-persistent first, with the Pearson
+		// correlation and a high-vs-low-persistence split. Answers "does a stock whose
+		// exposure trends for long periods actually trade better?".
+		public static void PrintTradabilityStudy(List<TradabilityRow> rows)
+		{
+			Console.WriteLine("\n===== TRADABILITY STUDY — exposure persistence vs. performance (penalty off) =====");
+			if (rows.Count == 0)
+			{
+				Console.WriteLine("No symbols with usable data.");
+				return;
+			}
+			Console.WriteLine("ExpEff = mean rolling efficiency ratio of the exposure EMA (1 = trends & holds, 0 = round-trips).");
+			Console.WriteLine();
+			Console.WriteLine($"{"Symbol",-8} {"HV%",6} {"Bars",5}   {"ExpEff",7} {"StratShp",9} {"StratRet%",10} {"BhRet%",10}");
+			foreach (var r in rows)
+			{
+				Console.WriteLine(
+					$"{r.Symbol,-8} {r.HistoricalVolatilityPct,6:0.0} {r.Bars,5}   " +
+					$"{r.ExposureEfficiency,7:0.000} {r.StratSharpe,9:0.000} " +
+					$"{Signed(r.StratReturnPct),10} {Signed(r.BhReturnPct),10}");
+			}
+
+			var eff = rows.Select(r => r.ExposureEfficiency).ToList();
+			double rShp = Corr(eff, rows.Select(r => r.StratSharpe));
+			double rRet = Corr(eff, rows.Select(r => r.StratReturnPct));
+
+			// high vs low persistence split (median), compare mean Sharpe of each half
+			var sorted = rows.OrderByDescending(r => r.ExposureEfficiency).ToList();
+			int half = sorted.Count / 2;
+			var high = sorted.Take(half).ToList();
+			var low  = sorted.Skip(sorted.Count - half).ToList();
+			double hiShp = high.Count > 0 ? high.Average(r => r.StratSharpe) : 0.0;
+			double loShp = low.Count  > 0 ? low.Average(r => r.StratSharpe)  : 0.0;
+
+			Console.WriteLine();
+			Console.WriteLine($"Correlation  ExpEff vs Strat Sharpe : {rShp,7:+0.000;-0.000}");
+			Console.WriteLine($"Correlation  ExpEff vs Strat Return : {rRet,7:+0.000;-0.000}");
+			Console.WriteLine($"Mean Sharpe — top-half persistence  : {hiShp,6:0.000}  (n={high.Count})");
+			Console.WriteLine($"Mean Sharpe — bottom-half           : {loShp,6:0.000}  (n={low.Count})");
+			Console.WriteLine();
+			Console.WriteLine(
+				rShp >= 0.4
+					? "=> Exposure persistence PREDICTS tradability. Worth using as a stock screen (trade high-ExpEff names, skip low)."
+				: rShp >= 0.15
+					? "=> Weak positive link between persistence and performance; suggestive but not a reliable screen on its own."
+					: "=> Exposure persistence does NOT predict performance on this basket; it is not a useful tradability screen here.");
 		}
 
 		// Pearson correlation coefficient; returns 0 when either series has no variance.

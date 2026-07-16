@@ -74,6 +74,11 @@ namespace StockOdds
 		// buy & hold, over the same span, for reference
 		public double BuyHoldMaxDrawdownPct { get; set; }
 		public double BuyHoldSharpeRatio { get; set; }
+
+		// Persistence diagnostic (independent of the chop penalty): mean, over all bars, of
+		// the Kaufman efficiency ratio of the pre-bias exposure EMA measured over a fixed
+		// window. ~1 => exposure trends and holds (tradable); ~0 => it round-trips / whips.
+		public double MeanExposureEfficiency { get; set; }
 	}
 
 	public static class BankrollSimulator
@@ -126,17 +131,27 @@ namespace StockOdds
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
-		// ============ LT-transition chop penalty ============
-		// Choppy names (frequent Bull<->Bear LT flips, e.g. AEHR / SMCI) tend to be
-		// extreme underperformers for this trend-following exposure map. We penalize the
-		// dynamic long bias by how often the LT state has flipped recently:
-		//   transFrac = (# LT flips in the last TransitionPeriod bars) / TransitionPeriod
-		//   transWeight = 1 - TransitionPenalty * transFrac
-		//   dynBias   = (rollingSum / BiasPeriod) * transWeight
-		// A low flip count leaves transWeight ~= 1 (bias untouched, positive); a high flip
-		// count drives transWeight down and, past 1/transFrac, negative (the long bias is
-		// dampened, then inverted). Unclamped, mirroring the rest of the bias math.
-		// TransitionPenalty = 0 disables the penalty and exactly reproduces the prior model.
+		// ============ Chop / tradability penalty ============
+		// Choppy names (e.g. AEHR / SMCI) tend to be extreme underperformers for this
+		// trend-following exposure map. We penalize the dynamic long bias by a "choppiness
+		// fraction" (0 = clean/persistent, 1 = maximally choppy) measured over the last
+		// TransitionPeriod bars, both feeding the same weight:
+		//   transWeight = 1 - TransitionPenalty * chopFrac
+		//   dynBias     = (rollingSum / BiasPeriod) * transWeight
+		// A low chopFrac leaves transWeight ~= 1 (bias untouched, positive); a high one
+		// drives it down and, past 1/chopFrac, negative (the long bias is dampened, then
+		// inverted). Unclamped. TransitionPenalty = 0 disables it entirely (prior model).
+		//
+		// Two ways to measure chopFrac (ChopMeasureMode):
+		//   LtTransitions      — (# LT Bull<->Bear flips over the window) / TransitionPeriod.
+		//   ExposureEfficiency — 1 - Kaufman efficiency ratio of the (pre-bias) exposure EMA:
+		//       ER = |ema[t] - ema[t-W]| / sum(|d ema|).  ER=1 => a straight, sustained move
+		//       (tradable); ER=0 => the exposure round-trips and nets nowhere (0->1->0, not
+		//       tradable). Measured on `ema` (not the traded position) so the bias we are
+		//       modulating cannot feed back into its own input. A flat signal is persistent,
+		//       not choppy, so ER is defined as 1 when nothing moves.
+		public enum ChopMeasure { LtTransitions, ExposureEfficiency }
+		public static ChopMeasure ChopMeasureMode = ChopMeasure.LtTransitions;
 		public static int    TransitionPeriod  = 60;
 		public static double TransitionPenalty = 0.0;
 
@@ -241,10 +256,25 @@ namespace StockOdds
 			double biasSum = 0.0;
 			double biasEma = double.NaN;   // EMA of the dynamic bias
 
-			// rolling LT-transition (flip) window for the chop penalty
+			// rolling LT-transition (flip) window for the chop penalty (LtTransitions mode)
 			var transWindow = new Queue<double>(Math.Max(1, TransitionPeriod));
 			double transSum = 0.0;                       // # LT flips inside the window
 			LongTermState? prevLt = null;                // last bar's LT state, for flip detection
+
+			// rolling exposure-efficiency window (ExposureEfficiency mode): net move over the
+			// window vs. total path length of the pre-bias exposure EMA.
+			var emaWindow = new Queue<double>(Math.Max(1, TransitionPeriod) + 1);
+			var absDeltaWindow = new Queue<double>(Math.Max(1, TransitionPeriod));
+			double absDeltaSum = 0.0;                     // sum(|d ema|) inside the window
+			double emaPrevForEr = double.NaN;            // last bar's ema, for the delta
+
+			// persistence diagnostic: mean rolling efficiency ratio of the exposure EMA over
+			// a fixed 63-bar (~quarter) window, independent of the penalty knobs.
+			const int erWin = 63;
+			var erEmaWindow = new Queue<double>(erWin + 1);
+			var erAbsWindow = new Queue<double>(erWin);
+			double erAbsSum = 0.0, erPrev = double.NaN, erSum = 0.0;
+			int erCount = 0;
 
 			var perState = new Dictionary<(LongTermState, ShortTermState), PerStateStat>();
 
@@ -275,17 +305,42 @@ namespace StockOdds
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
 					biasSum -= biasWindow.Dequeue();
-				// LT-transition chop penalty: count Bull<->Bear flips over TransitionPeriod
-				// bars, then weight the rolling bias sum down (toward/through zero) the more
-				// often the LT state has flipped. Matches the Pine sliding-window math.
-				double flip = prevLt.HasValue && lt != prevLt.Value ? 1.0 : 0.0;
-				prevLt = lt;
-				transWindow.Enqueue(flip);
-				transSum += flip;
-				while (transWindow.Count > TransitionPeriod)
-					transSum -= transWindow.Dequeue();
-				double transFrac = TransitionPeriod > 0 ? transSum / TransitionPeriod : 0.0;
-				double transWeight = 1.0 - TransitionPenalty * transFrac;
+				// Choppiness fraction (0 = clean/persistent, 1 = choppy) by the selected
+				// measure; both feed transWeight = 1 - TransitionPenalty * chopFrac.
+				double chopFrac;
+				if (ChopMeasureMode == ChopMeasure.ExposureEfficiency)
+				{
+					// Kaufman efficiency ratio of the pre-bias exposure EMA over the window:
+					// ER = |ema - ema[t-W]| / sum(|d ema|).  chopFrac = 1 - ER.
+					if (!double.IsNaN(emaPrevForEr))
+					{
+						double d = Math.Abs(ema - emaPrevForEr);
+						absDeltaWindow.Enqueue(d);
+						absDeltaSum += d;
+						while (absDeltaWindow.Count > TransitionPeriod)
+							absDeltaSum -= absDeltaWindow.Dequeue();
+					}
+					emaPrevForEr = ema;
+					emaWindow.Enqueue(ema);
+					while (emaWindow.Count > TransitionPeriod + 1)
+						emaWindow.Dequeue();
+					double netChange = Math.Abs(ema - emaWindow.Peek());   // Peek = oldest in window
+					double er = absDeltaSum > 1e-9 ? Math.Min(1.0, netChange / absDeltaSum) : 1.0;
+					chopFrac = 1.0 - er;
+				}
+				else
+				{
+					// count Bull<->Bear LT flips over TransitionPeriod bars (sliding window,
+					// matching the Pine math); the more flips, the choppier.
+					double flip = prevLt.HasValue && lt != prevLt.Value ? 1.0 : 0.0;
+					prevLt = lt;
+					transWindow.Enqueue(flip);
+					transSum += flip;
+					while (transWindow.Count > TransitionPeriod)
+						transSum -= transWindow.Dequeue();
+					chopFrac = TransitionPeriod > 0 ? transSum / TransitionPeriod : 0.0;
+				}
+				double transWeight = 1.0 - TransitionPenalty * chopFrac;
 
 				double dynBias = (biasSum / BiasPeriod) * transWeight;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
@@ -309,6 +364,23 @@ namespace StockOdds
 
 				position = StepExposure(lt, st.Value);
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
+
+				// -------- persistence diagnostic (mean rolling ER of the exposure EMA) --------
+				if (!double.IsNaN(erPrev))
+				{
+					double d = Math.Abs(ema - erPrev);
+					erAbsWindow.Enqueue(d);
+					erAbsSum += d;
+					while (erAbsWindow.Count > erWin)
+						erAbsSum -= erAbsWindow.Dequeue();
+				}
+				erPrev = ema;
+				erEmaWindow.Enqueue(ema);
+				while (erEmaWindow.Count > erWin + 1)
+					erEmaWindow.Dequeue();
+				double erNet = Math.Abs(ema - erEmaWindow.Peek());
+				erSum += erAbsSum > 1e-9 ? Math.Min(1.0, erNet / erAbsSum) : 1.0;
+				erCount++;
 
 				// -------- ledger run boundary --------
 				var bucket = (lt, st.Value);
@@ -363,6 +435,7 @@ namespace StockOdds
 
 			result.FinalBankroll = bankroll;
 			result.MaxDrawdownPct = maxDd;
+			result.MeanExposureEfficiency = erCount > 0 ? erSum / erCount : 0.0;
 
 			// Sharpe ratios (risk-free = 0) and buy & hold drawdown over the same bars.
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
