@@ -78,7 +78,7 @@ dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group 
 dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
 dynMax   = input.float(15.0, "LongBias max", step = 0.5, group = grpDyn)
-biasBlend = input.float(0.75, "Defensive/dynamic blend", minval = 0, maxval = 1, step = 0.05, group = grpDyn,
+biasBlend = input.float(1.0, "Defensive/dynamic blend", minval = 0, maxval = 1, step = 0.05, group = grpDyn,
      tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
 defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
      tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
