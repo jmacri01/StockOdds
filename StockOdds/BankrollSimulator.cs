@@ -128,6 +128,12 @@ namespace StockOdds
 		public static double LongBias      = 2.0;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
+		// The skew adjEma = |ema|*biasEma + ema. When biasEma > 1 (which the dynamic bias
+		// allows — it can reach ~3+), a NEGATIVE (bearish) ema is inverted into a growing LONG
+		// (ema*(1-biasEma) flips sign and scales with how bearish the signal is). With
+		// BiasNoInvert = true the skew may pull a bearish ema toward flat but never past it into
+		// a net long (and symmetrically for a bullish ema) — it can't fight its own sign.
+		public static bool   BiasNoInvert  = false;
 
 		// ============ Dynamic (per-candle) LongBias ============
 		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
@@ -388,6 +394,13 @@ namespace StockOdds
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
 				double blendedBiasEma = DynamicLongBias ? BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix : biasEma;
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
+				// A long bias may neutralize a bearish EMA toward flat but not INVERT its sign
+				// into a net long (guards against biasEma > 1 flipping a bearish signal to long).
+				if (BiasNoInvert)
+				{
+					if (ema < 0 && adjEma > 0) adjEma = 0;
+					else if (ema > 0 && adjEma < 0) adjEma = 0;
+				}
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
