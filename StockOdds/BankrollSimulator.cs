@@ -177,17 +177,28 @@ namespace StockOdds
 		// rollingHV = annualized stdev of log returns over HvWindow (same convention as
 		// Volatility.AnnualizedHistoricalPct); rollingPersist = Kaufman efficiency ratio of the
 		// pre-bias exposure EMA over PersistWindow. Off by default (uses the fixed LongBias).
+		// The z->LongBias map is HAND-SET (not regression-fit to a universe — that overfit and
+		// produced a near-flat, non-generalizing slope). Pick the LongBias at z=0 (DynBase) and
+		// how fast it scales as z moves; clamp to a practical band. Two shapes:
+		//   Linear      : LongBias = DynBase + DynSlope * z
+		//   Exponential : LongBias = DynBase * exp(-DynDecay * z)   (can't go < 0; saturates)
+		// Defaults (exponential, base 5, decay 0.6) put a high-vol name (z ~ +4, e.g. ASST)
+		// near ~0.5 and a low-vol name (z ~ -2 to -3) up near the 10-15 cap, per the observed
+		// "high vol wants ~0.5, low vol wants ~10" pattern — without fitting to the basket.
+		public enum DynScaleMode { Linear, Exponential }
 		public static bool   DynamicLongBias      = false;
+		public static DynScaleMode DynLongBiasScale = DynScaleMode.Exponential;
 		public static int    HvWindow             = 60;
 		public static int    PersistWindow        = 63;
 		public static double HvRefMean            = 76.0;
 		public static double HvRefStd             = 41.3;
 		public static double PersRefMean          = 0.1467;
 		public static double PersRefStd           = 0.0186;
-		public static double DynLongBiasIntercept = 6.92;   // LongBias at z = 0
-		public static double DynLongBiasSlope     = -1.28;  // per unit z (negative: z up -> bias down)
+		public static double DynBase              = 5.0;    // LongBias at z = 0
+		public static double DynSlope             = -1.28;  // linear mode: per unit z
+		public static double DynDecay             = 0.6;    // exponential mode: decay rate k
 		public static double DynLongBiasMin       = 0.0;
-		public static double DynLongBiasMax       = 12.0;
+		public static double DynLongBiasMax       = 15.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -370,8 +381,11 @@ namespace StockOdds
 							? Math.Min(1.0, Math.Abs(ema - dynEmaWindow.Peek()) / dynAbsSum) : 1.0;
 						zP = (pers - PersRefMean) / PersRefStd;
 					}
-					effLongBias = Clamp(DynLongBiasIntercept + DynLongBiasSlope * (zHv + zP),
-						DynLongBiasMin, DynLongBiasMax);
+					double z = zHv + zP;
+					double raw = DynLongBiasScale == DynScaleMode.Exponential
+						? DynBase * Math.Exp(-DynDecay * z)
+						: DynBase + DynSlope * z;
+					effLongBias = Clamp(raw, DynLongBiasMin, DynLongBiasMax);
 				}
 				lastAppliedLongBias = effLongBias;
 

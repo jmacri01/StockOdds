@@ -548,7 +548,7 @@ namespace StockOdds
 			double sPen = BankrollSimulator.TransitionPenalty, sLB = BankrollSimulator.LongBias;
 			double sHm = BankrollSimulator.HvRefMean, sHs = BankrollSimulator.HvRefStd,
 			       sPm = BankrollSimulator.PersRefMean, sPs = BankrollSimulator.PersRefStd,
-			       sIc = BankrollSimulator.DynLongBiasIntercept, sSl = BankrollSimulator.DynLongBiasSlope;
+			       sIc = BankrollSimulator.DynBase, sSl = BankrollSimulator.DynSlope;
 			double fixedLB = sLB;   // baseline fixed LongBias = the caller's configured value
 
 			var folds = new List<DynWfFold>();
@@ -599,15 +599,15 @@ namespace StockOdds
 
 					double hm = hvs.Average(), hs = Std(hvs), pm = pes.Average(), ps = Std(pes);
 					if (hs <= 0) hs = 1; if (ps <= 0) ps = 1;
-					var symZ = zTargetLB.ToDictionary(r => r.sym, r => (r.hv - hm) / hs + (r.pe - pm) / ps);
+					var symZ = zTargetLB.ToDictionary(r => r.sym, r => MapZ(r.hv, r.pe));
 					var symHv = zTargetLB.ToDictionary(r => r.sym, r => r.hv);
 					var zs = zTargetLB.Select(r => (r.hv - hm) / hs + (r.pe - pm) / ps).ToList();
 					var lbTargets = zTargetLB.Select(r => r.bestLB).ToList();
 					var (slope, icept) = LinFit(zs, lbTargets);
 
-					BankrollSimulator.HvRefMean = hm; BankrollSimulator.HvRefStd = hs;
-					BankrollSimulator.PersRefMean = pm; BankrollSimulator.PersRefStd = ps;
-					BankrollSimulator.DynLongBiasIntercept = icept; BankrollSimulator.DynLongBiasSlope = slope;
+					/* refs stay FIXED (hand-set); not overwritten from train stats */
+					/* persistence refs stay FIXED */
+					/* z->LongBias map is FIXED (hand-set), NOT fitted to the universe */
 
 					// ---- APPLY on TEST (warmup pre-roll, score test bars only) ----
 					var fSh = new List<double>(); var dSh = new List<double>(); var bSh = new List<double>();
@@ -645,8 +645,7 @@ namespace StockOdds
 							{
 								Fold = fold, Symbol = sym, TrainZ = zv,
 								HistoricalVolatilityPct = symHv.TryGetValue(sym, out var hvv) ? hvv : 0.0,
-								PredLongBias = Math.Min(Math.Max(icept + slope * zv,
-									BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax),
+								PredLongBias = MapLongBias(zv),
 								MeanAppliedLongBias = meanAppliedLB,
 								FixSharpe = fS, DynSharpe = dS, BestFixSharpe = bS,
 							});
@@ -672,9 +671,23 @@ namespace StockOdds
 				BankrollSimulator.TransitionPenalty = sPen; BankrollSimulator.LongBias = sLB;
 				BankrollSimulator.HvRefMean = sHm; BankrollSimulator.HvRefStd = sHs;
 				BankrollSimulator.PersRefMean = sPm; BankrollSimulator.PersRefStd = sPs;
-				BankrollSimulator.DynLongBiasIntercept = sIc; BankrollSimulator.DynLongBiasSlope = sSl;
+				BankrollSimulator.DynBase = sIc; BankrollSimulator.DynSlope = sSl;
 			}
 			return new DynWfResult { Folds = folds, SymbolRows = symRows };
+		}
+
+		// combined trait z from FIXED reference constants (absolute/cross-sectional scale)
+		private static double MapZ(double hv, double persistence) =>
+			(hv - BankrollSimulator.HvRefMean) / BankrollSimulator.HvRefStd
+			+ (persistence - BankrollSimulator.PersRefMean) / BankrollSimulator.PersRefStd;
+
+		// the FIXED (hand-set) z -> LongBias map, matching BankrollSimulator.StepExposure
+		private static double MapLongBias(double z)
+		{
+			double raw = BankrollSimulator.DynLongBiasScale == BankrollSimulator.DynScaleMode.Exponential
+				? BankrollSimulator.DynBase * Math.Exp(-BankrollSimulator.DynDecay * z)
+				: BankrollSimulator.DynBase + BankrollSimulator.DynSlope * z;
+			return Math.Min(Math.Max(raw, BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax);
 		}
 
 		private static double Std(List<double> a)
