@@ -132,7 +132,10 @@ namespace StockOdds
 		// allows — it can reach ~3+), a NEGATIVE (bearish) ema is inverted into a growing LONG
 		// (ema*(1-biasEma) flips sign and scales with how bearish the signal is). With
 		// BiasNoInvert = true the skew may pull a bearish ema toward flat but never past it into
-		// a net long (and symmetrically for a bullish ema) — it can't fight its own sign.
+		// a net long (and symmetrically for a bullish ema) — it can't fight its own sign. When it
+		// fires it also BYPASSES the drift band to snap the position flat (a decisive exit, not a
+		// within-band residual) — held goes to 0, so re-entry stays symmetric and every other
+		// bar's drift-band rebalance is unchanged.
 		public static bool   BiasNoInvert  = false;
 
 		// ============ Dynamic (per-candle) LongBias ============
@@ -396,12 +399,17 @@ namespace StockOdds
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
 				// A long bias may neutralize a bearish EMA toward flat but not INVERT its sign
 				// into a net long (guards against biasEma > 1 flipping a bearish signal to long).
+				bool noInvertExit = false;
 				if (BiasNoInvert)
 				{
-					if (ema < 0 && adjEma > 0) adjEma = 0;
-					else if (ema > 0 && adjEma < 0) adjEma = 0;
+					if (ema < 0 && adjEma > 0) { adjEma = 0; noInvertExit = true; }
+					else if (ema > 0 && adjEma < 0) { adjEma = 0; noInvertExit = true; }
 				}
-				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
+				// Normal drift-band rebalance — but when no-invert fires, bypass the band and snap
+				// held to the target (0) so a within-band residual can't keep us leaning the wrong
+				// way. held goes to 0 (not negative), so re-entry stays symmetric and every other
+				// bar's rebalance behaviour is unchanged.
+				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand || noInvertExit)
 					held = adjEma;
 				return Clamp(held, minExp, maxExp);
 			}

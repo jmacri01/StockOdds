@@ -249,11 +249,14 @@ dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - 
 blendedBiasEma = useDynLB ? biasBlend * dynBiasEma + (1 - biasBlend) * dynBiasEmaFix : dynBiasEma
 adjRaw  = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
 // No-invert guard: a long bias may trim a bearish EMA to flat but not flip its sign into a net long.
-adjEma  = biasNoInvert and not na(adjRaw) and ((emaExp < 0 and adjRaw > 0) or (emaExp > 0 and adjRaw < 0)) ? 0.0 : adjRaw
+noInvertExit = biasNoInvert and not na(adjRaw) and ((emaExp < 0 and adjRaw > 0) or (emaExp > 0 and adjRaw < 0))
+adjEma  = noInvertExit ? 0.0 : adjRaw
 
 driftBand = driftPct / 100.0
 var float held = na
-if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
+// Normal drift-band rebalance — but when no-invert fires, bypass the band and snap held flat (0)
+// for a decisive exit; every other bar's rebalance is unchanged.
+if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand or noInvertExit)
     held := adjEma
 
 loExp = math.min(minExpPct, maxExpPct) / 100.0
