@@ -416,6 +416,65 @@ namespace StockOdds
 				.ToList();
 		}
 
+		// ===================== LT-TRANSITION CHOP-PENALTY SWEEP =====================
+		// Sweeps the chop penalty (TransitionPenalty x TransitionPeriod) across the basket,
+		// holding EVERY other knob at whatever the caller configured. Penalty 0 is the
+		// baseline (period is irrelevant there) and is emitted once for reference, so the
+		// table answers "does penalizing choppy names improve the basket, and by how much?".
+		public static double[] TransitionPenaltyGrid = { 1.0, 2.0, 5.0, 10.0, 20.0 };
+		public static int[]    TransitionPeriodGrid  = { 30, 60, 120 };
+
+		public static List<TransitionSweepCell> TransitionSweep(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			double savedPen = BankrollSimulator.TransitionPenalty;
+			int    savedPer = BankrollSimulator.TransitionPeriod;
+
+			var cells = new List<TransitionSweepCell>();
+			try
+			{
+				// baseline: penalty off (period irrelevant, reuse the caller's value as a tag)
+				cells.Add(EvalTransition(barsBySymbol, 0.0, savedPer, initialBankroll, isBaseline: true));
+
+				foreach (var per in TransitionPeriodGrid)
+				foreach (var pen in TransitionPenaltyGrid)
+					cells.Add(EvalTransition(barsBySymbol, pen, per, initialBankroll, isBaseline: false));
+			}
+			finally
+			{
+				BankrollSimulator.TransitionPenalty = savedPen;
+				BankrollSimulator.TransitionPeriod  = savedPer;
+			}
+			return cells;
+		}
+
+		private static TransitionSweepCell EvalTransition(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double pen, int per,
+			double initialBankroll, bool isBaseline)
+		{
+			BankrollSimulator.TransitionPenalty = pen;
+			BankrollSimulator.TransitionPeriod  = per;
+
+			var cell = new TransitionSweepCell { Penalty = pen, Period = per, IsBaseline = isBaseline };
+			var sharpes = new List<double>();
+			var returns = new List<double>();
+			var dds     = new List<double>();
+			foreach (var (sym, bars) in barsBySymbol)
+			{
+				var r  = BankrollSimulator.Run(bars, initialBankroll);
+				double sh = SharpeOf(r);
+				cell.SharpeBySymbol[sym] = sh;
+				sharpes.Add(sh);
+				returns.Add(r.TotalReturnPct);
+				dds.Add(r.MaxDrawdownPct);
+			}
+			cell.MeanSharpe    = sharpes.Count > 0 ? sharpes.Average() : 0.0;
+			cell.MinSharpe     = sharpes.Count > 0 ? sharpes.Min() : 0.0;
+			cell.MeanReturnPct = returns.Count > 0 ? returns.Average() : 0.0;
+			cell.MeanMaxDdPct  = dds.Count > 0 ? dds.Average() : 0.0;
+			return cell;
+		}
+
 		// One symbol's walk-forward outcome: tuned on the train slice, then both the tuned
 		// knobs and the global-default knobs scored on the held-out test slice.
 		public static double WalkForwardTrainFraction = 0.70;
@@ -792,6 +851,17 @@ namespace StockOdds
 		public int    BiasEmaPeriod;
 		public double MeanSharpe;
 		public double MeanMaxDd;
+	}
+
+	// One (TransitionPenalty, TransitionPeriod) combo scored across the basket, with the
+	// per-symbol Sharpe kept so the flip-prone names can be compared against the baseline.
+	public class TransitionSweepCell
+	{
+		public double Penalty;
+		public int    Period;
+		public bool   IsBaseline;      // penalty == 0 reference row
+		public double MeanSharpe, MinSharpe, MeanReturnPct, MeanMaxDdPct;
+		public Dictionary<string, double> SharpeBySymbol = new();
 	}
 
 	public class BiasSweepResult

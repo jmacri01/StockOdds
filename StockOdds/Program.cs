@@ -30,13 +30,17 @@ class Program
 	//   WalkForward    -> single split: tuned-per-symbol vs. global default on held-out test.
 	//   VolStudy       -> tune each symbol to its OWN best knobs; print (HV -> knobs) + corr.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean }
-	static GridMode GRID_MODE = GridMode.BiasSweep;
+	//   TransitionSweep-> sweep the LT-transition chop penalty (TransitionPenalty x
+	//                     TransitionPeriod) across the basket, other knobs fixed, with a
+	//                     per-symbol baseline-vs-best breakdown for the flip-prone names.
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, BasketMean, TransitionSweep }
+	static GridMode GRID_MODE = GridMode.TransitionSweep;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
+	// aehr / smci are the flip-prone underperformers that motivated the chop penalty.
 	static string[] GRID_SYMBOLS =
-		{ "^gspc", "aapl", "msft", "ko", "nok", "amd", "nvda", "tsla", "coin", "mstr", "smr", "asst", "asts", "open", "atai", "grpn", "fig", "be" };
+		{ "^gspc", "aapl", "msft", "ko", "nok", "amd", "nvda", "tsla", "coin", "mstr", "smr", "asst", "asts", "open", "atai", "grpn", "fig", "be", "aehr", "smci" };
 
 	// Window used ONLY by the grid search / studies, independent of START_DATE (which
 	// governs the normal single-symbol run). Yahoo caps history at ~5y, so an early date
@@ -177,7 +181,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.TransitionSweep)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -190,6 +194,10 @@ class Program
 				case GridMode.BiasSweep:
 					var bs = GridSearch.BiasSweep(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintBiasSweep(bs);
+					break;
+				case GridMode.TransitionSweep:
+					var ts = GridSearch.TransitionSweep(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintTransitionSweep(ts, barsBySymbol.Keys);
 					break;
 				case GridMode.KnobRank:
 					var kr = GridSearch.KnobRank(barsBySymbol, initialBankroll: 10_000.0);

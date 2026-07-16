@@ -468,6 +468,73 @@ namespace StockOdds
 			}
 		}
 
+		// LT-transition chop-penalty sweep: the basket-level table (baseline first, then
+		// combos ranked by mean Sharpe), followed by a per-symbol Sharpe breakdown of the
+		// best combo vs the baseline so the flip-prone names that motivated the penalty
+		// (e.g. AEHR, SMCI) can be checked directly.
+		public static void PrintTransitionSweep(List<TransitionSweepCell> cells, IEnumerable<string> symbols)
+		{
+			var syms = symbols.ToList();
+			Console.WriteLine("\n===== LT-TRANSITION CHOP-PENALTY SWEEP (all other knobs fixed) =====");
+			Console.WriteLine($"Symbols ({syms.Count}) : {string.Join(", ", syms)}");
+
+			var baseline = cells.FirstOrDefault(c => c.IsBaseline);
+			var swept    = cells.Where(c => !c.IsBaseline)
+				.OrderByDescending(c => c.MeanSharpe).ToList();
+			if (baseline == null)
+			{
+				Console.WriteLine("No baseline cell — nothing to compare.");
+				return;
+			}
+
+			Console.WriteLine();
+			Console.WriteLine($"{"Penalty",8} {"Period",7} {"MeanShp",8} {"MinShp",8} {"MeanRet%",10} {"MeanDD%",9}");
+			void Row(TransitionSweepCell c, string tag) => Console.WriteLine(
+				$"{c.Penalty,8:0.##} {(c.IsBaseline ? "—" : c.Period.ToString()),7} " +
+				$"{c.MeanSharpe,8:0.000} {c.MinSharpe,8:0.000} " +
+				$"{Signed(c.MeanReturnPct),10} -{c.MeanMaxDdPct,6:0.0}%{tag}");
+
+			Row(baseline, "  (baseline: penalty off)");
+			foreach (var c in swept)
+				Row(c, "");
+
+			var best = swept.FirstOrDefault();
+			if (best == null)
+				return;
+
+			// per-symbol Sharpe: baseline vs the best combo, sorted by who moved the most.
+			Console.WriteLine();
+			Console.WriteLine($"Per-symbol Sharpe — baseline vs best combo " +
+			                  $"(penalty {best.Penalty:0.##}, period {best.Period}):");
+			Console.WriteLine($"{"Symbol",-8} {"Baseline",9} {"Best",9} {"Delta",8}");
+			foreach (var s in syms.OrderByDescending(s =>
+				(best.SharpeBySymbol.GetValueOrDefault(s) - baseline.SharpeBySymbol.GetValueOrDefault(s))))
+			{
+				double b0 = baseline.SharpeBySymbol.GetValueOrDefault(s, double.NaN);
+				double b1 = best.SharpeBySymbol.GetValueOrDefault(s, double.NaN);
+				Console.WriteLine($"{s,-8} {b0,9:0.000} {b1,9:0.000} {b1 - b0,8:+0.000;-0.000}");
+			}
+
+			int helped = syms.Count(s =>
+				best.SharpeBySymbol.GetValueOrDefault(s) > baseline.SharpeBySymbol.GetValueOrDefault(s) + 1e-9);
+			int hurt = syms.Count(s =>
+				best.SharpeBySymbol.GetValueOrDefault(s) < baseline.SharpeBySymbol.GetValueOrDefault(s) - 1e-9);
+
+			double dShp = best.MeanSharpe - baseline.MeanSharpe;
+			double dDd  = baseline.MeanMaxDdPct - best.MeanMaxDdPct;   // + => best has shallower DD
+			Console.WriteLine();
+			Console.WriteLine($"Best combo vs baseline : mean Sharpe {dShp:+0.000;-0.000}, " +
+			                  $"mean drawdown {(dDd >= 0 ? "-" : "+")}{Math.Abs(dDd):0.0}pp " +
+			                  $"(helped {helped}/{syms.Count}, hurt {hurt}/{syms.Count})");
+			Console.WriteLine();
+			Console.WriteLine(
+				dShp > 0.05 && helped >= hurt
+					? "=> The chop penalty improves the basket. Set BankrollSimulator.TransitionPenalty/Period to the best row — then validate OOS before trusting it."
+				: dShp > 0.0
+					? "=> The chop penalty helps only marginally on this basket; treat as noise until it survives OOS."
+					: "=> The chop penalty does NOT improve the basket at these settings; leave TransitionPenalty = 0.");
+		}
+
 		// Pearson correlation coefficient; returns 0 when either series has no variance.
 		private static double Corr(IEnumerable<double> xs, IEnumerable<double> ys)
 		{
