@@ -49,7 +49,21 @@ class Program
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
 	// aehr / smci are the flip-prone underperformers that motivated the chop penalty.
 	static string[] GRID_SYMBOLS =
-		{ "^gspc", "aapl", "msft", "ko", "nok", "amd", "nvda", "tsla", "coin", "mstr", "smr", "asst", "asts", "open", "atai", "grpn", "fig", "be", "aehr", "smci" };
+	{
+		// indices + low-HV mega/large caps
+		"^gspc", "^ndx", "^rut",
+		"aapl", "msft", "googl", "amzn", "meta", "nvda", "avgo", "brk-b", "jpm", "v", "ma",
+		"unh", "lly", "jnj", "pg", "ko", "pep", "cost", "wmt", "hd", "mcd", "dis", "nke",
+		"cvx", "xom", "abbv", "mrk", "pfe", "tmo", "csco", "intc", "orcl", "ibm", "txn",
+		"qcom", "hon", "cat", "ge", "ba", "gs", "bac", "wfc", "t", "vz", "cmcsa", "amgn", "gild",
+		// mid-HV growth / tech
+		"amd", "adbe", "crm", "nflx", "tsla", "uber", "abnb", "shop", "snap", "pins", "roku",
+		"dkng", "pypl", "net", "ddog", "snow", "crwd", "pltr", "rblx", "mrvl", "mu", "lrcx",
+		// high-HV speculative / small
+		"coin", "hood", "sofi", "afrm", "upst", "mstr", "mara", "riot", "clsk", "smci", "aehr",
+		"asts", "smr", "oklo", "ionq", "rgti", "qbts", "soun", "ai", "bbai", "rivn", "lcid",
+		"nio", "plug", "be", "cvna", "gme", "amc", "open", "grpn", "atai", "nok", "tsm", "rklb",
+	};
 
 	// Window used ONLY by the grid search / studies, independent of START_DATE (which
 	// governs the normal single-symbol run). Yahoo caps history at ~5y, so an early date

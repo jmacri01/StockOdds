@@ -571,6 +571,7 @@ namespace StockOdds
 					// ---- FIT on TRAIN: refs (pooled HV & persistence) + the LongBias line ----
 					var hvs = new List<double>(); var pes = new List<double>();
 					var zTargetLB = new List<(string sym, double hv, double pe, double bestLB)>();
+					var candSum = new double[LongBiasScan.Length];   // sum of train Sharpe per candidate
 					BankrollSimulator.DynamicLongBias = false;
 					foreach (var (sym, bars) in barsBySymbol)
 					{
@@ -580,15 +581,21 @@ namespace StockOdds
 						BankrollSimulator.LongBias = fixedLB;
 						double pe = BankrollSimulator.Run(tr, initialBankroll).MeanExposureEfficiency;
 						double bestSh = double.NegativeInfinity, bestLB = LongBiasScan[0];
-						foreach (var lb in LongBiasScan)
+						for (int li = 0; li < LongBiasScan.Length; li++)
 						{
-							BankrollSimulator.LongBias = lb;
+							BankrollSimulator.LongBias = LongBiasScan[li];
 							double sh = SharpeOf(BankrollSimulator.Run(tr, initialBankroll));
-							if (sh > bestSh) { bestSh = sh; bestLB = lb; }
+							candSum[li] += sh;
+							if (sh > bestSh) { bestSh = sh; bestLB = LongBiasScan[li]; }
 						}
 						hvs.Add(hv); pes.Add(pe); zTargetLB.Add((sym, hv, pe, bestLB));
 					}
 					if (zTargetLB.Count < 3) continue;
+
+					// single best FIXED LongBias for the basket = argmax mean train Sharpe
+					int bestIdx = 0;
+					for (int li = 1; li < candSum.Length; li++) if (candSum[li] > candSum[bestIdx]) bestIdx = li;
+					double bestFixedLB = LongBiasScan[bestIdx];
 
 					double hm = hvs.Average(), hs = Std(hvs), pm = pes.Average(), ps = Std(pes);
 					if (hs <= 0) hs = 1; if (ps <= 0) ps = 1;
@@ -602,10 +609,10 @@ namespace StockOdds
 					BankrollSimulator.DynLongBiasIntercept = icept; BankrollSimulator.DynLongBiasSlope = slope;
 
 					// ---- APPLY on TEST (warmup pre-roll, score test bars only) ----
-					var fSh = new List<double>(); var dSh = new List<double>();
-					var fDd = new List<double>(); var dDd = new List<double>();
-					var fRt = new List<double>(); var dRt = new List<double>();
-					int dynWins = 0, n = 0;
+					var fSh = new List<double>(); var dSh = new List<double>(); var bSh = new List<double>();
+					var fDd = new List<double>(); var dDd = new List<double>(); var bDd = new List<double>();
+					var fRt = new List<double>(); var dRt = new List<double>(); var bRt = new List<double>();
+					int dynWins = 0, dynWinsVsBest = 0, n = 0;
 					foreach (var (sym, bars) in barsBySymbol)
 					{
 						var slice = bars.Where(b => b.Date >= warmStart && b.Date < teEnd).ToList();
@@ -615,15 +622,18 @@ namespace StockOdds
 
 						BankrollSimulator.DynamicLongBias = false; BankrollSimulator.LongBias = fixedLB;
 						var fSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
+						BankrollSimulator.LongBias = bestFixedLB;
+						var bSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
 						BankrollSimulator.DynamicLongBias = true;
 						var dSeries = SliceReturns(BankrollSimulator.Run(slice, initialBankroll), testDates);
-						if (fSeries.Count < 20 || dSeries.Count < 20) continue;
+						if (fSeries.Count < 20 || dSeries.Count < 20 || bSeries.Count < 20) continue;
 
-						double fS = SeriesSharpe(fSeries), dS = SeriesSharpe(dSeries);
-						fSh.Add(fS); dSh.Add(dS);
-						fDd.Add(SeriesMaxDd(fSeries)); dDd.Add(SeriesMaxDd(dSeries));
-						fRt.Add(SeriesRet(fSeries)); dRt.Add(SeriesRet(dSeries));
+						double fS = SeriesSharpe(fSeries), dS = SeriesSharpe(dSeries), bS = SeriesSharpe(bSeries);
+						fSh.Add(fS); dSh.Add(dS); bSh.Add(bS);
+						fDd.Add(SeriesMaxDd(fSeries)); dDd.Add(SeriesMaxDd(dSeries)); bDd.Add(SeriesMaxDd(bSeries));
+						fRt.Add(SeriesRet(fSeries)); dRt.Add(SeriesRet(dSeries)); bRt.Add(SeriesRet(bSeries));
 						if (dS > fS) dynWins++;
+						if (dS > bS) dynWinsVsBest++;
 						n++;
 
 						// per-symbol detail, classified by its train z (for the by-sign split)
@@ -633,7 +643,7 @@ namespace StockOdds
 								Fold = fold, Symbol = sym, TrainZ = zv,
 								PredLongBias = Math.Min(Math.Max(icept + slope * zv,
 									BankrollSimulator.DynLongBiasMin), BankrollSimulator.DynLongBiasMax),
-								FixSharpe = fS, DynSharpe = dS,
+								FixSharpe = fS, DynSharpe = dS, BestFixSharpe = bS,
 							});
 					}
 					if (n == 0) continue;
@@ -642,11 +652,11 @@ namespace StockOdds
 					{
 						Index = fold, TestStart = teStart,
 						TestEnd = teEndIdx < reference.Count ? reference[teEndIdx - 1].Date : reference[^1].Date,
-						Symbols = n, Slope = slope, Intercept = icept,
-						MeanFixSharpe = fSh.Average(), MeanDynSharpe = dSh.Average(),
-						MeanFixMaxDd = fDd.Average(), MeanDynMaxDd = dDd.Average(),
-						MeanFixReturnPct = fRt.Average(), MeanDynReturnPct = dRt.Average(),
-						DynWinFraction = (double)dynWins / n,
+						Symbols = n, Slope = slope, Intercept = icept, BestFixedLongBias = bestFixedLB,
+						MeanFixSharpe = fSh.Average(), MeanDynSharpe = dSh.Average(), MeanBestFixSharpe = bSh.Average(),
+						MeanFixMaxDd = fDd.Average(), MeanDynMaxDd = dDd.Average(), MeanBestFixMaxDd = bDd.Average(),
+						MeanFixReturnPct = fRt.Average(), MeanDynReturnPct = dRt.Average(), MeanBestFixReturnPct = bRt.Average(),
+						DynWinFraction = (double)dynWins / n, DynWinVsBestFraction = (double)dynWinsVsBest / n,
 					});
 					fold++;
 				}
@@ -1194,7 +1204,7 @@ namespace StockOdds
 		public string Symbol = "";
 		public double TrainZ;
 		public double PredLongBias;
-		public double FixSharpe, DynSharpe;
+		public double FixSharpe, DynSharpe, BestFixSharpe;
 	}
 
 	// One walk-forward fold: dynamic (train-fit refs+line) vs fixed LongBias on the held-out
@@ -1206,10 +1216,12 @@ namespace StockOdds
 		public DateTime TestEnd;
 		public int      Symbols;
 		public double   Slope, Intercept;      // LongBias line fit on this fold's train
-		public double   MeanFixSharpe, MeanDynSharpe;
-		public double   MeanFixMaxDd,  MeanDynMaxDd;
-		public double   MeanFixReturnPct, MeanDynReturnPct;
-		public double   DynWinFraction;        // fraction of symbols where dyn Sharpe > fixed
+		public double   BestFixedLongBias;     // single best fixed LongBias on this fold's train
+		public double   MeanFixSharpe, MeanDynSharpe, MeanBestFixSharpe;
+		public double   MeanFixMaxDd,  MeanDynMaxDd,  MeanBestFixMaxDd;
+		public double   MeanFixReturnPct, MeanDynReturnPct, MeanBestFixReturnPct;
+		public double   DynWinFraction;        // fraction of symbols where dyn Sharpe > fixed 0.5
+		public double   DynWinVsBestFraction;  // fraction where dyn Sharpe > best-fixed
 	}
 
 	// One symbol's fixed-LongBias vs per-candle dynamic-LongBias performance.

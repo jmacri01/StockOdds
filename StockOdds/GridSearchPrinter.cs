@@ -654,66 +654,58 @@ namespace StockOdds
 				return;
 			}
 			Console.WriteLine(
-				$"{"Fold",4} {"Test window",23} {"Sym",4}   {"line (int/slope)",17}   " +
-				$"{"Shp:Fix",8} {"Dyn",7} {"dShp",7}   {"DD:Fix",7} {"Dyn",7}   {"Dyn>Fix",7}");
+				$"{"Fold",4} {"Test window",23} {"Sym",4} {"bestLB",6}   " +
+				$"{"Fix0.5",7} {"BestFix",7} {"Dyn",7}   {"D-Best",7}   {"DD:Best",7} {"Dyn",7}");
 			foreach (var f in folds)
 			{
 				string win = $"{f.TestStart:yyyy-MM-dd}..{f.TestEnd:yyyy-MM-dd}";
 				Console.WriteLine(
-					$"{f.Index,4} {win,23} {f.Symbols,4}   {$"{f.Intercept,5:0.0}/{f.Slope,5:0.00}",17}   " +
-					$"{f.MeanFixSharpe,8:0.000} {f.MeanDynSharpe,7:0.000} {f.MeanDynSharpe - f.MeanFixSharpe,7:+0.000;-0.000}   " +
-					$"-{f.MeanFixMaxDd,5:0.0}% -{f.MeanDynMaxDd,5:0.0}%   {f.DynWinFraction * 100.0,5:0.}%");
+					$"{f.Index,4} {win,23} {f.Symbols,4} {f.BestFixedLongBias,6:0.0}   " +
+					$"{f.MeanFixSharpe,7:0.000} {f.MeanBestFixSharpe,7:0.000} {f.MeanDynSharpe,7:0.000}   " +
+					$"{f.MeanDynSharpe - f.MeanBestFixSharpe,7:+0.000;-0.000}   " +
+					$"-{f.MeanBestFixMaxDd,5:0.0}% -{f.MeanDynMaxDd,5:0.0}%");
 			}
 
 			double mFix = folds.Average(f => f.MeanFixSharpe), mDyn = folds.Average(f => f.MeanDynSharpe);
-			double mFixDd = folds.Average(f => f.MeanFixMaxDd), mDynDd = folds.Average(f => f.MeanDynMaxDd);
-			double mFixRt = folds.Average(f => f.MeanFixReturnPct), mDynRt = folds.Average(f => f.MeanDynReturnPct);
-			int foldWins = folds.Count(f => f.MeanDynSharpe > f.MeanFixSharpe);
-			double dShp = mDyn - mFix;
+			double mBest = folds.Average(f => f.MeanBestFixSharpe);
+			double mBestDd = folds.Average(f => f.MeanBestFixMaxDd), mDynDd = folds.Average(f => f.MeanDynMaxDd);
+			double mBestRt = folds.Average(f => f.MeanBestFixReturnPct), mDynRt = folds.Average(f => f.MeanDynReturnPct);
+			int foldWinsVsBest = folds.Count(f => f.MeanDynSharpe > f.MeanBestFixSharpe);
+			double dVsBest = mDyn - mBest;
 
 			Console.WriteLine();
 			Console.WriteLine($"Folds                         : {folds.Count}");
-			Console.WriteLine($"Mean OOS Sharpe  — fixed {mFix,6:0.000}   dynamic {mDyn,6:0.000}   (delta {dShp:+0.000;-0.000})");
-			Console.WriteLine($"Mean OOS Return% — fixed {Signed(mFixRt),9}   dynamic {Signed(mDynRt),9}");
-			Console.WriteLine($"Mean OOS MaxDD%  — fixed -{mFixDd,5:0.0}%    dynamic -{mDynDd,5:0.0}%");
-			Console.WriteLine($"Folds where dynamic beats fixed (mean Sharpe) : {foldWins}/{folds.Count}");
+			Console.WriteLine($"Mean OOS Sharpe  — fixed0.5 {mFix,6:0.000}   best-fixed {mBest,6:0.000}   dynamic {mDyn,6:0.000}");
+			Console.WriteLine($"   dynamic vs best-fixed      : {dVsBest:+0.000;-0.000}   (dynamic wins {foldWinsVsBest}/{folds.Count} folds)");
+			Console.WriteLine($"Mean OOS Return% — best-fixed {Signed(mBestRt),9}   dynamic {Signed(mDynRt),9}");
+			Console.WriteLine($"Mean OOS MaxDD%  — best-fixed -{mBestDd,5:0.0}%    dynamic -{mDynDd,5:0.0}%");
 
 			// ---- where does the lift come from? split the per-symbol OOS delta by train z sign ----
 			var rows = result.SymbolRows;
 			if (rows.Count > 0)
 			{
 				Console.WriteLine();
-				Console.WriteLine("Lift by z sign (per-symbol OOS, pooled across folds):");
-				Console.WriteLine($"{"group",-14} {"n",4} {"predLBias",9} {"Shp:Fix",8} {"Dyn",7} {"dShp",7}");
+				Console.WriteLine("By z sign (per-symbol OOS, pooled across folds):");
+				Console.WriteLine($"{"group",-8} {"n",4} {"predLBias",9} {"Fix0.5",7} {"BestFix",7} {"Dyn",7} {"D-Best",7}");
 				void Grp(string label, List<DynWfSymbolRow> g)
 				{
-					if (g.Count == 0) { Console.WriteLine($"{label,-14} {0,4}   (none)"); return; }
-					double f = g.Average(r => r.FixSharpe), d = g.Average(r => r.DynSharpe);
-					Console.WriteLine($"{label,-14} {g.Count,4} {g.Average(r => r.PredLongBias),9:0.0} " +
-					                  $"{f,8:0.000} {d,7:0.000} {d - f,7:+0.000;-0.000}");
+					if (g.Count == 0) { Console.WriteLine($"{label,-8} {0,4}   (none)"); return; }
+					double f = g.Average(r => r.FixSharpe), b = g.Average(r => r.BestFixSharpe), d = g.Average(r => r.DynSharpe);
+					Console.WriteLine($"{label,-8} {g.Count,4} {g.Average(r => r.PredLongBias),9:0.0} " +
+					                  $"{f,7:0.000} {b,7:0.000} {d,7:0.000} {d - b,7:+0.000;-0.000}");
 				}
 				Grp("z < 0", rows.Where(r => r.TrainZ < 0).ToList());
 				Grp("z >= 0", rows.Where(r => r.TrainZ >= 0).ToList());
 				Grp("all", rows);
-
-				double dNeg = rows.Where(r => r.TrainZ < 0).DefaultIfEmpty().Average(r => r == null ? 0 : r.DynSharpe - r.FixSharpe);
-				double dPos = rows.Where(r => r.TrainZ >= 0).DefaultIfEmpty().Average(r => r == null ? 0 : r.DynSharpe - r.FixSharpe);
-				Console.WriteLine();
-				Console.WriteLine(
-					dNeg > dPos * 1.5 && dNeg > 0.05
-						? "=> The lift is concentrated in z<0 names (their LongBias is pushed up most) => it is largely a 'more long' effect, not the per-candle tilt."
-					: dPos > dNeg * 1.5 && dPos > 0.05
-						? "=> The lift is concentrated in z>0 names => the damping side is doing the work, not just 'more long'."
-						: "=> The lift is spread across both z signs => not purely a 'more long' effect.");
 			}
 
 			Console.WriteLine();
 			Console.WriteLine(
-				dShp > 0.05 && foldWins > folds.Count / 2
-					? "=> Dynamic LongBias holds up OUT-OF-SAMPLE => the trait-scaled bias carries a real edge."
-				: dShp > 0.0
-					? "=> Dynamic LongBias is roughly break-even OOS => the in-sample edge was mostly fit; not worth the added drawdown."
-					: "=> Dynamic LongBias does NOT survive OOS => it was in-sample overfitting. Keep the fixed LongBias.");
+				dVsBest > 0.05 && foldWinsVsBest > folds.Count / 2
+					? "=> Dynamic beats the BEST FIXED LongBias out-of-sample => the per-candle scaling adds real value beyond just 'be more long'."
+				: dVsBest > 0.0
+					? "=> Dynamic is roughly break-even vs the best fixed LongBias => the earlier win was mostly 'raise LongBias', not the per-candle scaling. Prefer the simpler fixed knob."
+					: "=> Dynamic does NOT beat the best fixed LongBias => the scaling adds nothing OOS; just raise the fixed LongBias.");
 		}
 
 		// Dynamic (per-candle trait-scaled) LongBias vs the fixed LongBias, per symbol and in
