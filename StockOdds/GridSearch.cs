@@ -422,7 +422,7 @@ namespace StockOdds
 		// baseline (period is irrelevant there) and is emitted once for reference, so the
 		// table answers "does penalizing choppy names improve the basket, and by how much?".
 		public static double[] TransitionPenaltyGrid = { 1.0, 2.0, 5.0, 10.0, 20.0 };
-		public static int[]    TransitionPeriodGrid  = { 30, 60, 120 };
+		public static int[]    TransitionPeriodGrid  = { 60, 120, 250, 500, 750 };
 
 		public static List<TransitionSweepCell> TransitionSweep(
 			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
