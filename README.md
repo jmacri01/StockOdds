@@ -57,7 +57,7 @@ That raw target is then:
 3. only **rebalanced when it drifts past a deadband** (cuts churn),
 4. **clamped to `[0%, 100%]`** — so negative targets simply become **cash** (no short).
 
-**Default parameters** (`Program.cs`): Exposure EMA `12`, Bias period `15`, Long bias `0.5`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`. These were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `12`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`. The **long bias is dynamic by default** — recomputed per candle from each name's volatility and exposure-persistence (see [Long bias](#long-bias-fixed-or-dynamic-per-candle) below); set `DynamicLongBias = false` for a single fixed `LongBias`. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 
@@ -65,24 +65,25 @@ That raw target is then:
 
 The **long bias** controls how hard a bullish LT regime is leaned into: a Bull candle contributes `(LongBias + 1)` to the running trend sum, a Bear candle `−1`. A larger `LongBias` pushes exposure up harder in uptrends.
 
-You can run it two ways:
+### Dynamic long bias (the default)
 
-- **Fixed** *(default)* — one `LongBias` for the whole run (`BankrollSimulator.LongBias`, default `0.5`). `DynamicLongBias = false`.
-- **Dynamic** *(per-candle)* — set `BankrollSimulator.DynamicLongBias = true` and the bias is recomputed every candle from a **combined trait z-score**:
+Rather than one `LongBias` for every stock, the bias is **recomputed each candle** from a combined trait z-score, so quiet names lean long and hot names ease off — automatically, per name and over time:
 
-  ```
-  z          = z(rolling HV) + z(rolling exposure-persistence)
-  LongBias_t = clamp( DynBase · e^(−DynDecay · z) ,  DynMin, DynMax )     // Exponential (default)
-             = clamp( DynBase + DynSlope · z      ,  DynMin, DynMax )     // Linear
-  ```
+```
+z          = z(rolling HV) + z(rolling exposure-persistence)          // vs FIXED universe refs
+raw        = DynBase · e^(−DynDecay · z)   (Exponential, default)     // or  DynBase + DynSlope · z  (Linear)
+LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
+```
 
-  `z` is on an **absolute** scale (fixed reference constants), so it reflects a name's volatility/persistence in absolute terms, not relative to its own recent history. A **quiet, steady** name reads `z < 0` → a **large** bias (lean toward staying long); a **hot, high-volatility, high-persistence** name reads `z > 0` → a **small** bias (let the active signal do the work). `rolling HV` is annualized log-return stdev over `HvWindow`; `rolling persistence` is the Kaufman efficiency ratio of the pre-bias exposure EMA over `PersistWindow` (1 = the exposure trends and holds, 0 = it round-trips).
+- **`z` is absolute, not relative** — it uses fixed reference constants for the mean/std of HV and persistence, calibrated to the cross-sectional distribution of a ~110-name universe. So a stock's z reflects "how volatile / persistent is this name in absolute terms," not "vs its own recent history" (a chronically quiet name must read low, not drift to zero).
+- **What it does:** a **quiet, steady** name (`z < 0`) gets a **large** bias — lean toward staying long, since it grinds up. A **hot** name (`z > 0`) gets a **small** bias — let the active signal do the work. `rolling HV` = annualized log-return stdev over `HvWindow`; `rolling persistence` = Kaufman efficiency ratio of the pre-bias exposure EMA over `PersistWindow` (1 = exposure trends and holds, 0 = it round-trips).
+- **Smoothed:** the raw per-candle bias is jumpy (the persistence ratio moves fast on state transitions and the exponential is convex), so it's EMA-smoothed over `DynSmoothPeriod` to avoid whipsaw.
 
-  Knobs (all on `BankrollSimulator`, hand-set — *not* fitted): `DynScale` (`Exponential`/`Linear`, default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow`, and the reference constants `HvRefMean`/`HvRefStd` (default **57 / 34.6**) and `PersRefMean`/`PersRefStd` (default **0.142 / 0.017**) — calibrated to the cross-sectional HV/persistence distribution of a ~110-name universe.
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynScale` (default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynSmoothPeriod` (default **10**), `DynMin`/`DynMax` (default `[0, 15]`), `HvWindow`/`PersistWindow` (**60 / 63**), and refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.142 / 0.017**). Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
 
-  > OOS note (110-name walk-forward, ~5y): the default `exp / 1 / 0.6` **beats the fixed `LongBias = 0.5` default out-of-sample** (mean Sharpe 0.43 vs 0.16, return +17% vs +10%) and cuts drawdown, so it's a real improvement over the old default. It does **not** beat a high *fixed* bias (~10) on raw Sharpe/return — a high fixed bias captures more of a bull run but gives back drawdown protection. The dynamic bias's durable, generalizing edge is **drawdown reduction**; the return/Sharpe outperformance vs buy-&-hold does not reliably generalize (this is a risk overlay, not alpha). Still off by default (`DynamicLongBias = false`).
+**Why it's the default — and its honest limits.** On a 110-name walk-forward (~5y OOS) the default `exp / 1 / 0.6` **beats a fixed `LongBias = 0.5`** (mean OOS Sharpe **0.43 vs 0.16**, return **+17% vs +10%**) *and* cuts drawdown — a real, out-of-sample improvement, so it's on by default. It also finally handles the high-vol, low-persistence names (e.g. AEHR/SMCI) that a fixed low bias whipsawed: their low persistence pulls z negative, so they get a high bias and stay long through their runs. Two caveats kept in view: (1) it does **not** beat a *high* fixed bias (~10) on raw Sharpe/return — that captures more of a bull run but gives back drawdown protection; (2) the piece that **provably generalizes OOS is the drawdown reduction**, not return outperformance vs buy-&-hold. This is a risk overlay, not an alpha engine — consistent with the strategy's stated goal.
 
-The dynamic bias is mirrored in the Pine scripts — enable **"Use dynamic long bias"** in the indicator to watch `LongBias` change per candle (the orange stepline, the table row, and the Data Window).
+The dynamic bias is mirrored in the Pine scripts (on by default): watch `LongBias` change per candle via the orange stepline, the table row, and the Data Window (`DBG Dyn LongBias` / `DBG z`).
 
 ---
 

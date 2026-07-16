@@ -81,7 +81,7 @@ maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, s
 
 // -- Dynamic (per-candle) long bias: scale LongBias by z = z(HV) + z(persistence)
 grpDyn = "Dynamic long bias"
-useDynLB = input.bool(false, "Use dynamic long bias", group = grpDyn,
+useDynLB = input.bool(true, "Use dynamic long bias", group = grpDyn,
      tooltip = "Off = use the fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet/steady names (z<0) get a LARGE bias (lean long); hot high-vol/high-persistence names (z>0) get a SMALL bias.")
 showDynLB = input.bool(false, "Plot dynamic long bias line", group = grpDyn,
      tooltip = "Plots the per-candle LongBias. It is on a 0..max scale, not -1..1, so it rescales this pane — turn off the exposure/EMA lines to view it cleanly. It is always in the Data Window and the table regardless.")
@@ -92,6 +92,8 @@ dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group 
 dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
 dynMax   = input.float(15.0, "LongBias max", step = 0.5, group = grpDyn)
+dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
+     tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn, tooltip = "Fixed reference for z-scoring rolling HV.")
@@ -234,8 +236,10 @@ er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
 zP      = not na(emaExp[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
 zTrait  = zHv + zP
 dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
-dynLB   = math.min(math.max(dynLBraw, dynMin), dynMax)
-effLongBias = useDynLB ? dynLB : longBias
+dynLBc  = math.min(math.max(dynLBraw, dynMin), dynMax)
+var float dynLbEma = na
+dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
+effLongBias = useDynLB ? dynLbEma : longBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews

@@ -136,21 +136,24 @@ namespace StockOdds
 		// name reads z>0 -> a small LongBias (lets the active signal run). rollingHV = annualized
 		// stdev of log returns over HvWindow (same convention as Volatility.AnnualizedHistoricalPct);
 		// rollingPersist = Kaufman efficiency ratio of the pre-bias exposure EMA over PersistWindow
-		// (1 = the exposure trends and holds, 0 = it round-trips). All knobs are hand-set, not fit.
+		// (1 = the exposure trends and holds, 0 = it round-trips). Finally the per-candle bias is
+		// EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps because the
+		// persistence ratio is jumpy and the exp map is convex). All knobs are hand-set, not fit.
 		public enum DynScaleMode { Linear, Exponential }
-		public static bool         DynamicLongBias = false;
+		public static bool         DynamicLongBias = true;
 		public static DynScaleMode DynScale        = DynScaleMode.Exponential;
-		public static int    HvWindow      = 60;
-		public static int    PersistWindow = 63;
-		public static double HvRefMean     = 57.0;
-		public static double HvRefStd      = 34.6;
-		public static double PersRefMean   = 0.142;
-		public static double PersRefStd    = 0.017;
-		public static double DynBase       = 1.0;    // LongBias at z = 0
-		public static double DynDecay      = 0.6;    // exponential mode: decay rate
-		public static double DynSlope      = -1.28;  // linear mode: per unit z
-		public static double DynMin        = 0.0;
-		public static double DynMax        = 15.0;
+		public static int    HvWindow        = 60;
+		public static int    PersistWindow   = 63;
+		public static double HvRefMean       = 57.0;
+		public static double HvRefStd        = 34.6;
+		public static double PersRefMean     = 0.142;
+		public static double PersRefStd      = 0.017;
+		public static double DynBase         = 1.0;    // LongBias at z = 0
+		public static double DynDecay        = 0.6;    // exponential mode: decay rate
+		public static double DynSlope        = -1.28;  // linear mode: per unit z
+		public static double DynMin          = 0.0;
+		public static double DynMax          = 15.0;
+		public static int    DynSmoothPeriod = 10;     // EMA smoothing of the per-candle bias (1 = off)
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -261,6 +264,8 @@ namespace StockOdds
 			var perEmaWindow = new Queue<double>(Math.Max(1, PersistWindow) + 1);
 			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
 			double perAbsSum = 0.0, perEmaPrev = double.NaN;
+			double dynLbAlpha = 2.0 / (Math.Max(1, DynSmoothPeriod) + 1);
+			double dynLbEma = double.NaN;             // EMA-smoothed per-candle LongBias
 
 			// updates curHvPct from the completed return into `latest` (no look-ahead)
 			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
@@ -334,7 +339,10 @@ namespace StockOdds
 					double raw = DynScale == DynScaleMode.Exponential
 						? DynBase * Math.Exp(-DynDecay * z)
 						: DynBase + DynSlope * z;
-					effLongBias = Clamp(raw, DynMin, DynMax);
+					raw = Clamp(raw, DynMin, DynMax);
+					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar
+					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
+					effLongBias = dynLbEma;
 				}
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
