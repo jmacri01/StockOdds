@@ -134,7 +134,8 @@ class Program
 			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
 			// BankrollSimulator.DynSmoothPeriod = 10;  // EMA smoothing of the per-candle bias
 			// BankrollSimulator.DynMax   = 15.0;  // clamp
-			// BankrollSimulator.BiasBlend = 0.75; // 1 = pure dynamic, 0 = pure defensive (fixed LongBias)
+			// BankrollSimulator.BiasBlend = 0.75; // 1 = pure dynamic, 0 = pure defensive
+			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;

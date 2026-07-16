@@ -160,6 +160,9 @@ namespace StockOdds
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
 		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
 		public static double BiasBlend       = 0.75;
+		// The defensive leg's fixed bias (independent of LongBias, which is only the
+		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
+		public static double DefensiveBias   = 0.5;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -369,7 +372,7 @@ namespace StockOdds
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				// DEFENSIVE leg: same accumulation on the fixed LongBias
-				double sigFix = lt == LongTermState.Bull ? LongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sigFix = lt == LongTermState.Bull ? DefensiveBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindowFix.Enqueue(sigFix);
 				biasSumFix += sigFix;
 				while (biasWindowFix.Count > BiasPeriod)
@@ -378,7 +381,7 @@ namespace StockOdds
 				biasEmaFix = double.IsNaN(biasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1.0 - biasAlpha) * biasEmaFix;
 
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
-				double blendedBiasEma = BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix;
+				double blendedBiasEma = DynamicLongBias ? BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix : biasEma;
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
