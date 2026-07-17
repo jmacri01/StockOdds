@@ -110,7 +110,7 @@ namespace StockOdds
 		//    These bound the POSITION only -- not the per-candle target that feeds the EMA.
 		// Percentages are of full exposure: 100 = fully long, -100 = fully short.
 		public static int    ExposureEmaPeriod     = 5;
-		public static double RebalanceDriftPercent = 10.0;
+		public static double RebalanceDriftPercent = 30.0;
 		public static double MinExposurePercent    =    0.0;
 		public static double MaxExposurePercent    =  100.0;
 
