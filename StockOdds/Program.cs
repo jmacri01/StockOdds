@@ -120,7 +120,7 @@ class Program
 		BankrollSimulator.BiasPeriod = 15;
 		BankrollSimulator.LongBias = 0.5;
 		BankrollSimulator.BiasEmaPeriod = 150;
-		BankrollSimulator.RebalanceDriftPercent = 30;
+		BankrollSimulator.RebalanceDriftPercent = 10;
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
