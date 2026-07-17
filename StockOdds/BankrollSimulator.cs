@@ -143,9 +143,15 @@ namespace StockOdds
 		// recent window runs hot (accelerating) nudges exposure up; <1 (decelerating) nudges it down.
 		// The band is kept TIGHT (0.75..1.25) so it only trims/adds at the margin and never de-levers
 		// a real trend (whose skew clamps to max regardless). Guarded off when biasEma<=~0 (bearish
-		// regime — the level already de-risks there). On by default: lifts OOS Sharpe at equal drawdown
-		// and preserves/improves the big-winner compounds, unlike a wider band which just de-levers.
-		public static bool   BiasTiming    = true;
+		// regime — the level already de-risks there).
+		// DEFAULT OFF (2026-07-17): timing's sign flips with the bias-cap regime. At the NEUTRAL config
+		// (DynMax=15, mult=1.0, uncapped bias) it's a win — it ADDS on hot windows and lifts the big-winner
+		// compounds (SMCI 526->733, NVDA 928->981) at equal drawdown. But at the SHIPPED screening default
+		// (DynMax=150, slow150, mult0.5) the ceiling already hard-caps the bias, so timing only TRIMS an
+		// already-capped skew and mildly de-levers the winners (NVDA/OPEN/ASST/MSTR worse on both return and
+		// Sharpe; aggregate Sharpe/DD ~flat). So it's default-OFF for the capped default — turn it ON if you
+		// revert to the neutral (uncapped) config, where it earns its keep.
+		public static bool   BiasTiming    = false;
 		public static double BiasTimingMin = 0.75;
 		public static double BiasTimingMax = 1.25;
 

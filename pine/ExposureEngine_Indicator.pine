@@ -98,8 +98,8 @@ defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpD
      tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
 biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
      tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
-biasTiming = input.bool(true, "Timing modulation (window vs norm)", group = grpDyn,
-     tooltip = "Level for direction, window for timing. The bias level (biasEMA) sets how bullish; then exposure is nudged by the latest window vs its norm: * clamp(dynBias/biasEMA, min, max). >1 accelerating -> up, <1 decelerating -> down. Tight band only trims/adds at the margin; it never de-levers a real trend (its skew clamps to max anyway). On by default.")
+biasTiming = input.bool(false, "Timing modulation (window vs norm)", group = grpDyn,
+     tooltip = "Level for direction, window for timing. The bias level (biasEMA) sets how bullish; then exposure is nudged by the latest window vs its norm: * clamp(dynBias/biasEMA, min, max). >1 accelerating -> up, <1 decelerating -> down. Tight band only trims/adds at the margin; it never de-levers a real trend (its skew clamps to max anyway). DEFAULT OFF: at the shipped screening default (dynMax150/slow150/mult0.5) the ceiling already caps the bias, so timing only trims and mildly de-levers the winners. Turn ON if you revert to the neutral config (dynMax15/mult1.0), where it lifts the big-winner compounds at equal drawdown.")
 timingMin = input.float(0.75, "Timing min", step = 0.05, group = grpDyn)
 timingMax = input.float(1.25, "Timing max", step = 0.05, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
