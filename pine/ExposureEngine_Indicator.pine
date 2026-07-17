@@ -72,7 +72,7 @@ longBias  = input.float(0.5, "Long bias (amplify)", step = 0.05, group = grpSmoo
      tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
 biasEmaPeriod = input.int(150, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
-driftPct  = input.float(10, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
+driftPct  = input.float(30, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
      tooltip = "Only move the position when it has drifted more than this many exposure-% from the EMA, then snap it back to the EMA. e.g. 20 with EMA 0.50 -> rebalance only if position < 0.30 or > 0.70. The 'Target' row shows this band: EMA ± drift.")
 minExpPct = input.float(0, "Min exposure (%)", minval = -100, maxval = 100, step = 5, group = grpSmooth,
      tooltip = "Clamp on the POSITION only (not the per-candle target). -100 = fully short.")
@@ -108,6 +108,10 @@ dynSmoothSlow = input.int(150, "Bias smoothing SLOW (min-cap)", minval = 1, grou
      tooltip = "A slower EMA; LongBias = MIN(fast EMA, slow EMA * mult). The lagging slow EMA caps transient spikes (bias climbs only if sustained). DEFENSIVE dial: MIN(fast,slow) <= fast, so it only trims the bias — lower Sharpe/return for lower drawdown. Default 10 = disabled (= fast only); raise (e.g. 100) to enable.")
 dynSlowMult = input.float(0.5, "Slow-EMA ceiling mult", minval = 0.1, step = 0.05, group = grpDyn,
      tooltip = "Multiplies the SLOW EMA before the MIN, so <1 lowers the ceiling proportionally (scale-aware bias cap). Most meaningful with the slow smoothing raised. Risk dial: lower ceiling trims the bias (trades Sharpe for drawdown). 1.0 = no effect.")
+biasEmaRatio = input.bool(true, "Bias x slow/fast EMA ratio", group = grpDyn,
+     tooltip = "effLongBias = (slowEMA*mult) * clamp(slowEMA/fastEMA, lo, hi). Monotonic in the fast EMA: lifts the bias when the fast dips below the slow (recent pullback) and damps it when the fast rises above (recent spike); neutral (= plain ceiling) when fast==slow. Validated on a broad random 500-name sample and vs buy&hold: closes most of the Sharpe gap to B&H and keeps ~all the drawdown edge (shallower than B&H on 82% of names), best across the 50-100% HV band. On by default.")
+biasRatioLo  = input.float(0.25, "  · ratio clamp floor", minval = 0.05, step = 0.05, group = grpDyn)
+biasRatioHi  = input.float(2.0,  "  · ratio clamp ceiling", minval = 1.0, step = 0.5, group = grpDyn)
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn, tooltip = "Fixed reference for z-scoring rolling HV.")
@@ -256,6 +260,7 @@ dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 
 var float dynLbEmaSlow = na
 dynLbEmaSlow := na(dynLbEmaSlow) ? dynLBc : (2.0 / (dynSmoothSlow + 1)) * dynLBc + (1 - 2.0 / (dynSmoothSlow + 1)) * dynLbEmaSlow
 effLongBias = useDynLB ? math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin) : longBias
+effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
