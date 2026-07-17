@@ -659,10 +659,10 @@ namespace StockOdds
 		// Real-engine A/B: single-EMA bias vs MIN(slow,fast) long-term-bias ceiling.
 		public static void PrintBiasMinCap(EngineTentResult res)
 		{
-			Console.WriteLine("\n===== REAL ENGINE: bias smoothing EMA10 vs MIN(EMA10, longEMA) ceiling =====");
+			Console.WriteLine("\n===== VOL-DRIVEN LONGBIAS: smoothing EMA10 vs MIN(EMA10, EMA100) spike ceiling =====");
 			if (res.Rows.Count == 0) { Console.WriteLine("No data."); return; }
-			Console.WriteLine("Baseline = the current bias line: EMA(10) of dynBias (orange line). Headline = MIN(EMA10, EMA100).");
-			Console.WriteLine("Idea: the long EMA clips UPWARD spikes in the reactive EMA10, while EMA10 still moves freely (esp. down). Δ = MIN − baseline.");
+			Console.WriteLine("Dynamic (vol-driven) long bias ON. 'Bias smoothing (EMA bars)' = EMA of the per-candle LongBias (pinned 10).");
+			Console.WriteLine("Baseline = dynLB + EMA10 smoothing. Headline = MIN(EMA10, EMA100) of the per-candle LongBias (clips upward spikes). Δ = MIN − baseline.");
 			Console.WriteLine();
 			Console.WriteLine($"  {"Symbol",-8} {"HV%",6}   {"Base Shp",8} {"MIN",6} {"Δ",6} │ {"BaseDD",7} {"MinDD",7} {"Δpp",6} │ {"BaseRet",9} {"MinRet",9} {"B&H",6}");
 			foreach (var r in res.Rows)

@@ -1157,8 +1157,9 @@ namespace StockOdds
 		// term bias, capping the fast/reactive one — a data-driven replacement for the fixed
 		// LongBias ceiling. Sweeps the (fast, max) periods; headline = MIN(EMA150, EMA10).
 		// ============================================================================
-		// The "orange line" bias smoothing (fast leg of the MIN). Per the user's TradingView
-		// setup this is EMA(10); the study pins it here so the A/B is EMA10 vs MIN(EMA10, max).
+		// The "Bias smoothing (EMA bars)" period — the fast leg. Per the user's setup this is 10.
+		// NOTE: this only bites with the vol-driven dynamic long bias ON (else the per-candle
+		// LongBias is constant and smoothing/MIN are no-ops), so the study enables it.
 		public static int BiasMinCapFastPeriod = 10;
 
 		public static EngineTentResult BiasMinCapCompare(
@@ -1166,23 +1167,25 @@ namespace StockOdds
 		{
 			var result = new EngineTentResult();
 
-			// (label, useCap, maxPeriod) — index 0 baseline (single EMA10), index 1 headline (MIN(EMA10,EMA100))
+			// (label, useCap, maxEma) — index 0 baseline (dynLB + smooth10), 1 = headline MIN(10,100)
 			var configs = new (string label, bool use, int max)[]
 			{
-				("Baseline EMA10",    false, 0),
-				("MIN(EMA10,EMA100)", true,  100),
-				("MIN(EMA10,EMA50)",  true,  50),
-				("MIN(EMA10,EMA150)", true,  150),
-				("MIN(EMA10,EMA200)", true,  200),
+				("dynLB smooth10",  false, 0),
+				("MIN(10,100)",     true,  100),
+				("MIN(10,50)",      true,  50),
+				("MIN(10,150)",     true,  150),
+				("MIN(10,200)",     true,  200),
 			};
 			int C = configs.Length;
 			var sumShp = new double[C]; var sumDd = new double[C]; var sumRet = new double[C]; int nSym = 0;
 
-			bool sU = BankrollSimulator.UseBiasMinCap; int sM = BankrollSimulator.BiasEmaMaxPeriod, sBE = BankrollSimulator.BiasEmaPeriod;
+			bool sDyn = BankrollSimulator.UseDynamicLongBias;
+			bool sU = BankrollSimulator.UseBiasMinCap; int sM = BankrollSimulator.DynSmoothMaxPeriod, sDS = BankrollSimulator.DynSmoothPeriod;
 			try
 			{
-				// pin the fast leg / baseline smoothing to EMA(10) (the orange line)
-				BankrollSimulator.BiasEmaPeriod = BiasMinCapFastPeriod;
+				// this feature only bites with the vol-driven dynamic long bias on
+				BankrollSimulator.UseDynamicLongBias = true;
+				BankrollSimulator.DynSmoothPeriod = BiasMinCapFastPeriod;   // bias smoothing = EMA(10)
 				foreach (var (sym, bars) in barsBySymbol)
 				{
 					if (bars.Count < 3) continue;
@@ -1192,7 +1195,7 @@ namespace StockOdds
 					for (int c = 0; c < C; c++)
 					{
 						BankrollSimulator.UseBiasMinCap = configs[c].use;
-						if (configs[c].use) BankrollSimulator.BiasEmaMaxPeriod = configs[c].max;
+						if (configs[c].use) BankrollSimulator.DynSmoothMaxPeriod = configs[c].max;
 						var r = BankrollSimulator.Run(bars, initialBankroll);
 						shp[c] = SharpeOf(r); dd[c] = r.MaxDrawdownPct; ret[c] = r.TotalReturnPct;
 						sumShp[c] += shp[c]; sumDd[c] += dd[c]; sumRet[c] += ret[c];
@@ -1204,14 +1207,15 @@ namespace StockOdds
 					{
 						Symbol = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), Bars = bars.Count,
 						BaseSharpe = shp[0], BaseDd = dd[0], BaseRet = ret[0],
-						TentSharpe = shp[1], TentDd = dd[1], TentRet = ret[1],   // headline = MIN(EMA10,EMA100)
+						TentSharpe = shp[1], TentDd = dd[1], TentRet = ret[1],   // headline = MIN(10,100)
 						BhSharpe = bhShp, BhDd = bhDd, BhRet = bhRet,
 					});
 				}
 			}
 			finally
 			{
-				BankrollSimulator.UseBiasMinCap = sU; BankrollSimulator.BiasEmaMaxPeriod = sM; BankrollSimulator.BiasEmaPeriod = sBE;
+				BankrollSimulator.UseDynamicLongBias = sDyn;
+				BankrollSimulator.UseBiasMinCap = sU; BankrollSimulator.DynSmoothMaxPeriod = sM; BankrollSimulator.DynSmoothPeriod = sDS;
 			}
 
 			int n = Math.Max(1, nSym);

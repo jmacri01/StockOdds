@@ -172,14 +172,16 @@ namespace StockOdds
 		public static bool   UseVolExposureScale = false;
 		public static double VolScalePivot       = 100.0;
 
-		// ============ Long-term-bias ceiling (MIN cap) ============
-		// When on, the bias fed to adjEma is MIN(biasEma, biasEmaMax): the EXISTING smoothed
-		// bias (biasEma = EMA at BiasEmaPeriod, the "orange line") capped by a longer EMA
-		// (BiasEmaMaxPeriod) of the same dynBias. The long EMA is the stock's own long-term
-		// bias, so it clips upward SPIKES in the reactive line while the reactive line still
-		// moves freely (esp. down). A data-driven ceiling in place of the fixed LongBias.
-		public static bool UseBiasMinCap   = false;
-		public static int  BiasEmaMaxPeriod = 100;
+		// ============ Bias smoothing (EMA of the per-candle LongBias) + MIN cap ============
+		// DynSmoothPeriod EMA-smooths the PER-CANDLE LongBias (effLongBias) so it doesn't
+		// whipsaw — matches the Pine "Bias smoothing (EMA bars)" input (default 10; 1 = off).
+		// Only bites when the LongBias actually varies per candle, i.e. UseDynamicLongBias is on.
+		// When UseBiasMinCap is on, effLongBias is ALSO smoothed over a longer EMA
+		// (DynSmoothMaxPeriod) and the two are MIN'd, so the long EMA is a ceiling that clips
+		// upward spikes in the reactive line while it still moves freely (esp. down).
+		public static int  DynSmoothPeriod    = 10;
+		public static bool UseBiasMinCap      = false;
+		public static int  DynSmoothMaxPeriod = 100;
 
 		// ============ Tent exposure response ("converge on peak") ============
 		// When on, the bias-adjusted exposure (adjEma) is mapped to the target position by a
@@ -292,7 +294,6 @@ namespace StockOdds
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
 			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
-			double biasMaxAlpha = 2.0 / (BiasEmaMaxPeriod + 1);
 			double driftBand = RebalanceDriftPercent / 100.0;
 			double minExp = MinExposurePercent / 100.0;
 			double maxExp = MaxExposurePercent / 100.0;
@@ -305,8 +306,12 @@ namespace StockOdds
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
 			double biasSum = 0.0;
-			double biasEma = double.NaN;      // EMA of the dynamic bias (BiasEmaPeriod) — the "orange line"
-			double biasEmaMax = double.NaN;   // longer EMA of dynBias (BiasEmaMaxPeriod) — the MIN-cap ceiling
+			double biasEma = double.NaN;      // EMA of the dynamic bias (BiasEmaPeriod)
+			// per-candle LongBias smoothing (DynSmoothPeriod) + optional MIN cap (DynSmoothMaxPeriod)
+			double lbEmaFast = double.NaN;
+			double lbEmaSlow = double.NaN;
+			double lbFastAlpha = 2.0 / (DynSmoothPeriod + 1);
+			double lbSlowAlpha = 2.0 / (DynSmoothMaxPeriod + 1);
 
 			// realized-volatility EWMA feeding the vol-driven features (dynamic long bias
 			// and/or vol-scaled exposure). EWMA of squared log returns -> annualized HV %.
@@ -345,10 +350,26 @@ namespace StockOdds
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
+				// Bias smoothing: EMA-smooth the per-candle LongBias so it doesn't whipsaw
+				// (DynSmoothPeriod). When UseBiasMinCap is on, MIN it with a longer EMA
+				// (DynSmoothMaxPeriod) so the long EMA clips upward spikes. No-op for a static
+				// LongBias (constant); only bites when UseDynamicLongBias varies it per candle.
+				double lbUsed = effLongBias;
+				if (DynSmoothPeriod > 1)
+				{
+					lbEmaFast = double.IsNaN(lbEmaFast) ? effLongBias : lbFastAlpha * effLongBias + (1.0 - lbFastAlpha) * lbEmaFast;
+					lbUsed = lbEmaFast;
+					if (UseBiasMinCap)
+					{
+						lbEmaSlow = double.IsNaN(lbEmaSlow) ? effLongBias : lbSlowAlpha * effLongBias + (1.0 - lbSlowAlpha) * lbEmaSlow;
+						lbUsed = Math.Min(lbEmaFast, lbEmaSlow);
+					}
+				}
+
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
-				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (effLongBias + 1), a Bear candle -1.
+				// BiasPeriod, then EMA-smoothed. A Bull candle contributes (lbUsed + 1), a Bear candle -1.
 				// Matches the Pine math.sum window.
-				double sig = lt == LongTermState.Bull ? effLongBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
+				double sig = lt == LongTermState.Bull ? lbUsed + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
 				biasWindow.Enqueue(sig);
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
@@ -363,11 +384,7 @@ namespace StockOdds
 				double dynBias = biasSum / denom;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				// MIN-cap: the longer "max" EMA of dynBias clips upward spikes in biasEma (orange line).
-				biasEmaMax = double.IsNaN(biasEmaMax) ? dynBias : biasMaxAlpha * dynBias + (1.0 - biasMaxAlpha) * biasEmaMax;
-				double effBias = UseBiasMinCap ? Math.Min(biasEma, biasEmaMax) : biasEma;
-
-				double adjEma = Math.Abs(ema) * effBias + ema;
+				double adjEma = Math.Abs(ema) * biasEma + ema;
 
 				// volatility-scaled exposure: amplify longs / dampen shorts as vol falls
 				// (positive adjEma *= pivot/vol; negative adjEma *= vol/pivot). Factor = 1 at pivot.
