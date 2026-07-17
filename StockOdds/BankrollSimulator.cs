@@ -173,13 +173,13 @@ namespace StockOdds
 		public static double VolScalePivot       = 100.0;
 
 		// ============ Long-term-bias ceiling (MIN cap) ============
-		// When on, the dynamic bias fed to adjEma is MIN(slow EMA, fast EMA) of dynBias instead
-		// of the single BiasEmaPeriod EMA. The SLOW ("max") EMA is the stock's own long-term
-		// bias, so it caps how far the fast/reactive bias can lean long — replacing the fixed
-		// LongBias ceiling with a data-driven one. MIN also de-leans quickly on weakness.
-		public static bool UseBiasMinCap    = false;
-		public static int  BiasEmaFastPeriod = 10;
-		public static int  BiasEmaMaxPeriod  = 100;
+		// When on, the bias fed to adjEma is MIN(biasEma, biasEmaMax): the EXISTING smoothed
+		// bias (biasEma = EMA at BiasEmaPeriod, the "orange line") capped by a longer EMA
+		// (BiasEmaMaxPeriod) of the same dynBias. The long EMA is the stock's own long-term
+		// bias, so it clips upward SPIKES in the reactive line while the reactive line still
+		// moves freely (esp. down). A data-driven ceiling in place of the fixed LongBias.
+		public static bool UseBiasMinCap   = false;
+		public static int  BiasEmaMaxPeriod = 100;
 
 		// ============ Tent exposure response ("converge on peak") ============
 		// When on, the bias-adjusted exposure (adjEma) is mapped to the target position by a
@@ -292,7 +292,6 @@ namespace StockOdds
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
 			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
-			double biasFastAlpha = 2.0 / (BiasEmaFastPeriod + 1);
 			double biasMaxAlpha = 2.0 / (BiasEmaMaxPeriod + 1);
 			double driftBand = RebalanceDriftPercent / 100.0;
 			double minExp = MinExposurePercent / 100.0;
@@ -306,9 +305,8 @@ namespace StockOdds
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
 			double biasSum = 0.0;
-			double biasEma = double.NaN;      // EMA of the dynamic bias (BiasEmaPeriod)
-			double biasEmaFast = double.NaN;  // fast EMA of dynBias (BiasEmaFastPeriod)  — MIN-cap experiment
-			double biasEmaMax = double.NaN;   // slow "max" EMA of dynBias (BiasEmaMaxPeriod)
+			double biasEma = double.NaN;      // EMA of the dynamic bias (BiasEmaPeriod) — the "orange line"
+			double biasEmaMax = double.NaN;   // longer EMA of dynBias (BiasEmaMaxPeriod) — the MIN-cap ceiling
 
 			// realized-volatility EWMA feeding the vol-driven features (dynamic long bias
 			// and/or vol-scaled exposure). EWMA of squared log returns -> annualized HV %.
@@ -365,10 +363,9 @@ namespace StockOdds
 				double dynBias = biasSum / denom;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				// MIN-cap: fast + slow("max") EMAs of dynBias; the slow one is the long-term ceiling.
-				biasEmaFast = double.IsNaN(biasEmaFast) ? dynBias : biasFastAlpha * dynBias + (1.0 - biasFastAlpha) * biasEmaFast;
-				biasEmaMax  = double.IsNaN(biasEmaMax)  ? dynBias : biasMaxAlpha  * dynBias + (1.0 - biasMaxAlpha)  * biasEmaMax;
-				double effBias = UseBiasMinCap ? Math.Min(biasEmaMax, biasEmaFast) : biasEma;
+				// MIN-cap: the longer "max" EMA of dynBias clips upward spikes in biasEma (orange line).
+				biasEmaMax = double.IsNaN(biasEmaMax) ? dynBias : biasMaxAlpha * dynBias + (1.0 - biasMaxAlpha) * biasEmaMax;
+				double effBias = UseBiasMinCap ? Math.Min(biasEma, biasEmaMax) : biasEma;
 
 				double adjEma = Math.Abs(ema) * effBias + ema;
 
