@@ -656,6 +656,49 @@ namespace StockOdds
 			return true;
 		}
 
+		// Real-engine A/B: single-EMA bias vs MIN(slow,fast) long-term-bias ceiling.
+		public static void PrintBiasMinCap(EngineTentResult res)
+		{
+			Console.WriteLine("\n===== REAL ENGINE: dynamic bias = single EMA vs MIN(slow,fast) long-term ceiling =====");
+			if (res.Rows.Count == 0) { Console.WriteLine("No data."); return; }
+			Console.WriteLine("Baseline = single EMA(BiasEmaPeriod=150) of dynBias. Headline = MIN(EMA150, EMA10): slow EMA caps the fast one.");
+			Console.WriteLine("Idea: the stock's long-term bias is the ceiling (replaces fixed LongBias); MIN also de-leans fast on weakness. Δ = MIN − baseline.");
+			Console.WriteLine();
+			Console.WriteLine($"  {"Symbol",-8} {"HV%",6}   {"Base Shp",8} {"MIN",6} {"Δ",6} │ {"BaseDD",7} {"MinDD",7} {"Δpp",6} │ {"BaseRet",9} {"MinRet",9} {"B&H",6}");
+			foreach (var r in res.Rows)
+				Console.WriteLine(
+					$"  {r.Symbol,-8} {r.Hv,6:0.0}   {r.BaseSharpe,8:0.00} {r.TentSharpe,6:0.00} {r.DShp,6:+0.00;-0.00} │ " +
+					$"-{r.BaseDd,5:0.0}% -{r.TentDd,5:0.0}% {r.DDd,6:+0.0;-0.0} │ {Signed(r.BaseRet),9} {Signed(r.TentRet),9} {r.BhSharpe,6:0.00}");
+
+			int n = res.Rows.Count;
+			double mBase = res.Rows.Average(r => r.BaseSharpe), mMin = res.Rows.Average(r => r.TentSharpe), mBh = res.Rows.Average(r => r.BhSharpe);
+			double mBaseDd = res.Rows.Average(r => r.BaseDd), mMinDd = res.Rows.Average(r => r.TentDd);
+			int shpW = res.Rows.Count(r => r.TentSharpe > r.BaseSharpe), ddW = res.Rows.Count(r => r.TentDd < r.BaseDd);
+			Console.WriteLine();
+			Console.WriteLine($"Mean Sharpe: baseline {mBase:0.000} -> MIN {mMin:0.000} ({mMin - mBase:+0.000;-0.000}; MIN higher {shpW}/{n})   B&H {mBh:0.000}");
+			Console.WriteLine($"Mean MaxDD : baseline -{mBaseDd:0.0}% -> MIN -{mMinDd:0.0}% ({mBaseDd - mMinDd:+0.0;-0.0}pp; MIN shallower {ddW}/{n})");
+
+			if (res.Sweep.Count > 0)
+			{
+				Console.WriteLine("\n  (fast, max) sweep (basket mean, real engine):");
+				Console.WriteLine($"  {"config",-20} {"meanShp",8} {"meanDD",7} {"meanRet",10}");
+				foreach (var s in res.Sweep)
+					Console.WriteLine($"  {s.label,-20} {s.shp,8:0.000} -{s.dd,5:0.0}% {Signed(s.ret),10}");
+			}
+
+			double bestSweep = res.Sweep.Where(s => s.label.StartsWith("MIN")).Select(s => s.shp).DefaultIfEmpty(0).Max();
+			Console.WriteLine();
+			Console.WriteLine(
+				mMin > mBase + 0.03 && shpW > n * 0.55
+					? "=> The MIN long-term-bias ceiling BEATS the single-EMA bias on mean Sharpe (and on a majority of names). Worth a walk-forward."
+					: bestSweep > mBase + 0.03
+						? "=> The headline (150,10) is ~a wash, but another (fast,max) in the sweep beats baseline — check which, then walk-forward it."
+						: mMin < mBase - 0.03
+							? "=> The MIN ceiling makes it WORSE on Sharpe — capping the long lean by the long-term EMA gives up too much trend."
+							: "=> ~A wash on Sharpe vs the single-EMA bias; any drawdown change is de-risking, not edge. (Validate OOS regardless.)");
+			Console.WriteLine("NOTE: full window, no costs. Other knobs (EMA/BiasPeriod/LongBias/drift/clamp) as configured in Program.cs.");
+		}
+
 		// Real-engine A/B: current exposure engine vs the tent-mapped engine.
 		public static void PrintEngineTent(EngineTentResult res)
 		{

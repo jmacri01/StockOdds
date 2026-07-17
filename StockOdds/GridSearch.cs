@@ -1151,6 +1151,71 @@ namespace StockOdds
 		}
 
 		// ============================================================================
+		// LONG-TERM-BIAS CEILING (MIN cap) A/B, real engine.
+		// Runs the actual BankrollSimulator with the dynamic bias = MIN(slow EMA, fast EMA) of
+		// dynBias vs the current single EMA(BiasEmaPeriod). The slow EMA is the stock's long-
+		// term bias, capping the fast/reactive one — a data-driven replacement for the fixed
+		// LongBias ceiling. Sweeps the (fast, max) periods; headline = MIN(EMA150, EMA10).
+		// ============================================================================
+		public static EngineTentResult BiasMinCapCompare(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			var result = new EngineTentResult();
+
+			// (label, useCap, fast, max) — index 0 baseline, index 1 headline (MIN(150,10))
+			var configs = new (string label, bool use, int fast, int max)[]
+			{
+				("Baseline(EMA150)",     false, 0,   0),
+				("MIN(EMA150,EMA10)",    true,  10,  150),
+				("MIN(EMA100,EMA10)",    true,  10,  100),
+				("MIN(EMA150,EMA15)",    true,  15,  150),
+				("MIN(EMA100,EMA15)",    true,  15,  100),
+			};
+			int C = configs.Length;
+			var sumShp = new double[C]; var sumDd = new double[C]; var sumRet = new double[C]; int nSym = 0;
+
+			bool sU = BankrollSimulator.UseBiasMinCap; int sF = BankrollSimulator.BiasEmaFastPeriod, sM = BankrollSimulator.BiasEmaMaxPeriod;
+			try
+			{
+				foreach (var (sym, bars) in barsBySymbol)
+				{
+					if (bars.Count < 3) continue;
+					var shp = new double[C]; var dd = new double[C]; var ret = new double[C];
+					double bhShp = 0, bhDd = 0, bhRet = 0;
+
+					for (int c = 0; c < C; c++)
+					{
+						BankrollSimulator.UseBiasMinCap = configs[c].use;
+						if (configs[c].use) { BankrollSimulator.BiasEmaFastPeriod = configs[c].fast; BankrollSimulator.BiasEmaMaxPeriod = configs[c].max; }
+						var r = BankrollSimulator.Run(bars, initialBankroll);
+						shp[c] = SharpeOf(r); dd[c] = r.MaxDrawdownPct; ret[c] = r.TotalReturnPct;
+						sumShp[c] += shp[c]; sumDd[c] += dd[c]; sumRet[c] += ret[c];
+						if (c == 0) { bhShp = double.IsNaN(r.BuyHoldSharpeRatio) ? 0 : r.BuyHoldSharpeRatio; bhDd = r.BuyHoldMaxDrawdownPct; bhRet = r.BuyHoldReturnPct; }
+					}
+					nSym++;
+
+					result.Rows.Add(new EngineTentRow
+					{
+						Symbol = sym, Hv = Volatility.AnnualizedHistoricalPct(bars), Bars = bars.Count,
+						BaseSharpe = shp[0], BaseDd = dd[0], BaseRet = ret[0],
+						TentSharpe = shp[1], TentDd = dd[1], TentRet = ret[1],   // headline = MIN(EMA150,EMA10)
+						BhSharpe = bhShp, BhDd = bhDd, BhRet = bhRet,
+					});
+				}
+			}
+			finally
+			{
+				BankrollSimulator.UseBiasMinCap = sU; BankrollSimulator.BiasEmaFastPeriod = sF; BankrollSimulator.BiasEmaMaxPeriod = sM;
+			}
+
+			int n = Math.Max(1, nSym);
+			for (int c = 0; c < C; c++)
+				result.Sweep.Add((configs[c].label, sumShp[c] / n, sumDd[c] / n, sumRet[c] / n));
+			result.Rows = result.Rows.OrderBy(r => r.Hv).ToList();
+			return result;
+		}
+
+		// ============================================================================
 		// EXPOSURE-SHAPE SWEEP (tent / "converge on 0.5").
 		// Reshape the bias-adjusted exposure into the actual position via a TENT centered at
 		// `peak`: position = 1.0 at adjEma=peak, tapering linearly to `edge` (0 or 0.25) at

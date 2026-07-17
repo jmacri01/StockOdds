@@ -66,9 +66,11 @@ class Program
 	//                     on 0.5"), sweep the peak, compare vs monotonic(cur) and buy&hold.
 	//   EngineTent     -> A/B the REAL BankrollSimulator with the tent exposure-response ON vs
 	//                     OFF (adjEma 0.5 -> 100%, extremes -> ~25%); full pipeline, per symbol.
+	//   BiasMinCap     -> A/B the real engine with dynamic bias = MIN(slow EMA, fast EMA) of
+	//                     dynBias (long-term bias as the ceiling) vs the single EMA; (fast,max) sweep.
 	//   BasketMean     -> single knob combo with the best MEAN Sharpe across the basket.
-	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, ExpCurve, BandOptimize, ExposureShape, EngineTent, BasketMean }
-	static GridMode GRID_MODE = GridMode.EngineTent;
+	enum GridMode { BiasSweep, KnobRank, VolDeploy, FullWindow, RollingBuckets, Rolling, WalkForward, VolStudy, LongBiasStudy, DynBiasStudy, VolScaleStudy, NormBiasStudy, DynMapSearch, NormStaticStudy, ProbExposureStudy, VolTargetWf, StateLagStudy, BarrierStudy, SignalScreen, ExposureGap, ExpCurve, BandOptimize, ExposureShape, EngineTent, BiasMinCap, BasketMean }
+	static GridMode GRID_MODE = GridMode.BiasMinCap;
 
 	// Basket for the grid search. For the volatility study, spread it across low-HV
 	// (indices/mega-caps) to high-HV (small/speculative) names so the relationship shows.
@@ -208,7 +210,7 @@ class Program
 				}
 			}
 
-			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap or GridMode.ExpCurve or GridMode.BandOptimize or GridMode.ExposureShape or GridMode.EngineTent)
+			if (GRID_MODE is GridMode.FullWindow or GridMode.VolDeploy or GridMode.BiasSweep or GridMode.ProbExposureStudy or GridMode.VolTargetWf or GridMode.StateLagStudy or GridMode.BarrierStudy or GridMode.SignalScreen or GridMode.ExposureGap or GridMode.ExpCurve or GridMode.BandOptimize or GridMode.ExposureShape or GridMode.EngineTent or GridMode.BiasMinCap)
 				Console.WriteLine($"\nComparing over the full window x {barsBySymbol.Count} symbols...");
 			else
 			{
@@ -322,6 +324,10 @@ class Program
 				case GridMode.EngineTent:
 					var et = GridSearch.ExposureEngineTent(barsBySymbol, initialBankroll: 10_000.0);
 					GridSearchPrinter.PrintEngineTent(et);
+					break;
+				case GridMode.BiasMinCap:
+					var bmc = GridSearch.BiasMinCapCompare(barsBySymbol, initialBankroll: 10_000.0);
+					GridSearchPrinter.PrintBiasMinCap(bmc);
 					break;
 				default:
 					var grid = GridSearch.RunMulti(barsBySymbol, initialBankroll: 10_000.0);
