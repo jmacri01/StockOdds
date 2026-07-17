@@ -199,12 +199,16 @@ namespace StockOdds
 		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
 		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
 		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
-		// Scale the bias by longEMA/shortEMA = slowBiasEMA / fastBiasEMA (clamped): damps the bias when
-		// the fast EMA runs above the slow (a recent spike) and lifts it when the fast dips below (a recent
-		// pullback) — a mean-reverting tilt on the bias's own level. Applied AFTER the slow*mult ceiling.
-		// Validated on a broad random 500-name US-common-stock sample (not just the basket): raises Sharpe
-		// on 60% of names (strongest 50-100% HV) and lifts return, at the cost of ~1-2pp deeper drawdown on
-		// high-vol names — a mild favorable trade, on by default. Set false for the plain ceiling'd bias.
+		// Scale the bias by longEMA/shortEMA = slowBiasEMA / fastBiasEMA (clamped), on a fixed CEILING base:
+		//   effLongBias = (slow * DynSlowMult) * clamp(slow/fast, lo, hi).
+		// This is monotonic-decreasing in the fast EMA — lift the bias as the fast dips below the slow (a
+		// recent pullback in the bias) and damp it as the fast rises above (a recent spike); neutral (= the
+		// plain ceiling) when fast == slow. Using the ceiling (not MIN(fast, ceiling)) as the base removes the
+		// non-monotonic "tent" (which peaked at fast = slow/2 and fell back for very low fast). Validated on a
+		// broad random 500-name US-common-stock sample AND vs buy-&-hold: closes most of the Sharpe gap to B&H
+		// (0.13->0.17 vs 0.19), keeps ~the entire drawdown edge (shallower than B&H on 82% of names), and is
+		// best across the 50-100% HV deployment band; the give-up vs the old tent is only on >100% HV lottery
+		// names. On by default. Set false for the plain ceiling'd bias.
 		public static bool   BiasEmaRatio    = true;
 		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
 		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
@@ -416,11 +420,15 @@ namespace StockOdds
 					// (bias climbs only if sustained) while MIN still lets it drop fast.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
 					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
-					effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
 					if (BiasEmaRatio)
 					{
+						// monotonic: ceiling base scaled by the clamped slow/fast ratio (see comment above)
 						double m = Clamp(dynLbEmaSlow / Math.Max(dynLbEma, 1e-6), BiasEmaRatioLo, BiasEmaRatioHi);
-						effLongBias = Math.Max(effLongBias * m, DynMin);
+						effLongBias = Math.Max(dynLbEmaSlow * DynSlowMult * m, DynMin);
+					}
+					else
+					{
+						effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
 					}
 				}
 

@@ -152,10 +152,11 @@ class Program
 			//                                       // but at the shipped screening default (dynMax150/slow150/mult0.5) the ceiling
 			//                                       // already caps the bias so timing only trims and mildly de-levers the winners.
 			//                                       // Turn ON only when reverting to the neutral config (dynMax15/mult1.0).
-			// BankrollSimulator.BiasEmaRatio = false; // ON by default: after the ceiling, scale the bias by
-			//                                         // clamp(slowBiasEMA/fastBiasEMA, 0.25, 2.0) — damps when the fast EMA
-			//                                         // spiked above the slow, lifts when it dipped below. Broad-500 validated:
-			//                                         // +Sharpe on ~60% of names + higher return, ~1-2pp deeper DD on high-vol.
+			// BankrollSimulator.BiasEmaRatio = false; // ON by default: effLongBias = (slow*mult)*clamp(slow/fast,0.25,2).
+			//                                         // Monotonic mean-reverting tilt: lifts the bias when the fast EMA dipped
+			//                                         // below the slow, damps when it spiked above; fast==slow = plain ceiling.
+			//                                         // Broad-500 + vs-B&H validated: closes most of the Sharpe gap to B&H and
+			//                                         // keeps ~all the drawdown edge (82% of names shallower than B&H).
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;

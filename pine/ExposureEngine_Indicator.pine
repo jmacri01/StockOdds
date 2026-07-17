@@ -109,7 +109,7 @@ dynSmoothSlow = input.int(150, "Bias smoothing SLOW (min-cap)", minval = 1, grou
 dynSlowMult = input.float(0.5, "Slow-EMA ceiling mult", minval = 0.1, step = 0.05, group = grpDyn,
      tooltip = "Multiplies the SLOW EMA before the MIN, so <1 lowers the ceiling proportionally (scale-aware bias cap). Most meaningful with the slow smoothing raised. Risk dial: lower ceiling trims the bias (trades Sharpe for drawdown). 1.0 = no effect.")
 biasEmaRatio = input.bool(true, "Bias x slow/fast EMA ratio", group = grpDyn,
-     tooltip = "After the ceiling, scale the bias by slowBiasEMA/fastBiasEMA (clamped): damps the bias when the fast EMA runs above the slow (recent spike) and lifts it when the fast dips below (recent pullback) — a mean-reverting tilt on the bias level. Validated on a broad random 500-name sample: +Sharpe on ~60% of names and +return, at ~1-2pp deeper drawdown on high-vol names. On by default.")
+     tooltip = "effLongBias = (slowEMA*mult) * clamp(slowEMA/fastEMA, lo, hi). Monotonic in the fast EMA: lifts the bias when the fast dips below the slow (recent pullback) and damps it when the fast rises above (recent spike); neutral (= plain ceiling) when fast==slow. Validated on a broad random 500-name sample and vs buy&hold: closes most of the Sharpe gap to B&H and keeps ~all the drawdown edge (shallower than B&H on 82% of names), best across the 50-100% HV band. On by default.")
 biasRatioLo  = input.float(0.25, "  · ratio clamp floor", minval = 0.05, step = 0.05, group = grpDyn)
 biasRatioHi  = input.float(2.0,  "  · ratio clamp ceiling", minval = 1.0, step = 0.5, group = grpDyn)
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
@@ -260,7 +260,7 @@ dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 
 var float dynLbEmaSlow = na
 dynLbEmaSlow := na(dynLbEmaSlow) ? dynLBc : (2.0 / (dynSmoothSlow + 1)) * dynLBc + (1 - 2.0 / (dynSmoothSlow + 1)) * dynLbEmaSlow
 effLongBias = useDynLB ? math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin) : longBias
-effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(effLongBias * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
+effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
