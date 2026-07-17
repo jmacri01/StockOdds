@@ -98,6 +98,10 @@ defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpD
      tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
 biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
      tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
+biasTiming = input.bool(true, "Timing modulation (window vs norm)", group = grpDyn,
+     tooltip = "Level for direction, window for timing. The bias level (biasEMA) sets how bullish; then exposure is nudged by the latest window vs its norm: * clamp(dynBias/biasEMA, min, max). >1 accelerating -> up, <1 decelerating -> down. Tight band only trims/adds at the margin; it never de-levers a real trend (its skew clamps to max anyway). On by default.")
+timingMin = input.float(0.75, "Timing min", step = 0.05, group = grpDyn)
+timingMax = input.float(1.25, "Timing max", step = 0.05, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
@@ -275,7 +279,9 @@ dynBiasFix = biasSumFix / biasPeriod
 var float dynBiasEmaFix = na
 dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - biasAlpha) * dynBiasEmaFix
 blendedBiasEma = useDynLB ? biasBlend * dynBiasEma + (1 - biasBlend) * dynBiasEmaFix : dynBiasEma
-adjRaw  = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
+adjBase = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
+// Timing: level for direction, window for timing — modulate by the latest window vs its norm.
+adjRaw  = (biasTiming and not na(adjBase) and dynBiasEma > 0.05) ? adjBase * math.min(math.max(dynBias / dynBiasEma, timingMin), timingMax) : adjBase
 // No-invert guard: a long bias may trim a bearish EMA to flat but not flip its sign into a net long.
 noInvertExit = biasNoInvert and not na(adjRaw) and ((emaExp < 0 and adjRaw > 0) or (emaExp > 0 and adjRaw < 0))
 adjEma  = noInvertExit ? 0.0 : adjRaw

@@ -137,6 +137,17 @@ namespace StockOdds
 		// within-band residual) — held goes to 0, so re-entry stays symmetric and every other
 		// bar's drift-band rebalance is unchanged.
 		public static bool   BiasNoInvert  = false;
+		// Level for direction, window for timing. The level-amplified skew (|ema|*biasEma + ema)
+		// decides HOW bullish (biasEma high -> more bullish -> rides the runs). It is then modulated
+		// by the latest window vs its long-run norm: m = clamp(dynBias/biasEma, Min, Max). >1 when the
+		// recent window runs hot (accelerating) nudges exposure up; <1 (decelerating) nudges it down.
+		// The band is kept TIGHT (0.75..1.25) so it only trims/adds at the margin and never de-levers
+		// a real trend (whose skew clamps to max regardless). Guarded off when biasEma<=~0 (bearish
+		// regime — the level already de-risks there). On by default: lifts OOS Sharpe at equal drawdown
+		// and preserves/improves the big-winner compounds, unlike a wider band which just de-levers.
+		public static bool   BiasTiming    = true;
+		public static double BiasTimingMin = 0.75;
+		public static double BiasTimingMax = 1.25;
 
 		// ============ Dynamic (per-candle) LongBias ============
 		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
@@ -397,6 +408,9 @@ namespace StockOdds
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
 				double blendedBiasEma = DynamicLongBias ? BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix : biasEma;
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
+				// Window-vs-norm timing modulation (see BiasTiming above): trims/adds at the margin.
+				if (BiasTiming && biasEma > 0.05)
+					adjEma *= Clamp(dynBias / biasEma, BiasTimingMin, BiasTimingMax);
 				// A long bias may neutralize a bearish EMA toward flat but not INVERT its sign
 				// into a net long (guards against biasEma > 1 flipping a bearish signal to long).
 				bool noInvertExit = false;
