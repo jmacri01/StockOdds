@@ -187,6 +187,12 @@ namespace StockOdds
 		// 0.46->0.39, DD 33.5%->30.5%). DEFAULT 10 = disabled (= the tuned fast-only bias); raise it
 		// (e.g. 100) for a steadier, more conservative bias at the cost of the run-capture.
 		public static int    DynSmoothSlow   = 10;
+		// Multiplier on the slow EMA before the MIN: effLongBias = MIN(fast, slow * DynSlowMult).
+		// < 1 lowers the (slow-EMA) ceiling proportionally — a cleaner, scale-aware way to cap the
+		// bias than a fixed DynMax. Most meaningful with DynSmoothSlow raised (a genuine slow EMA).
+		// It's a risk dial: a lower ceiling trims the bias -> trades Sharpe for drawdown (tilts bull->bear).
+		// Default 1.0 = no effect (MIN(fast, slow) as-is).
+		public static double DynSlowMult     = 1.0;
 		// Blend of two exposure skews: the DEFENSIVE leg (fixed LongBias — halves drawdown but
 		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
@@ -395,7 +401,7 @@ namespace StockOdds
 					// (bias climbs only if sustained) while MIN still lets it drop fast.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
 					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
-					effLongBias = Math.Min(dynLbEma, dynLbEmaSlow);
+					effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
 				}
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /

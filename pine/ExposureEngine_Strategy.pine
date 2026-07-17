@@ -91,7 +91,9 @@ timingMax = input.float(1.25, "Timing max", step = 0.05, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
 dynSmoothSlow = input.int(10, "Bias smoothing SLOW (min-cap)", minval = 1, group = grpDyn,
-     tooltip = "A slower EMA; LongBias = MIN(fast EMA, slow EMA). The lagging slow EMA caps transient spikes (bias climbs only if sustained). DEFENSIVE dial: MIN(fast,slow) <= fast, so it only trims the bias — lower Sharpe/return for lower drawdown. Default 10 = disabled (= fast only); raise (e.g. 100) to enable.")
+     tooltip = "A slower EMA; LongBias = MIN(fast EMA, slow EMA * mult). The lagging slow EMA caps transient spikes (bias climbs only if sustained). DEFENSIVE dial: MIN(fast,slow) <= fast, so it only trims the bias — lower Sharpe/return for lower drawdown. Default 10 = disabled (= fast only); raise (e.g. 100) to enable.")
+dynSlowMult = input.float(1.0, "Slow-EMA ceiling mult", minval = 0.1, step = 0.05, group = grpDyn,
+     tooltip = "Multiplies the SLOW EMA before the MIN, so <1 lowers the ceiling proportionally (scale-aware bias cap). Most meaningful with the slow smoothing raised. Risk dial: lower ceiling trims the bias (trades Sharpe for drawdown). 1.0 = no effect.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn)
@@ -225,7 +227,7 @@ var float dynLbEma = na
 dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
 var float dynLbEmaSlow = na
 dynLbEmaSlow := na(dynLbEmaSlow) ? dynLBc : (2.0 / (dynSmoothSlow + 1)) * dynLBc + (1 - 2.0 / (dynSmoothSlow + 1)) * dynLbEmaSlow
-effLongBias = useDynLB ? math.min(dynLbEma, dynLbEmaSlow) : longBias
+effLongBias = useDynLB ? math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin) : longBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews

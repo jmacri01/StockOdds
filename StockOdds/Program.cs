@@ -133,9 +133,11 @@ class Program
 			// BankrollSimulator.DynBase  = 1.0;   // LongBias at z = 0
 			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
 			// BankrollSimulator.DynSmoothPeriod = 10;  // EMA smoothing of the per-candle bias
-			// BankrollSimulator.DynSmoothSlow = 10;    // slow EMA; LongBias = MIN(fast, slow). Default 10 = off.
+			// BankrollSimulator.DynSmoothSlow = 10;    // slow EMA; LongBias = MIN(fast, slow*DynSlowMult). Default 10 = off.
 			//                                          // Raise (e.g. 100) for a steadier bias — defensive dial:
 			//                                          // trims Sharpe/return for lower drawdown (min<=fast).
+			// BankrollSimulator.DynSlowMult = 1.0;     // multiplies the slow EMA before the MIN; <1 lowers the
+			//                                          // ceiling proportionally (scale-aware cap). 1.0 = no effect.
 			// BankrollSimulator.DynMax   = 15.0;  // clamp
 			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
 			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
