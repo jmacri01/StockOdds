@@ -81,6 +81,12 @@ volFloor  = input.float(0.0, "Dyn LB floor", step = 0.5, group = grpDyn,
      tooltip = "Lower clamp. 0 keeps a symmetric-or-long lean; going negative gutted upside on trending high-vol names in testing.")
 volCeil   = input.float(12.0, "Dyn LB ceiling", step = 1, group = grpDyn,
      tooltip = "Upper clamp — the practical 'infinite' long lean as vol -> 0.")
+dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
+     tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off. Only bites when the dynamic long bias is on.")
+useBiasMinCap = input.bool(false, "Cap bias spikes (MIN with long EMA)", group = grpDyn,
+     tooltip = "Also EMA-smooth the per-candle LongBias over a longer period (below) and take the MIN, so the long EMA clips UPWARD spikes while the short EMA still moves freely (esp. down).")
+dynSmoothMax = input.int(100, "Bias spike-cap EMA bars", minval = 1, group = grpDyn,
+     tooltip = "The longer EMA used as the ceiling when 'Cap bias spikes' is on.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -200,10 +206,21 @@ volVar := na(volRet) ? volVar : na(volVar) ? volRet * volRet : volAlpha * volRet
 volPct = na(volVar) ? na : math.sqrt(volVar) * math.sqrt(252.0) * 100.0
 effLongBias = useDynLb and not na(volPct) ? math.max(math.min(volScale * math.log(volPivot / math.max(volPct, 1e-6)), math.max(volFloor, volCeil)), math.min(volFloor, volCeil)) : longBias
 
+// Bias smoothing: C#-faithful seeded EMA of the per-candle LongBias so it does not whipsaw
+// (dynSmooth). Optional MIN with a longer EMA (dynSmoothMax) clips UPWARD spikes while the
+// short EMA still moves freely (esp. down). No-op for a static Long bias (constant).
+lbFastAlpha = 2.0 / (dynSmooth + 1)
+var float lbEmaFast = na
+lbEmaFast := na(lbEmaFast) ? effLongBias : lbFastAlpha * effLongBias + (1 - lbFastAlpha) * lbEmaFast
+lbSlowAlpha = 2.0 / (dynSmoothMax + 1)
+var float lbEmaSlow = na
+lbEmaSlow := na(lbEmaSlow) ? effLongBias : lbSlowAlpha * effLongBias + (1 - lbSlowAlpha) * lbEmaSlow
+lbUsed = dynSmooth > 1 ? (useBiasMinCap ? math.min(lbEmaFast, lbEmaSlow) : lbEmaFast) : effLongBias
+
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
-// A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
+// A Bull candle contributes (lbUsed + 1), a Bear candle -1; lbUsed skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
+biasSig = ltState == 1 ? (lbUsed + 1) : ltState == 0 ? -1 : 0
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0
