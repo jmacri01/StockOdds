@@ -177,8 +177,22 @@ namespace StockOdds
 		public static double DynDecay        = 0.6;    // exponential mode: decay rate
 		public static double DynSlope        = -1.28;  // linear mode: per unit z
 		public static double DynMin          = 0.0;
-		public static double DynMax          = 15.0;
-		public static int    DynSmoothPeriod = 10;     // EMA smoothing of the per-candle bias (1 = off)
+		// ===== High-vol screening default (see README "screening preset") =====
+		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
+		// MAX(MIN(fast EMA, slow EMA * DynSlowMult), DynMin). DynMax is raised to 150 so the raw
+		// bias isn't pre-clamped and the slow-EMA*mult IS the effective, scale-aware ceiling.
+		// This is a deliberate DEFENSIVE tilt for volatile names: it captures the runs (per-name
+		// compounds preserved/improved) and is more robust through a real bear (full-window incl.
+		// 2022: HV Sharpe 0.43->0.47, drawdown flat) at the cost of some bull-ONLY OOS Sharpe
+		// (0.46->0.38). It does NOT dominate on the bull-only walk-forward — it's a risk-appetite
+		// choice, not a free win, and the full-window edge leans on the one in-sample 2022 bear.
+		// NOTE: this default REQUIRES DynMax raised — at DynMax=15 the same slow/mult over-clamps
+		// and craters names (SMCI 733%->94%). To revert to the neutral baseline: DynMax=15,
+		// DynSmoothSlow=DynSmoothPeriod (10), DynSlowMult=1.0.
+		public static double DynMax          = 150.0; // raised so the slow-EMA*mult is the real ceiling
+		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
+		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
+		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
 		// Blend of two exposure skews: the DEFENSIVE leg (fixed LongBias — halves drawdown but
 		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
@@ -303,7 +317,9 @@ namespace StockOdds
 			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
 			double perAbsSum = 0.0, perTgtPrev = double.NaN;
 			double dynLbAlpha = 2.0 / (Math.Max(1, DynSmoothPeriod) + 1);
-			double dynLbEma = double.NaN;             // EMA-smoothed per-candle LongBias
+			double dynLbAlphaSlow = 2.0 / (Math.Max(1, DynSmoothSlow) + 1);
+			double dynLbEma = double.NaN;             // fast EMA of the per-candle LongBias
+			double dynLbEmaSlow = double.NaN;         // slow EMA — MIN(fast, slow) caps transient spikes
 
 			// updates curHvPct from the completed return into `latest` (no look-ahead)
 			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
@@ -380,9 +396,12 @@ namespace StockOdds
 						? DynBase * Math.Exp(-DynDecay * z)
 						: DynBase + DynSlope * z;
 					raw = Clamp(raw, DynMin, DynMax);
-					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar
+					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar. A fast and a slow
+					// EMA; effLongBias = MIN of the two, so the lagging slow EMA caps transient spikes
+					// (bias climbs only if sustained) while MIN still lets it drop fast.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
-					effLongBias = dynLbEma;
+					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
+					effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
 				}
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
