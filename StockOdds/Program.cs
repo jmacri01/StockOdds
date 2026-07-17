@@ -139,6 +139,10 @@ class Program
 			// BankrollSimulator.BiasNoInvert = true; // stop the bias flipping a bearish EMA into a net long when
 			//                                        // biasEma > 1 (it may trim to flat, not invert). Near-free on
 			//                                        // high-vol names; removes the leverage-into-a-crash tail risk.
+			// BankrollSimulator.BiasTiming = false; // ON by default: "level for direction, window for timing" — modulates
+			//                                       // the level skew by clamp(dynBias/biasEma, 0.75, 1.25): up when the recent
+			//                                       // window accelerates vs its norm, down when it decelerates. Lifts OOS
+			//                                       // Sharpe at equal drawdown, preserves the big-winner compounds. false = plain skew.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
