@@ -99,26 +99,26 @@ The dynamic bias is mirrored in the Pine scripts (on by default): watch `LongBia
 
 ## What to expect
 
-Backtested over each name's full available history (~5 years, **including the 2022 bear market**), default parameters with the **dynamic long bias on**, no per-symbol tuning:
+Backtested over each name's full available history (~5 years, **including the 2022 bear market**), the **shipped default** (the high-vol screening preset — dynamic long bias on, bias ceiling = half the slow 150-bar EMA; see below), no per-symbol tuning:
 
 | Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| KO | 16 | 0.36 | **0.56** | −22% | −21% | 1.0 | **2.5** |
-| ^GSPC | 17 | **0.99** | 0.74 | **−16%** | −25% | **5.3** | 3.0 |
-| NVDA | 51 | **1.28** | 1.17 | **−53%** | −66% | **17.3** | 15.0 |
-| MSTR | 91 | **0.89** | 0.52 | **−63%** | −84% | **7.5** | 1.0 |
-| ASTS | 104 | **0.82** | 0.80 | **−60%** | −86% | **8.0** | 4.9 |
-| SMR | 99 | **0.64** | 0.43 | **−76%** | −87% | **1.8** | −0.3 |
-| OPEN | 109 | **0.56** | 0.33 | **−66%** | −98% | **2.0** | −0.7 |
+| KO | 16 | 0.45 | **0.60** | −21% | −21% | 1.5 | **2.5** |
+| ^GSPC | 17 | **0.88** | 0.76 | **−21%** | −25% | **3.8** | 3.0 |
+| NVDA | 51 | **1.34** | 1.19 | **−53%** | −66% | **20.0** | 15.1 |
+| MSTR | 91 | **0.90** | 0.59 | **−70%** | −84% | **7.4** | 1.1 |
+| ASTS | 104 | **0.89** | 0.81 | **−58%** | −86% | **12.0** | 4.8 |
+| SMR | 99 | **0.76** | 0.43 | **−64%** | −87% | **3.9** | −0.3 |
+| OPEN | 109 | **0.68** | 0.33 | **−68%** | −98% | **4.0** | −0.7 |
 
-**Basket aggregate (18 symbols):** mean Sharpe **0.64 vs 0.48** (strategy higher on **14/18**), mean max drawdown **−50.6% vs −70.1%** — a **shallower drawdown on 17 of 18 names** (≈ a quarter less, on average).
+**Basket aggregate (18 symbols):** mean Sharpe **0.64 vs 0.48** (strategy higher on **14/18**), mean max drawdown **−51.6% vs −70.4%** — a **shallower drawdown on 17 of 18 names** (≈ a quarter less, on average).
 
-> ⚠️ **In-sample vs out-of-sample — read this.** The table above is *full-window*, so it includes the **2022 bear**, which the strategy dodges — that's where its Sharpe edge comes from. A stricter **rolling walk-forward** (train on each window, score the held-out next ~9 months — all of which land in the 2023–2026 bull) tells a different story: on the high-vol deployment set, **buy-&-hold *beats* the strategy on Sharpe out-of-sample (≈0.80 vs 0.43, 0/4 folds)**, because no bear falls inside an OOS test window for the de-risking to pay off (Yahoo caps history at ~5y). **What *does* survive OOS is the drawdown reduction — ~30% shallower, every fold.** So the honest read: this is a **capital-preservation overlay whose Sharpe advantage is bear-market-dependent**, not a reliable standalone alpha. Deploy it for drawdown control, not to out-Sharpe buy-&-hold in a bull run.
+> ⚠️ **In-sample vs out-of-sample — read this.** The table above is *full-window*, so it includes the **2022 bear**, which the strategy dodges — that's where its Sharpe edge comes from. A stricter **rolling walk-forward** (train on each window, score the held-out next ~9 months — all of which land in the 2023–2026 bull) tells a different story: on the high-vol deployment set, **buy-&-hold *beats* the strategy on Sharpe out-of-sample (≈0.91 vs 0.43, 0/4 folds)**, because no bear falls inside an OOS test window for the de-risking to pay off (Yahoo caps history at ~5y). **What *does* survive OOS is the drawdown reduction — ~a third shallower (32% vs 47%), every fold.** So the honest read: this is a **capital-preservation overlay whose Sharpe advantage is bear-market-dependent**, not a reliable standalone alpha. Deploy it for drawdown control, not to out-Sharpe buy-&-hold in a bull run.
 
 ### The trade-off, honestly
-- **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.82 vs 0.80**, drawdown **−60% vs −86%**, Ret/DD **8.0 vs 4.9**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
+- **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.89 vs 0.81**, drawdown **−58% vs −86%**, Ret/DD **12.0 vs 4.8**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
 - **The drawdown cut is real but more modest than a pure cash-heavy config.** ≈ a quarter shallower vs buy-&-hold (was ~half with a pure defensive config). Running more long buys return at the cost of some protection — a deliberate trade. If you want maximum capital preservation instead, dial `BiasBlend` down toward 0, or set `DynamicLongBias = false` with a low fixed `LongBias`.
-- **On low-vol names it still lags** (KO: 0.38 vs 0.54): no deep drawdown to dodge, so leaning long just tracks buy-&-hold at best. Don't run it there.
+- **On low-vol names it still lags** (KO: 0.45 vs 0.60): no deep drawdown to dodge, so leaning long just tracks buy-&-hold at best. Don't run it there.
 - **This 18-name set is high-vol-favorable.** Across a broad ~110-name universe the strategy *ties* buy-&-hold on Sharpe (≈0.43) while still cutting drawdown — the drawdown edge generalizes; the Sharpe outperformance is strongest on volatile names.
 
 ### When to deploy it
