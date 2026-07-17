@@ -177,22 +177,22 @@ namespace StockOdds
 		public static double DynDecay        = 0.6;    // exponential mode: decay rate
 		public static double DynSlope        = -1.28;  // linear mode: per unit z
 		public static double DynMin          = 0.0;
-		public static double DynMax          = 15.0;  // hard safety ceiling on the raw bias (the slow EMA is the practical cap)
-		public static int    DynSmoothPeriod = 10;     // EMA smoothing of the per-candle bias (1 = off)
-		// A slower EMA of the same raw bias. effLongBias = MIN(EMA(DynSmoothPeriod), EMA(DynSmoothSlow)).
-		// The lagging slow EMA caps transient spikes (the bias only climbs if the raw value is
-		// SUSTAINED), while MIN still lets it fall fast — an asymmetric cap (slow to lean in, quick to
-		// lean out). NOTE it's a DEFENSIVE risk dial: MIN(fast,slow) <= fast always, so it can only
-		// TRIM the bias — OOS it lowers Sharpe & return for lower drawdown (e.g. slow 100: HV Sharpe
-		// 0.46->0.39, DD 33.5%->30.5%). DEFAULT 10 = disabled (= the tuned fast-only bias); raise it
-		// (e.g. 100) for a steadier, more conservative bias at the cost of the run-capture.
-		public static int    DynSmoothSlow   = 10;
-		// Multiplier on the slow EMA before the MIN: effLongBias = MIN(fast, slow * DynSlowMult).
-		// < 1 lowers the (slow-EMA) ceiling proportionally — a cleaner, scale-aware way to cap the
-		// bias than a fixed DynMax. Most meaningful with DynSmoothSlow raised (a genuine slow EMA).
-		// It's a risk dial: a lower ceiling trims the bias -> trades Sharpe for drawdown (tilts bull->bear).
-		// Default 1.0 = no effect (MIN(fast, slow) as-is).
-		public static double DynSlowMult     = 1.0;
+		// ===== High-vol screening default (see README "screening preset") =====
+		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
+		// MAX(MIN(fast EMA, slow EMA * DynSlowMult), DynMin). DynMax is raised to 150 so the raw
+		// bias isn't pre-clamped and the slow-EMA*mult IS the effective, scale-aware ceiling.
+		// This is a deliberate DEFENSIVE tilt for volatile names: it captures the runs (per-name
+		// compounds preserved/improved) and is more robust through a real bear (full-window incl.
+		// 2022: HV Sharpe 0.43->0.47, drawdown flat) at the cost of some bull-ONLY OOS Sharpe
+		// (0.46->0.38). It does NOT dominate on the bull-only walk-forward — it's a risk-appetite
+		// choice, not a free win, and the full-window edge leans on the one in-sample 2022 bear.
+		// NOTE: this default REQUIRES DynMax raised — at DynMax=15 the same slow/mult over-clamps
+		// and craters names (SMCI 733%->94%). To revert to the neutral baseline: DynMax=15,
+		// DynSmoothSlow=DynSmoothPeriod (10), DynSlowMult=1.0.
+		public static double DynMax          = 150.0; // raised so the slow-EMA*mult is the real ceiling
+		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
+		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
+		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
 		// Blend of two exposure skews: the DEFENSIVE leg (fixed LongBias — halves drawdown but
 		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +

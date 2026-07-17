@@ -77,7 +77,7 @@ dynBase  = input.float(1.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grp
 dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
 dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
-dynMax   = input.float(15.0, "LongBias max", step = 0.5, group = grpDyn)
+dynMax   = input.float(150.0, "LongBias max", step = 0.5, group = grpDyn)
 biasBlend = input.float(1.0, "Defensive/dynamic blend", minval = 0, maxval = 1, step = 0.05, group = grpDyn,
      tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
 defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
@@ -90,9 +90,9 @@ timingMin = input.float(0.75, "Timing min", step = 0.05, group = grpDyn)
 timingMax = input.float(1.25, "Timing max", step = 0.05, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
-dynSmoothSlow = input.int(10, "Bias smoothing SLOW (min-cap)", minval = 1, group = grpDyn,
+dynSmoothSlow = input.int(150, "Bias smoothing SLOW (min-cap)", minval = 1, group = grpDyn,
      tooltip = "A slower EMA; LongBias = MIN(fast EMA, slow EMA * mult). The lagging slow EMA caps transient spikes (bias climbs only if sustained). DEFENSIVE dial: MIN(fast,slow) <= fast, so it only trims the bias — lower Sharpe/return for lower drawdown. Default 10 = disabled (= fast only); raise (e.g. 100) to enable.")
-dynSlowMult = input.float(1.0, "Slow-EMA ceiling mult", minval = 0.1, step = 0.05, group = grpDyn,
+dynSlowMult = input.float(0.5, "Slow-EMA ceiling mult", minval = 0.1, step = 0.05, group = grpDyn,
      tooltip = "Multiplies the SLOW EMA before the MIN, so <1 lowers the ceiling proportionally (scale-aware bias cap). Most meaningful with the slow smoothing raised. Risk dial: lower ceiling trims the bias (trades Sharpe for drawdown). 1.0 = no effect.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
