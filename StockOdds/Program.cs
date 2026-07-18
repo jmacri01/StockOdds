@@ -170,6 +170,11 @@ class Program
 			//                                         // return (110: FW 0.48->0.50, DD 53->52%, ret 166->181%, OOS flat). Off = the
 			//                                         // fast-slow gate is essential; slope alone over-trims (turning it off restores
 			//                                         // the pre-BlendSlope behaviour). BlendSlopeK / BlendSlowPeriod / BlendSlopeBars tune it.
+			// BankrollSimulator.FinalSmooth = false; // ON by default (EMA5). EMA-smooths the FINAL plotted position (the last
+			//                                        // output) on top of the drift band — damps residual whipsaw/turnover.
+			//                                        // Broad-500 validated: raises OOS Sharpe 0.27->0.28 (the only change to lift
+			//                                        // broad OOS rather than tie) and trims ~1pt drawdown, giving up only marginal
+			//                                        // return. Keep FinalSmoothPeriod short (3-8); heavy smoothing over-lags.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
