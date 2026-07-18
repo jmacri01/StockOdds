@@ -161,6 +161,15 @@ class Program
 			//                                         // long tilt on BOTH LT dirs -> conviction persists through LT-Bear chop).
 			//                                         // Broad-500 validated: Sharpe up in every HV bucket (0.17->0.20, 63% of
 			//                                         // names), edges B&H on Sharpe (0.20 vs 0.19), ~flat DD. false = classic 1+bias/-1.
+			// BankrollSimulator.BlendSlope = false;  // ON by default (K=6, slow=120, bars=10, gated). Modulates the
+			//                                         // defensive/dynamic blend by the GRADE of the plotted-position momentum:
+			//                                         // when EMA12(position) is above EMA120(position) AND rolling over, pull the
+			//                                         // blend toward defensive proportional to the descent's steepness (a confirmed
+			//                                         // late-run top = empirically low forward return). Broad-500 OOS-neutral (no
+			//                                         // Sharpe cost anywhere); on volatile/trending names cuts drawdown and adds
+			//                                         // return (110: FW 0.48->0.50, DD 53->52%, ret 166->181%, OOS flat). Off = the
+			//                                         // fast-slow gate is essential; slope alone over-trims (turning it off restores
+			//                                         // the pre-BlendSlope behaviour). BlendSlopeK / BlendSlowPeriod / BlendSlopeBars tune it.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;

@@ -225,6 +225,19 @@ namespace StockOdds
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
 		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
 		public static double BiasBlend       = 1.0;
+		// BlendSlope: modulate the defensive/dynamic blend by the GRADE of the plotted-position momentum. Track a fast
+		// (EMA12) and slow (EMA-BlendSlowPeriod) EMA of the FINAL position; when the fast EMA is rolling over (falling
+		// over BlendSlopeBars) AND above the slow (a confirmed late-run top, the empirically low-forward-return zone),
+		// pull the blend toward defensive proportional to the descent's steepness: effBlend = clamp(1 + K*grade, Floor, 1)
+		// where grade = fastEMA_t - fastEMA_{t-BlendSlopeBars} (< 0). Uses lagged position EMAs (non-circular). Gentle:
+		// mild rollovers barely change the blend; only steep tops de-risk. OOS-neutral broadly, trims drawdown and
+		// preserves/adds return on volatile/trending names (its benefit concentrates there; a no-op on quiet names).
+		public static bool   BlendSlope      = true;
+		public static int    BlendSlowPeriod = 120;   // slow position-EMA period (fast is fixed EMA12)
+		public static int    BlendSlopeBars  = 10;    // lookback for the fast-EMA slope grade
+		public static double BlendSlopeK     = 6.0;    // sensitivity: blend reduction per unit of negative grade
+		public static double BlendSlopeFloor = 0.0;    // minimum blend the modulation can reach
+		public static bool   BlendSlopeGate  = true;   // require fastEMA > slowEMA (only de-risk confirmed tops)
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
@@ -323,6 +336,9 @@ namespace StockOdds
 			double maxExp = MaxExposurePercent / 100.0;
 
 			double ema = double.NaN;     // EMA of the per-candle target exposure
+			double posFast = double.NaN, posSlow = double.NaN;   // fast/slow EMAs of the FINAL plotted position
+			double aPF = 2.0 / (12 + 1), aPS = 2.0 / (BlendSlowPeriod + 1);
+			var posFastBuf = new List<double>();
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 
@@ -463,7 +479,15 @@ namespace StockOdds
 				biasEmaFix = double.IsNaN(biasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1.0 - biasAlpha) * biasEmaFix;
 
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
-				double blendedBiasEma = DynamicLongBias ? BiasBlend * biasEma + (1.0 - BiasBlend) * biasEmaFix : biasEma;
+				double effBlend = BiasBlend;
+				if (BlendSlope && posFastBuf.Count > BlendSlopeBars && !double.IsNaN(posSlow))
+				{
+					double gPrev = posFastBuf[posFastBuf.Count - 1 - BlendSlopeBars];
+					double grade = posFast - gPrev;
+					if (grade < 0 && (!BlendSlopeGate || posFast > posSlow))
+						effBlend = Clamp(1.0 + BlendSlopeK * grade, BlendSlopeFloor, 1.0);
+				}
+				double blendedBiasEma = DynamicLongBias ? effBlend * biasEma + (1.0 - effBlend) * biasEmaFix : biasEma;
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
 				// Window-vs-norm timing modulation (see BiasTiming above): trims/adds at the margin.
 				if (BiasTiming && biasEma > 0.05)
@@ -482,7 +506,12 @@ namespace StockOdds
 				// bar's rebalance behaviour is unchanged.
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand || noInvertExit)
 					held = adjEma;
-				return Clamp(held, minExp, maxExp);
+				double posB = Clamp(held, minExp, maxExp);
+				// Track fast/slow EMAs of the FINAL position for BlendSlope (read one bar lagged above, so non-circular).
+				posFast = double.IsNaN(posFast) ? posB : aPF * posB + (1.0 - aPF) * posFast;
+				posSlow = double.IsNaN(posSlow) ? posB : aPS * posB + (1.0 - aPS) * posSlow;
+				posFastBuf.Add(posFast); if (posFastBuf.Count > BlendSlopeBars + 2) posFastBuf.RemoveAt(0);
+				return posB;
 			}
 
 			for (int i = 2; i < bars.Count; i++)
