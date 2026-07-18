@@ -96,6 +96,13 @@ biasBlend = input.float(1.0, "Defensive/dynamic blend", minval = 0, maxval = 1, 
      tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
 defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
      tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
+blendSlope = input.bool(true, "Blend-slope modulation", group = grpDyn,
+     tooltip = "Pull the blend toward defensive when EMA12 of the plotted position is above EMA120 AND rolling over (a confirmed late-run top = empirically low forward return), proportional to how steep the descent is. Gentle: mild rollovers barely change it. Cuts drawdown / adds return on volatile names; a no-op on quiet ones.")
+blendSlowPeriod = input.int(120, "Blend-slope slow EMA", minval = 20, group = grpDyn)
+blendSlopeBars  = input.int(10,  "Blend-slope lookback", minval = 2, group = grpDyn)
+blendSlopeK     = input.float(6.0, "Blend-slope sensitivity", minval = 0, step = 0.5, group = grpDyn)
+blendSlopeFloor = input.float(0.0, "Blend-slope floor", minval = 0, maxval = 1, step = 0.05, group = grpDyn)
+blendSlopeGate  = input.bool(true, "Blend-slope gate (fast>slow)", group = grpDyn)
 biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
      tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
 biasTiming = input.bool(false, "Timing modulation (window vs norm)", group = grpDyn,
@@ -291,7 +298,16 @@ if bar_index >= biasPeriod
 dynBiasFix = biasSumFix / biasPeriod
 var float dynBiasEmaFix = na
 dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - biasAlpha) * dynBiasEmaFix
-blendedBiasEma = useDynLB ? biasBlend * dynBiasEma + (1 - biasBlend) * dynBiasEmaFix : dynBiasEma
+// BlendSlope: fast/slow EMAs of the FINAL plotted position, updated at bar end (below) so here they hold
+// through the prior bar — non-circular. Steeper rollover of the fast EMA (while above slow) pulls the blend defensive.
+var float posFast = na
+var float posSlow = na
+effBlend = biasBlend
+if blendSlope and not na(posSlow) and not na(posFast[blendSlopeBars])
+    grade = posFast - posFast[blendSlopeBars]
+    if grade < 0 and (not blendSlopeGate or posFast > posSlow)
+        effBlend := math.min(math.max(1.0 + blendSlopeK * grade, blendSlopeFloor), 1.0)
+blendedBiasEma = useDynLB ? effBlend * dynBiasEma + (1 - effBlend) * dynBiasEmaFix : dynBiasEma
 adjBase = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
 // Timing: level for direction, window for timing — modulate by the latest window vs its norm.
 adjRaw  = (biasTiming and not na(adjBase) and dynBiasEma > 0.05) ? adjBase * math.min(math.max(dynBias / dynBiasEma, timingMin), timingMax) : adjBase
@@ -309,6 +325,11 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand or noInve
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
 position = na(held) ? na : math.min(math.max(held, loExp), hiExp)
+// BlendSlope: update the position EMAs with the final position (read one bar lagged in the blend above)
+aPFbs = 2.0 / (12 + 1)
+aPSbs = 2.0 / (blendSlowPeriod + 1)
+posFast := na(position) ? posFast : na(posFast) ? position : aPFbs * position + (1 - aPFbs) * posFast
+posSlow := na(position) ? posSlow : na(posSlow) ? position : aPSbs * position + (1 - aPSbs) * posSlow
 
 // =============================================================================
 // 6. NAME HELPERS
