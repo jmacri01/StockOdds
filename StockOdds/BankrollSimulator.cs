@@ -238,6 +238,13 @@ namespace StockOdds
 		public static double BlendSlopeK     = 6.0;    // sensitivity: blend reduction per unit of negative grade
 		public static double BlendSlopeFloor = 0.0;    // minimum blend the modulation can reach
 		public static bool   BlendSlopeGate  = true;   // require fastEMA > slowEMA (only de-risk confirmed tops)
+		// FinalSmooth: EMA-smooth the FINAL plotted position (the last output), on top of the drift band. The position
+		// was previously only smoothed indirectly (the drift band gives discrete hysteresis) — a light EMA on the output
+		// damps residual whipsaw/turnover. Broad random-500 validated: raises OOS Sharpe (0.27->0.28, the only change to
+		// improve broad OOS rather than tie) and trims ~1pt drawdown, giving up only marginal return (whipsaw churn, not
+		// trend). Short period only — heavy smoothing over-lags and craters return (EMA20 gave it all back).
+		public static bool   FinalSmooth       = true;
+		public static int    FinalSmoothPeriod = 5;
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
@@ -337,6 +344,7 @@ namespace StockOdds
 
 			double ema = double.NaN;     // EMA of the per-candle target exposure
 			double posFast = double.NaN, posSlow = double.NaN;   // fast/slow EMAs of the FINAL plotted position
+			double finalEma = double.NaN; double aFS = 2.0 / (FinalSmoothPeriod + 1);
 			double aPF = 2.0 / (12 + 1), aPS = 2.0 / (BlendSlowPeriod + 1);
 			var posFastBuf = new List<double>();
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
@@ -511,6 +519,11 @@ namespace StockOdds
 				posFast = double.IsNaN(posFast) ? posB : aPF * posB + (1.0 - aPF) * posFast;
 				posSlow = double.IsNaN(posSlow) ? posB : aPS * posB + (1.0 - aPS) * posSlow;
 				posFastBuf.Add(posFast); if (posFastBuf.Count > BlendSlopeBars + 2) posFastBuf.RemoveAt(0);
+				if (FinalSmooth)
+				{
+					finalEma = double.IsNaN(finalEma) ? posB : aFS * posB + (1.0 - aFS) * finalEma;
+					return finalEma;
+				}
 				return posB;
 			}
 

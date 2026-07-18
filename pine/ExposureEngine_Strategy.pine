@@ -89,6 +89,9 @@ blendSlopeBars  = input.int(10,  "Blend-slope lookback", minval = 2, group = grp
 blendSlopeK     = input.float(6.0, "Blend-slope sensitivity", minval = 0, step = 0.5, group = grpDyn)
 blendSlopeFloor = input.float(0.0, "Blend-slope floor", minval = 0, maxval = 1, step = 0.05, group = grpDyn)
 blendSlopeGate  = input.bool(true, "Blend-slope gate (fast>slow)", group = grpDyn)
+finalSmooth       = input.bool(true, "Smooth final exposure", group = grpDyn,
+     tooltip = "EMA-smooth the final plotted position (the blue line) on top of the drift band, to damp residual whipsaw. Broad-500 validated: raises OOS Sharpe and trims drawdown, giving up only marginal return. Keep the period short (3–8); heavy smoothing over-lags.")
+finalSmoothPeriod = input.int(5, "Final-smooth EMA", minval = 2, group = grpDyn)
 biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
      tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
 biasTiming = input.bool(false, "Timing modulation (window vs norm)", group = grpDyn,
@@ -296,12 +299,17 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand or noInve
 
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
-position = na(held) ? na : math.min(math.max(held, loExp), hiExp)
-// BlendSlope: update the position EMAs with the final position (read one bar lagged in the blend above)
+posRaw = na(held) ? na : math.min(math.max(held, loExp), hiExp)
+// BlendSlope: update the position EMAs with the drift-band position (read one bar lagged in the blend above)
 aPFbs = 2.0 / (12 + 1)
 aPSbs = 2.0 / (blendSlowPeriod + 1)
-posFast := na(position) ? posFast : na(posFast) ? position : aPFbs * position + (1 - aPFbs) * posFast
-posSlow := na(position) ? posSlow : na(posSlow) ? position : aPSbs * position + (1 - aPSbs) * posSlow
+posFast := na(posRaw) ? posFast : na(posFast) ? posRaw : aPFbs * posRaw + (1 - aPFbs) * posFast
+posSlow := na(posRaw) ? posSlow : na(posSlow) ? posRaw : aPSbs * posRaw + (1 - aPSbs) * posSlow
+// FinalSmooth: EMA the final output (the blue line), on top of the drift band
+var float posFinalEma = na
+aFS = 2.0 / (finalSmoothPeriod + 1)
+posFinalEma := na(posRaw) ? posFinalEma : na(posFinalEma) ? posRaw : aFS * posRaw + (1 - aFS) * posFinalEma
+position = finalSmooth ? posFinalEma : posRaw
 
 // =============================================================================
 // 6. STRATEGY — size the position to the (smoothed, clamped) exposure.
