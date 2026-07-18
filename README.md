@@ -1,6 +1,6 @@
 # StockOdds
 
-**A three-level trend-following exposure engine — a risk-adjusted overlay that beats buy-&-hold on Sharpe across volatile names while cutting drawdown ~a quarter.**
+**A three-level trend-following exposure engine — a risk-adjusted overlay that beats buy-&-hold on Sharpe across volatile names while cutting drawdown ~a fifth.**
 
 > Companion write-up: [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
@@ -13,7 +13,7 @@ StockOdds classifies each candle, rolls that up into a short-term and a long-ter
 Deliver **better risk-adjusted return than buy-and-hold** on volatile names, while keeping drawdowns well below simply holding:
 
 - **Raise Sharpe** and **return-per-drawdown** (Calmar) versus buy-&-hold.
-- **Cut max drawdown** by stepping aside during confirmed downtrends (roughly a quarter shallower, on average).
+- **Cut max drawdown** by stepping aside during confirmed downtrends (roughly a fifth shallower on the volatile basket, and shallower on ~84% of a broad random universe).
 - Do this **without shorting** — bearish states mean "go to cash," not "go short."
 
 It is most useful on **high-volatility names** where the trend timing and drawdown control both pay off. On calm, low-volatility names it tends to *underperform* buy-&-hold (there's no deep drawdown to dodge, so leaning long just tracks it at best), so deploy selectively — see [When to deploy](#when-to-deploy-it).
@@ -63,7 +63,7 @@ That raw target is then:
 
 ## Long bias: fixed or dynamic (per-candle)
 
-The **long bias** controls how hard a bullish LT regime is leaned into: a Bull candle contributes `(LongBias + 1)` to the running trend sum, a Bear candle `−1`. A larger `LongBias` pushes exposure up harder in uptrends.
+The **long bias** controls how hard a bullish LT regime is leaned into. In the running trend sum, a Bull candle contributes `1 + bias/2` and a Bear candle `−1 + bias/2` (the [`BiasSplit`](#long-bias-fixed-or-dynamic-per-candle) default — the bias is a long tilt on *both* sides so conviction persists through chop; with `BiasSplit = false` it reverts to the classic `1 + bias` / `−1`). A larger bias pushes exposure up harder in uptrends.
 
 ### Dynamic long bias (the default)
 
@@ -81,9 +81,11 @@ LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
 
 **Slow/fast EMA ratio (`BiasEmaRatio`, default on).** The bias is set to `(slowBiasEMA · DynSlowMult) · clamp(slowBiasEMA / fastBiasEMA, 0.25, 2.0)` — the *ceiling* scaled by a clamped slow/fast ratio. It's a *mean-reverting tilt on the bias's own level*, **monotonic** in the fast EMA: when the fast runs **above** the slow (the bias just spiked) the ratio is `< 1` and **damps** it; when the fast dips **below** (a recent pullback) the ratio is `> 1` and **lifts** it; `fast = slow` is neutral (= the plain ceiling). Using the ceiling as the base (rather than `min(fast, ceiling)`) keeps the curve monotonic — an earlier "tent" form peaked oddly at `fast = slow/2`. Unlike double-weighting the current window (which makes the level *more* reactive and hurt), this leans *against* recent bias moves and helps. Validated on a **broad random 500-name US-common-stock sample** *and against buy-&-hold*: it **closes most of the Sharpe gap to B&H** (0.13→0.17 vs 0.19) while keeping **~the entire drawdown edge** (shallower than B&H on **82%** of names, vs 83% without it), and it's best across the **50–100% HV deployment band** (at 75–100% it even edges B&H on Sharpe). The only give-up is on the extreme **>100% HV** names, where a couple pp more drawdown shows up. Set `BiasEmaRatio = false` for the plain ceiling'd bias.
 
+**Split bias across LT directions (`BiasSplit`, default on).** In the rolling-sum that builds `biasEma`, a Bull candle contributes `1 + bias/2` and a Bear candle `−1 + bias/2` (instead of `1 + bias` / `−1`). The bias becomes a *long tilt on both sides*: it adds a constant `+bias/2` to the window regardless of how bull-heavy it is, so a high-bias (quiet + choppy) name keeps its conviction elevated *through* its LT-Bear stretches — a cleaner "hold through chop" than relying on a lingering `biasEma` from the prior bull. It trades a little bull-amplification (halved) for that hold. Validated on the **broad random 500** *and* against buy-&-hold: Sharpe up **in every HV bucket** (all-500 **0.17→0.20**, higher on 63% of names), and it **edges B&H on Sharpe overall** (0.20 vs 0.19) — which the strategy otherwise doesn't do on the broad universe — at **~flat drawdown** (only the extreme >100% HV bucket runs ~4pp deeper). Set `BiasSplit = false` for the classic long-only rolling sum.
+
 **Screening preset (the shipped default): `DynMax = 150`, `DynSmoothSlow = 150`, `DynSlowMult = 0.5`.** The bias ceiling is a *slow* 150-bar EMA of the raw bias, scaled to half — and `DynMax` is raised to 150 so the raw bias isn't pre-clamped and the slow-EMA×mult *is* the effective ceiling. This is a deliberate **defensive tilt tuned for the high-vol names you'd screen**: it still captures the runs (per-name compounds preserved/improved — SMCI 733%→765%, IREN 945%→1123%, HOOD 500%→524%) and is more robust through a real bear (full-window incl. 2022, HV-set Sharpe **0.43→0.47** at ~flat drawdown), at the cost of some **bull-only** OOS Sharpe (0.46→0.38). Two honest caveats: (1) it does **not** dominate on the bull-only walk-forward — no `DynMax`/slow/mult combination beats the neutral baseline on *both* the bull-only OOS *and* the full window; it's a Pareto frontier (aggression ⇄ drawdown / bull ⇄ bear), a risk-appetite choice; (2) the full-window edge leans on the **single, in-sample 2022 bear**, so the bear-robustness can't be confirmed out-of-sample. It also **requires the raised `DynMax`** — at `DynMax = 15` the same slow/mult over-clamps and craters names (SMCI 733%→94%). **Revert to the neutral baseline** with `DynMax = 15`, `DynSmoothSlow = 10` (= `DynSmoothPeriod`), `DynSlowMult = 1.0`.
 
-**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynScale` (default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasBlend`** (default **1.0** = pure dynamic), **`DefensiveBias`** (default **0.5**), **`BiasTiming`** (default **off**, band `0.75–1.25`) and **`BiasNoInvert`** (default **off**) — see below. Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynScale` (default **Exponential**), `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**) / `DynSlope`, `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasBlend`** (default **1.0** = pure dynamic), **`DefensiveBias`** (default **0.5**), **`BiasSplit`** (default **on**), **`BiasTiming`** (default **off**, band `0.75–1.25`) and **`BiasNoInvert`** (default **off**) — see below. Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
 
 **Defensive ↔ dynamic blend (`BiasBlend`).** The engine computes *two* exposure skews each candle — a **defensive** one from `DefensiveBias` (default 0.5 — halves drawdown but lags the rockets) and the **dynamic** one above (captures the rockets, gives up some protection) — and blends them: `adjEma = |ema| · (BiasBlend·dynamic + (1−BiasBlend)·defensive) + ema`. It's a **risk dial**, not a free lunch: Sharpe and drawdown both rise smoothly with the weight (a frontier interpolation — no dominating middle). The default is **1.0 (pure dynamic)**; dial **down toward 0** to trade Sharpe for capital preservation. (Resist the urge to push it low to erase one name's worst drawdown — that's overfitting a tail; the dynamic default already turns a −95% buy-&-hold into ~−30%.) The blend only applies with dynamic on; `LongBias` is purely the dynamic-*off* fallback and has **no effect** while `DynamicLongBias = true`.
 
@@ -101,27 +103,27 @@ The dynamic bias is mirrored in the Pine scripts (on by default): watch `LongBia
 
 ## What to expect
 
-Backtested over each name's full available history (~5 years, **including the 2022 bear market**), the **shipped default** (the high-vol screening preset — dynamic long bias on, bias ceiling = half the slow 150-bar EMA; see below), no per-symbol tuning:
+Backtested over each name's full available history (~5 years, **including the 2022 bear market**), the **shipped default** (dynamic long bias on — z-scaled, slow/fast-modulated, and split across both LT directions; see below), no per-symbol tuning:
 
 | Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| KO | 16 | 0.45 | **0.60** | −21% | −21% | 1.5 | **2.5** |
-| ^GSPC | 17 | **0.88** | 0.76 | **−21%** | −25% | **3.8** | 3.0 |
-| NVDA | 51 | **1.34** | 1.19 | **−53%** | −66% | **20.0** | 15.1 |
-| MSTR | 91 | **0.90** | 0.59 | **−70%** | −84% | **7.4** | 1.1 |
-| ASTS | 104 | **0.89** | 0.81 | **−58%** | −86% | **12.0** | 4.8 |
-| SMR | 99 | **0.76** | 0.43 | **−64%** | −87% | **3.9** | −0.3 |
-| OPEN | 109 | **0.68** | 0.33 | **−68%** | −98% | **4.0** | −0.7 |
+| KO | 17 | **0.54** | 0.52 | **−20%** | −21% | 2.1 | **2.2** |
+| ^GSPC | 17 | **0.85** | 0.72 | **−18%** | −25% | **4.3** | 2.9 |
+| NVDA | 51 | **1.32** | 1.17 | **−54%** | −66% | **19.2** | 14.9 |
+| MSTR | 91 | **0.60** | 0.52 | −87% | **−84%** | **1.5** | 1.1 |
+| ASTS | 104 | **0.93** | 0.80 | **−75%** | −86% | **11.7** | 4.8 |
+| SMR | 99 | **0.74** | 0.43 | **−79%** | −87% | **2.8** | −0.3 |
+| OPEN | 109 | **0.87** | 0.32 | **−69%** | −98% | **10.3** | −0.7 |
 
-**Basket aggregate (18 symbols):** mean Sharpe **0.64 vs 0.48** (strategy higher on **14/18**), mean max drawdown **−51.6% vs −70.4%** — a **shallower drawdown on 17 of 18 names** (≈ a quarter less, on average).
+**Basket aggregate (17 volatile names):** mean Sharpe **0.73 vs 0.58** (strategy higher on **16/17**), mean max drawdown **−57.1% vs −69.5%** — a **shallower drawdown on 16 of 17 names** (≈ a fifth less, on average).
 
-> ⚠️ **In-sample vs out-of-sample — read this.** The table above is *full-window*, so it includes the **2022 bear**, which the strategy dodges — that's where its Sharpe edge comes from. A stricter **rolling walk-forward** (train on each window, score the held-out next ~9 months — all of which land in the 2023–2026 bull) tells a different story: on the high-vol deployment set, **buy-&-hold *beats* the strategy on Sharpe out-of-sample (≈0.91 vs 0.43, 0/4 folds)**, because no bear falls inside an OOS test window for the de-risking to pay off (Yahoo caps history at ~5y). **What *does* survive OOS is the drawdown reduction — ~a third shallower (32% vs 47%), every fold.** So the honest read: this is a **capital-preservation overlay whose Sharpe advantage is bear-market-dependent**, not a reliable standalone alpha. Deploy it for drawdown control, not to out-Sharpe buy-&-hold in a bull run.
+> ⚠️ **In-sample vs out-of-sample — read this.** The table above is *full-window*, so it includes the **2022 bear** the strategy dodges — part of the Sharpe edge comes from there. Out of sample the gap to buy-&-hold is now **narrow, not adverse** (it used to trail): on the high-vol deployment set, a bull-only rolling walk-forward (2023–2026 — no bear falls inside any test window) has the strategy **essentially tying buy-&-hold on Sharpe (≈0.83 vs 0.85, winning 2/4 folds)** while still cutting fold drawdown (**~42% vs 48%**); and on a **broad random 500-name US-common-stock sample** it now **edges buy-&-hold on Sharpe (0.20 vs 0.19)** while staying shallower on drawdown for ~84% of names. So the honest read: since the bias reforms this is a **capital-preservation overlay that roughly matches-or-beats buy-&-hold on risk-adjusted return** rather than trailing it — but its clearest, most *durable* edge is still **drawdown reduction**, and the full-window Sharpe lead leans partly on the single in-sample 2022 bear (which can't be re-confirmed out-of-sample — Yahoo caps history at ~5y).
 
 ### The trade-off, honestly
-- **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.89 vs 0.81**, drawdown **−58% vs −86%**, Ret/DD **12.0 vs 4.8**) — where a fixed low bias used to lag buy-&-hold, it now matches or beats it.
-- **The drawdown cut is real but more modest than a pure cash-heavy config.** ≈ a quarter shallower vs buy-&-hold (was ~half with a pure defensive config). Running more long buys return at the cost of some protection — a deliberate trade. If you want maximum capital preservation instead, dial `BiasBlend` down toward 0, or set `DynamicLongBias = false` with a low fixed `LongBias`.
-- **On low-vol names it still lags** (KO: 0.45 vs 0.60): no deep drawdown to dodge, so leaning long just tracks buy-&-hold at best. Don't run it there.
-- **This 18-name set is high-vol-favorable.** Across a broad ~110-name universe the strategy *ties* buy-&-hold on Sharpe (≈0.43) while still cutting drawdown — the drawdown edge generalizes; the Sharpe outperformance is strongest on volatile names.
+- **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.93 vs 0.80**, drawdown **−75% vs −86%**, Ret/DD **11.7 vs 4.8**; OPEN **0.87 vs 0.32**) — where a fixed low bias used to lag buy-&-hold, it now beats it.
+- **The drawdown cut is real but modest — and the newer, more aggressive bias trades some of it for return.** ≈ a fifth shallower vs buy-&-hold on the basket (was ~a quarter with the earlier, tamer bias; ~half with a pure defensive config). On a few extreme names it can even run *deeper* than buy-&-hold (MSTR: −87% vs −84%) when it holds a crashing name long. For maximum capital preservation instead, dial `BiasBlend` down toward 0, or set `DynamicLongBias = false` with a low fixed `LongBias`.
+- **On low-vol names it roughly tracks buy-&-hold** (KO: 0.54 vs 0.52 — a near-tie now, not a clear lag): no deep drawdown to dodge, so leaning long just matches it at best. Across the broad universe the calm 0–25% HV bucket still trails slightly (≈0.38 vs 0.44). Don't expect an edge there.
+- **This basket is high-vol-favorable.** Across a broad random 500-name universe the strategy now **edges buy-&-hold on Sharpe (0.20 vs 0.19)** — a razor-thin lead — while cutting drawdown on ~84% of names. The drawdown edge is the part that generalizes strongly; the Sharpe outperformance is thin and strongest on volatile names.
 
 ### When to deploy it
 - **Deploy on high-volatility names (roughly HV ≥ 50).** That's where the dynamic bias, trend timing, and drawdown control all pay off — the strategy beats buy-and-hold on Sharpe *and* Calmar there.
