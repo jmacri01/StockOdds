@@ -116,7 +116,7 @@ class Program
 		// Each candle's target exposure is looked up by its (LT, ST) bucket, smoothed by
 		// an EMA, skewed by a dynamic long bias, only rebalanced when it drifts past a
 		// threshold, then clamped to the configured min/max. Tune the knobs here:
-		BankrollSimulator.ExposureEmaPeriod = 12;
+		BankrollSimulator.ExposureEmaPeriod = 24;
 		BankrollSimulator.BiasPeriod = 15;
 		BankrollSimulator.LongBias = 0.5;
 		BankrollSimulator.BiasEmaPeriod = 150;

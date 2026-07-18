@@ -244,7 +244,7 @@ namespace StockOdds
 		// improve broad OOS rather than tie) and trims ~1pt drawdown, giving up only marginal return (whipsaw churn, not
 		// trend). Short period only — heavy smoothing over-lags and craters return (EMA20 gave it all back).
 		public static bool   FinalSmooth       = true;
-		public static int    FinalSmoothPeriod = 5;
+		public static int    FinalSmoothPeriod = 3;   // paired with ExposureEmaPeriod 24: longer raw EMA wants a lighter final smooth
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
