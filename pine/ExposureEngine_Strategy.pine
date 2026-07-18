@@ -52,7 +52,7 @@ bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
 // -- Smoothing & rebalance control
 grpSmooth = "Smoothing & rebalance"
-emaPeriod = input.int(12, "Exposure EMA period", minval = 1, group = grpSmooth,
+emaPeriod = input.int(24, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
 biasPeriod = input.int(15, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
@@ -91,7 +91,7 @@ blendSlopeFloor = input.float(0.0, "Blend-slope floor", minval = 0, maxval = 1, 
 blendSlopeGate  = input.bool(true, "Blend-slope gate (fast>slow)", group = grpDyn)
 finalSmooth       = input.bool(true, "Smooth final exposure", group = grpDyn,
      tooltip = "EMA-smooth the final plotted position (the blue line) on top of the drift band, to damp residual whipsaw. Broad-500 validated: raises OOS Sharpe and trims drawdown, giving up only marginal return. Keep the period short (3–8); heavy smoothing over-lags.")
-finalSmoothPeriod = input.int(5, "Final-smooth EMA", minval = 2, group = grpDyn)
+finalSmoothPeriod = input.int(3, "Final-smooth EMA", minval = 2, group = grpDyn)
 biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
      tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
 biasTiming = input.bool(false, "Timing modulation (window vs norm)", group = grpDyn,
