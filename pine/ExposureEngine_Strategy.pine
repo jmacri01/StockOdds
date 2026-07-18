@@ -98,6 +98,8 @@ biasEmaRatio = input.bool(true, "Bias x slow/fast EMA ratio", group = grpDyn,
      tooltip = "effLongBias = (slowEMA*mult) * clamp(slowEMA/fastEMA, lo, hi). Monotonic in the fast EMA: lifts the bias when the fast dips below the slow (recent pullback) and damps it when the fast rises above (recent spike); neutral (= plain ceiling) when fast==slow. Validated on a broad random 500-name sample and vs buy&hold: closes most of the Sharpe gap to B&H and keeps ~all the drawdown edge (shallower than B&H on 82% of names), best across the 50-100% HV band. On by default.")
 biasRatioLo  = input.float(0.25, "  · ratio clamp floor", minval = 0.05, step = 0.05, group = grpDyn)
 biasRatioHi  = input.float(2.0,  "  · ratio clamp ceiling", minval = 1.0, step = 0.5, group = grpDyn)
+biasSplit    = input.bool(true, "Split bias across LT dirs", group = grpDyn,
+     tooltip = "Rolling sum: a Bull candle contributes 1 + bias/2 and a Bear candle -1 + bias/2 (instead of 1+bias / -1). The bias becomes a long tilt on BOTH sides, so a high-bias choppy name keeps conviction elevated through its LT-Bear stretches (a cleaner hold-through-chop). Broad-validated: Sharpe up in every HV bucket, edges buy&hold, ~flat drawdown. On by default.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn)
@@ -237,7 +239,7 @@ effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbE
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
+biasSig = biasSplit ? (ltState == 1 ? (1 + effLongBias / 2) : ltState == 0 ? (-1 + effLongBias / 2) : 0) : (ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0)
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0

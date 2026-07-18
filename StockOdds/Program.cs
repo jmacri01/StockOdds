@@ -157,6 +157,10 @@ class Program
 			//                                         // below the slow, damps when it spiked above; fast==slow = plain ceiling.
 			//                                         // Broad-500 + vs-B&H validated: closes most of the Sharpe gap to B&H and
 			//                                         // keeps ~all the drawdown edge (82% of names shallower than B&H).
+			// BankrollSimulator.BiasSplit = false;    // ON by default: rolling sum uses Bull 1+bias/2, Bear -1+bias/2 (bias is a
+			//                                         // long tilt on BOTH LT dirs -> conviction persists through LT-Bear chop).
+			//                                         // Broad-500 validated: Sharpe up in every HV bucket (0.17->0.20, 63% of
+			//                                         // names), edges B&H on Sharpe (0.20 vs 0.19), ~flat DD. false = classic 1+bias/-1.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
