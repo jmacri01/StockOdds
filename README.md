@@ -16,7 +16,7 @@ Deliver **buy-&-hold-level risk-adjusted return with materially lower drawdown**
 - **Cut max drawdown** by stepping aside during confirmed downtrends (roughly a fifth shallower on the volatile basket, and shallower on ~84% of a broad random universe).
 - Do this **without shorting** — bearish states mean "go to cash," not "go short."
 
-It is meant to be deployed **selectively — on certain stocks, at certain times.** A broad out-of-sample test found **market cap, not volatility, is what separates winners from losers:** apply a **market-cap floor** (roughly **≥ $100M**, ideally **≥ $500M**) and high HV is *no longer* a reason to exclude a name — a high-vol *large* cap is the single best case, a high-vol *micro* cap is garbage under any mode. Then run it **in-region** (its bull-dominant regime), with the out-of-region behaviour left to you. See [When to deploy](#when-to-deploy-it).
+It is meant to be deployed **selectively — on certain stocks, at certain times.** A broad out-of-sample test found **market cap, not volatility, is what separates winners from losers:** apply a **market-cap floor** (**≥ $500M** recommended; **≥ $100M** the absolute minimum) and high HV is *no longer* a reason to exclude a name — a high-vol *large* cap is the single best case, a high-vol *micro* cap is garbage under any mode. Then run it **in-region** (its bull-dominant regime), with the out-of-region behaviour left to you. See [When to deploy](#when-to-deploy-it).
 
 ---
 
@@ -98,16 +98,16 @@ The dynamic bias is mirrored in the Pine scripts: watch the per-candle bias chan
 
 ## What to expect
 
-**The honest, broad read (out-of-sample).** On a **random 500-name US-common-stock universe**, scored out-of-sample (the last 30% of each name's ~5y history) with a **$100M market-cap floor** (382 names), the strategy **matches buy-&-hold on risk-adjusted return** — it is a screening + risk-control overlay, not an alpha engine:
+**The honest, broad read (out-of-sample).** On a **random 500-name US-common-stock universe**, scored out-of-sample (the last 30% of each name's ~5y history) with the recommended **$500M market-cap floor** (299 names), the strategy **matches buy-&-hold on risk-adjusted return** — it is a screening + risk-control overlay, not an alpha engine:
 
 | Out-of-region mode | OOS Sharpe | OOS Max DD |
 |---|---:|---:|
-| **Deploy** (run everywhere) | 0.45 | 38.7% |
-| **Cash** (default) | 0.27 | **32.8%** |
-| **Hold** (mirror B&H out of region) | **0.46** | 39.5% |
-| *Buy & hold (reference)* | *0.46* | *deepest (always full-long)* |
+| **Deploy** (run everywhere) | 0.50 | 35.9% |
+| **Cash** (default) | 0.36 | **32.3%** |
+| **Hold** (mirror B&H out of region) | 0.49 | 36.4% |
+| *Buy & hold (reference)* | *0.50* | *deepest (always full-long)* |
 
-The two durable contributions, both confirmed out-of-sample: **(1) screening** — a cap floor lifts every HV bucket and flips HV > 100 from −0.07 to +0.43 Sharpe (see [What to screen for](#what-to-screen-for)); and **(2) drawdown reduction** — the Cash / in-region policies cut mean OOS drawdown 6–12 pts. Sub-$100M microcaps lose under *every* mode *and* under buy-&-hold, so the floor is the single most important gate.
+The two durable contributions, both confirmed out-of-sample: **(1) screening** — a cap floor lifts every HV bucket and flips HV > 100 from −0.07 to +0.43 Sharpe (see [What to screen for](#what-to-screen-for)); and **(2) drawdown reduction** — the Cash / in-region policies cut mean OOS drawdown several points. Sub-$100M microcaps lose under *every* mode *and* under buy-&-hold, so the floor is the single most important gate.
 
 **On a hand-picked high-vol basket it looks stronger — but that is partly in-sample.** Over each name's *full* history (which includes the 2022 bear the strategy dodges), a curated 17-name volatile basket, no per-symbol tuning (shown with `BearRegimeMode = 0` so each row is the name in isolation):
 
@@ -133,12 +133,12 @@ The two durable contributions, both confirmed out-of-sample: **(1) screening** �
 
 The single biggest lever is **which stocks you point it at.** In priority order:
 
-1. **Market-cap floor — the primary gate.** Screen out everything below **~$100M** (ideally **~$500M** for a cleaner book). Sub-$100M microcaps are net-negative OOS in *every* HV bucket — and buy-&-hold is equally bad there, so it is the *stocks*, not the strategy. The floor is the one filter that moves the needle: it lifts every bucket and makes even HV > 100 deployable.
+1. **Market-cap floor — the primary gate.** Screen at **~$500M** — the operating floor these backtests use (**~$100M** is the absolute minimum). Sub-$100M microcaps are net-negative OOS in *every* HV bucket — and buy-&-hold is equally bad there, so it is the *stocks*, not the strategy. The floor is the one filter that moves the needle: it lifts every bucket and makes even HV > 100 deployable.
 2. **Do *not* screen out high volatility.** HV is not a good exclusion criterion. A high-vol **large** cap is the single best cell (HV 75–100, ≥ $500M → OOS Sharpe ~0.8); a high-vol **micro** cap is garbage. Let market cap, not HV, do the filtering.
 3. **Where it actually beats buy-&-hold** (if outperformance, not just matching, is the goal): the one reliable pocket is **moderate-HV (≈25–50%) small-to-mid caps ($100M–$500M)** — ~73% of those names beat B&H on OOS Sharpe. On **large caps ($10B+) you *match* B&H** (both ~0.6–1.1 Sharpe) — deploy there for the drawdown cushion, not for outperformance.
 4. **Two zones to avoid:** sub-$100M microcaps (lose outright), and **mid-caps ($500M–$10B) at HV 50–100**, where the in-region trimming actually *loses* to B&H.
 
-**The screen, in one line:** *US common stock, market cap ≥ $100M (prefer ≥ $500M); chase the edge on moderate-HV small/mid caps, hold large caps for the drawdown cushion, and skip sub-$100M names entirely.*
+**The screen, in one line:** *US common stock, market cap ≥ $500M (≥ $100M absolute minimum); chase the edge on moderate-HV small/mid caps, hold large caps for the drawdown cushion, and skip sub-$100M names entirely.*
 
 ---
 
@@ -151,15 +151,15 @@ Once a name passes the screen, two decisions remain: **when** to run it, and **w
 
 ### Choosing the out-of-region mode (`BearRegimeMode`)
 
-This is a genuine **risk-appetite choice, not a fixed best.** When a name drops out of its region, `BearRegimeMode` decides what happens (OOS figures on the $100M-floored universe):
+This is a genuine **risk-appetite choice, not a fixed best.** When a name drops out of its region, `BearRegimeMode` decides what happens (OOS figures on the $500M-floored universe):
 
 | Mode | Out-of-region action | OOS Sharpe | OOS Max DD | Choose it when… |
 |---|---|---:|---:|---|
-| **`1` Cash** *(default)* | flatten to 0; redeploy the capital elsewhere | 0.27 | **32.8%** | running a **rotation portfolio**, or capital preservation leads — "go to cash" means "go find another stock to trade" |
-| **`2` Hold** | mirror buy-&-hold (force full long) | **0.46** | 39.5% | you have **high conviction in the specific name** and do not want the region rule to exit a position you mean to ride through the dip |
-| **`0` Deploy** | keep running the strategy | 0.45 | 38.7% | you want the raw signal everywhere; behaves ≈ Hold on Sharpe |
+| **`1` Cash** *(default)* | flatten to 0; redeploy the capital elsewhere | 0.36 | **32.3%** | running a **rotation portfolio**, or capital preservation leads — "go to cash" means "go find another stock to trade" |
+| **`2` Hold** | mirror buy-&-hold (force full long) | 0.49 | 36.4% | you have **high conviction in the specific name** and do not want the region rule to exit a position you mean to ride through the dip |
+| **`0` Deploy** | keep running the strategy | 0.50 | 35.9% | you want the raw signal everywhere; behaves ≈ Hold on Sharpe |
 
-**Cash** gives the lowest drawdown (−6 pts) but sacrifices ~0.18 Sharpe and ~8 pts of return by sitting out. **Hold** gives the best Sharpe and keeps you invested — the right pick when exiting is not an option. Single-name-backtest caveat: the cash default **understates** any single name (it sits out instead of redeploying), so score a name's continuous full-history behaviour with `BearRegimeMode = 0`.
+**Cash** gives the lowest drawdown (~−4 pts) but sacrifices ~0.14 Sharpe and ~7 pts of return by sitting out. **Hold** matches B&H (and Deploy) on Sharpe while keeping you invested — the right pick when exiting is not an option. Single-name-backtest caveat: the cash default **understates** any single name (it sits out instead of redeploying), so score a name's continuous full-history behaviour with `BearRegimeMode = 0`.
 
 ---
 
