@@ -133,8 +133,7 @@ namespace StockOdds
 		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
 		// LongBias is instead recomputed every candle from a combined trait z-score:
 		//   z          = (rollingHV - HvRefMean)/HvRefStd + (rollingPersist - PersRefMean)/PersRefStd
-		//   LongBias_t = clamp( Exponential : DynBase * exp(-DynDecay * z)
-		//                       Linear      : DynBase + DynSlope * z ,  DynMin, DynMax )
+		//   LongBias_t = clamp( DynBase * exp(-DynDecay * z),  DynMin, DynMax )
 		// z is on an ABSOLUTE scale via FIXED reference constants, so a quiet/steady name reads
 		// z<0 -> a large LongBias (leans toward staying long) and a hot high-HV, high-persistence
 		// name reads z>0 -> a small LongBias (lets the active signal run). rollingHV = annualized
@@ -144,9 +143,7 @@ namespace StockOdds
 		// on the raw target, not the EMA, so it is independent of ExposureEmaPeriod. Finally the per-candle bias is
 		// EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps because the
 		// persistence ratio is jumpy and the exp map is convex). All knobs are hand-set, not fit.
-		public enum DynScaleMode { Linear, Exponential }
-		public static bool         DynamicLongBias = true;
-		public static DynScaleMode DynScale        = DynScaleMode.Exponential;
+		public static bool   DynamicLongBias = true;
 		public static int    HvWindow        = 60;
 		public static int    PersistWindow   = 63;
 		public static double HvRefMean       = 57.0;
@@ -154,8 +151,7 @@ namespace StockOdds
 		public static double PersRefMean     = 0.072;
 		public static double PersRefStd      = 0.010;
 		public static double DynBase         = 1.0;    // LongBias at z = 0
-		public static double DynDecay        = 0.6;    // exponential mode: decay rate
-		public static double DynSlope        = -1.28;  // linear mode: per unit z
+		public static double DynDecay        = 0.6;    // decay rate
 		public static double DynMin          = 0.0;
 		// ===== High-vol screening default (see README "screening preset") =====
 		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
@@ -194,19 +190,11 @@ namespace StockOdds
 		public static bool   BiasSplit     = true;
 		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
 		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
-		// Blend of two exposure skews: the DEFENSIVE leg (fixed LongBias — halves drawdown but
-		// lags the rockets) and the DYNAMIC leg (trait-scaled effLongBias — captures the rockets
-		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
-		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
-		public static double BiasBlend       = 1.0;
 		// OUT-OF-REGION rule: when trailing LT-persistence ratio < 1 AND ST-persistence ratio < 1 (both bear-dominant
 		// over RegimeWindow bars), the name is out of its edge regime. 1 = go to CASH (default -- rotate capital to an
 		// in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold (force exposure 1).
 		public static int    BearRegimeMode = 1;
 		public static int    RegimeWindow   = 50;
-		// The defensive leg's fixed bias (independent of LongBias, which is only the
-		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
-		public static double DefensiveBias   = 0.5;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -309,11 +297,7 @@ namespace StockOdds
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
 			double biasSum = 0.0;
-			double biasEma = double.NaN;   // EMA of the dynamic-leg bias
-			// defensive leg: same machinery but on the fixed LongBias (for the BiasBlend)
-			var biasWindowFix = new Queue<double>(BiasPeriod);
-			double biasSumFix = 0.0;
-			double biasEmaFix = double.NaN;
+			double biasEma = double.NaN;   // EMA of the bias
 
 			// per-candle dynamic-LongBias state: rolling HV (log-return sample stdev, annualized)
 			// as of the decision bar, plus rolling exposure-EMA persistence over PersistWindow.
@@ -399,9 +383,7 @@ namespace StockOdds
 						zP = (pers - PersRefMean) / PersRefStd;
 					}
 					double z = zHv + zP;
-					double raw = DynScale == DynScaleMode.Exponential
-						? DynBase * Math.Exp(-DynDecay * z)
-						: DynBase + DynSlope * z;
+					double raw = DynBase * Math.Exp(-DynDecay * z);
 					raw = Clamp(raw, DynMin, DynMax);
 					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar (a fast and a slow EMA).
 					// Modes: BiasEmaRatio=false -> effLongBias = MIN(fast, slow*DynSlowMult). BiasEmaRatio=true (DEFAULT) ->
@@ -434,19 +416,7 @@ namespace StockOdds
 				double dynBias = biasSum / BiasPeriod;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				// DEFENSIVE leg: same accumulation on the fixed LongBias
-				double sigFix = lt == LongTermState.Bull ? DefensiveBias + 1.0 : lt == LongTermState.Bear ? -1.0 : 0.0;
-				biasWindowFix.Enqueue(sigFix);
-				biasSumFix += sigFix;
-				while (biasWindowFix.Count > BiasPeriod)
-					biasSumFix -= biasWindowFix.Dequeue();
-				double dynBiasFix = biasSumFix / BiasPeriod;
-				biasEmaFix = double.IsNaN(biasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1.0 - biasAlpha) * biasEmaFix;
-
-				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
-				double effBlend = BiasBlend;
-				double blendedBiasEma = DynamicLongBias ? effBlend * biasEma + (1.0 - effBlend) * biasEmaFix : biasEma;
-				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
+				double adjEma = Math.Abs(ema) * biasEma + ema;
 				// Normal drift-band rebalance.
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;

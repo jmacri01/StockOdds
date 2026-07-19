@@ -129,7 +129,6 @@ class Program
 			// to the fixed LongBias above. Defaults are exp / base 1 / decay 0.6, refs calibrated
 			// to a ~110-name universe. Quiet/low-vol names get a larger bias, hot names a smaller one.
 			BankrollSimulator.DynamicLongBias = true;
-			// BankrollSimulator.DynScale = BankrollSimulator.DynScaleMode.Exponential; // or Linear
 			// BankrollSimulator.DynBase  = 1.0;   // LongBias at z = 0
 			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
 			// Bias-cap default (high-vol screening preset): DynMax raised so the slow-EMA*mult is the
@@ -139,8 +138,6 @@ class Program
 			// BankrollSimulator.DynSmoothPeriod = 10;   // fast EMA of the per-candle bias
 			// BankrollSimulator.DynSmoothSlow   = 150;  // slow EMA (default); =DynSmoothPeriod to disable the min-cap
 			// BankrollSimulator.DynMax          = 150;  // raw-bias ceiling (default raised)
-			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
-			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
 			// BankrollSimulator.BiasEmaRatio = false; // ON by default: effLongBias = slow*clamp(slow/fast,0.25,2).
 			//                                         // Monotonic mean-reverting tilt: lifts the bias when the fast EMA dipped
 			//                                         // below the slow, damps when it spiked above; fast==slow = plain ceiling.
