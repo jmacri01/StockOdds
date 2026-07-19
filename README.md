@@ -16,7 +16,7 @@ Deliver **better risk-adjusted return than buy-and-hold** on volatile names, whi
 - **Cut max drawdown** by stepping aside during confirmed downtrends (roughly a fifth shallower on the volatile basket, and shallower on ~84% of a broad random universe).
 - Do this **without shorting** — bearish states mean "go to cash," not "go short."
 
-It is most useful on **high-volatility names** where the trend timing and drawdown control both pay off. On calm, low-volatility names it tends to *underperform* buy-&-hold (there's no deep drawdown to dodge, so leaning long just tracks it at best), so deploy selectively — see [When to deploy](#when-to-deploy-it).
+It is meant to be deployed **selectively — on certain stocks, at certain times.** A broad out-of-sample test found **market cap, not volatility, is what separates winners from losers:** apply a **market-cap floor** (roughly **≥ $100M**, ideally **≥ $500M**) and high HV is *no longer* a reason to exclude a name — a high-vol *large* cap is the single best case, a high-vol *micro* cap is garbage under any mode. Then run it **in-region** (its bull-dominant regime), with the out-of-region behaviour left to you. See [When to deploy](#when-to-deploy-it).
 
 ---
 
@@ -118,12 +118,21 @@ Backtested over each name's full available history (~5 years, **including the 20
 - **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.93 vs 0.80**, drawdown **−75% vs −86%**, Ret/DD **11.7 vs 4.8**; OPEN **0.87 vs 0.32**) — where a fixed low bias used to lag buy-&-hold, it now beats it.
 - **The drawdown cut is real but modest — and the newer, more aggressive bias trades some of it for return.** ≈ a fifth shallower vs buy-&-hold on the basket (was ~a quarter with the earlier, tamer bias; ~half with a pure defensive config). On a few extreme names it can even run *deeper* than buy-&-hold (MSTR: −87% vs −84%) when it holds a crashing name long. For maximum capital preservation instead, leave `BearRegimeMode` on cash so it sits out the out-of-region stretches, or lower the bias ceiling (`DynSlowMult` / `DynMax`).
 - **On low-vol names it roughly tracks buy-&-hold** (KO: 0.54 vs 0.52 — a near-tie now, not a clear lag): no deep drawdown to dodge, so leaning long just matches it at best. Across the broad universe the calm 0–25% HV bucket still trails slightly (≈0.38 vs 0.44). Don't expect an edge there.
-- **This basket is high-vol-favorable.** Across a broad random 500-name universe the strategy now **edges buy-&-hold on Sharpe (0.20 vs 0.19)** — a razor-thin lead — while cutting drawdown on ~84% of names. The drawdown edge is the part that generalizes strongly; the Sharpe outperformance is thin and strongest on volatile names.
+- **On a broad universe it matches buy-&-hold; the edge is risk control and screening, not raw Sharpe.** A random-500 out-of-sample test (last 30% of ~5y) with a **$100M market-cap floor** puts Deploy/Hold OOS Sharpe at **~0.46, ≈ buy-&-hold (0.46)** across every HV bucket — including HV > 100 once microcaps are screened out. The durable contributions are (1) **screening** — a cap floor lifts every bucket and turns HV > 100 from −0.07 to +0.43 Sharpe — and (2) **drawdown reduction** — the cash / in-region policies cut mean OOS drawdown ~6–12 pts. Sub-$100M microcaps are net-negative under *any* mode *and* under buy-&-hold, so the cap floor is the single most important deployment gate.
 
 ### When to deploy it
-- **Deploy on high-volatility names (roughly HV ≥ 50).** That's where the dynamic bias, trend timing, and drawdown control all pay off — the strategy beats buy-and-hold on Sharpe *and* Calmar there.
-- **Skip low-volatility names.** Below ~HV 25 it tracks or lags buy-&-hold; there's no drawdown to protect against.
+
+Three gates decide the outcome far more than any parameter: **which stocks, which regime, which out-of-region mode.**
+
+- **Screen by market cap first — it beats HV as a filter.** A broad random-500 out-of-sample test (last 30% of each name's ~5y history) found **market cap, not volatility, separates winners from losers.** Below **~$100M** the OOS Sharpe is negative in *every* HV bucket — and buy-&-hold is just as bad there, so it's the *stocks*, not the strategy. Apply a **cap floor: ~$100M minimum, ~$500M for a cleaner book.** Do **not** exclude a name for high HV alone: a high-vol *large* cap is the single best cell (HV 75–100, ≥ $500M → OOS Sharpe ~0.8), a high-vol *micro* cap is garbage. With the floor even the **HV > 100 bucket is net-positive** (Deploy ~0.43, vs −0.07 unfloored).
+- **Deploy in-region.** The edge is built for a name **in its bull-dominant region** — LT & ST persistence ratios ≥ 1 over the trailing 50 bars (shown live in the Pine table). Out of region is the decision point below.
+- **Calm large caps just track buy-&-hold.** Below ~HV 25 there's no drawdown to dodge, so it matches B&H — fine to hold, but no edge to harvest.
 - **Long-or-cash only.** Allowing shorts (`MinExposure = −100%`) was tested and made every metric *worse* — bearish signals are best expressed as cash.
+
+**The out-of-region mode is your call** (`BearRegimeMode`) — a risk-appetite choice, not a fixed best:
+- **Cash (`1`, default)** — flatten out of region and *rotate the capital to another in-region name*. **Lowest drawdown** (~6 pts under the other modes on the floored universe), at the cost of ~0.18 Sharpe and ~8 pts of return. Best as a **rotation-portfolio** engine or when capital preservation leads.
+- **Hold / mirror buy-&-hold (`2`)** — stay fully invested out of region. **Best Sharpe of the three** (ties-or-edges B&H, ~0.46–0.50 floored) and keeps you in the name. Choose it when you have **high conviction in the specific name and don't want the region rule to bounce you out of a position you mean to ride through the dip.**
+- **Deploy (`0`)** — keep running the strategy out of region; behaves ≈ Hold on Sharpe.
 
 ---
 
