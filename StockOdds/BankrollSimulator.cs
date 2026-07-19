@@ -187,11 +187,15 @@ namespace StockOdds
 		public static bool   BiasSplit     = true;
 		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
 		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
-		// OUT-OF-REGION rule: when trailing LT-persistence ratio < 1 AND ST-persistence ratio < 1 (both bear-dominant
-		// over RegimeWindow bars), the name is out of its edge regime. 1 = go to CASH (default -- rotate capital to an
-		// in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold (force exposure 1).
+		// OUT-OF-REGION rule: when the LT-bull fraction (over RegimeWindowLt bars) < 50% AND the ST-bull fraction
+		// (over RegimeWindowSt bars) < 50% -- both bear-dominant -- the name is out of its edge regime. 1 = go to
+		// CASH (default -- rotate capital to an in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold.
+		// The windows are ASYMMETRIC: a slow LT window sets the bear-regime CONTEXT, a short ST window is the fast
+		// exit TRIGGER. LT=50/ST=10 validated on a fresh (disjoint) broad-500 OOS: Cash Sharpe 0.21 -> 0.26 vs 50/50,
+		// positive in every HV bucket below 100 (short trigger over-exits only in the thin, noisy HV>100 tail).
 		public static int    BearRegimeMode = 1;
-		public static int    RegimeWindow   = 50;
+		public static int    RegimeWindowLt = 50;   // slow LT bear-regime context
+		public static int    RegimeWindowSt = 10;   // short ST exit trigger
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -437,9 +441,12 @@ namespace StockOdds
 				{
 					int ltb = lt == LongTermState.Bull ? 1 : 0;
 					int stb = st.Value == ShortTermState.Bull || st.Value == ShortTermState.BullNeutral ? 1 : 0;
-					regLtQ.Enqueue(ltb); regStQ.Enqueue(stb); regLtSum += ltb; regStSum += stb;
-					while (regLtQ.Count > RegimeWindow) { regLtSum -= regLtQ.Dequeue(); regStSum -= regStQ.Dequeue(); }
-					if (regLtQ.Count >= RegimeWindow && regLtSum < RegimeWindow * 0.5 && regStSum < RegimeWindow * 0.5)
+					regLtQ.Enqueue(ltb); regLtSum += ltb;
+					while (regLtQ.Count > RegimeWindowLt) regLtSum -= regLtQ.Dequeue();
+					regStQ.Enqueue(stb); regStSum += stb;
+					while (regStQ.Count > RegimeWindowSt) regStSum -= regStQ.Dequeue();
+					if (regLtQ.Count >= RegimeWindowLt && regStQ.Count >= RegimeWindowSt
+						&& regLtSum < RegimeWindowLt * 0.5 && regStSum < RegimeWindowSt * 0.5)
 						position = BearRegimeMode == 1 ? 0.0 : 1.0;   // both ratios < 1: 1=cash, 2=hold(B&H)
 				}
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
