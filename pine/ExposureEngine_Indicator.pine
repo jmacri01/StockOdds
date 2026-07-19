@@ -35,7 +35,7 @@ showDebug      = input.bool(false, "Show debug information",      group = grpUI)
 showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
 grpExp = "Exposure pane"
-showExposure = input.bool(false, "Show exposure (position) line",  group = grpExp)
+showExposure = input.bool(true,  "Show exposure (position) line",  group = grpExp)
 showEma      = input.bool(true,  "Show exposure EMA line",         group = grpExp)
 showBand     = input.bool(false, "Show rebalance band (EMA ± drift)", group = grpExp)
 showStValue  = input.bool(false, "Show ST-value stepline",         group = grpExp)
@@ -68,8 +68,6 @@ emaPeriod = input.int(24, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
 biasPeriod = input.int(15, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
-longBias  = input.float(0.5, "Long bias (amplify)", step = 0.05, group = grpSmooth,
-     tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
 biasEmaPeriod = input.int(150, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
 driftPct  = input.float(30, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
@@ -81,8 +79,6 @@ maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, s
 
 // -- Dynamic (per-candle) long bias: scale LongBias by z = z(HV) + z(persistence)
 grpDyn = "Dynamic long bias"
-useDynLB = input.bool(true, "Use dynamic long bias", group = grpDyn,
-     tooltip = "Off = use the fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet/steady names (z<0) get a LARGE bias (lean long); hot high-vol/high-persistence names (z>0) get a SMALL bias.")
 showDynLB = input.bool(false, "Plot dynamic long bias line", group = grpDyn,
      tooltip = "Plots the per-candle LongBias. It is on a 0..max scale, not -1..1, so it rescales this pane — turn off the exposure/EMA lines to view it cleanly. It is always in the Data Window and the table regardless.")
 dynBase  = input.float(1.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
@@ -255,8 +251,8 @@ var float dynLbEma = na
 dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
 var float dynLbEmaSlow = na
 dynLbEmaSlow := na(dynLbEmaSlow) ? dynLBc : (2.0 / (dynSmoothSlow + 1)) * dynLBc + (1 - 2.0 / (dynSmoothSlow + 1)) * dynLbEmaSlow
-effLongBias = useDynLB ? math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin) : longBias
-effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
+effLongBias = math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin)
+effLongBias := (biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
@@ -300,6 +296,9 @@ regLtSum    = math.sum(ltBullBar, regimeWindow)
 regStSum    = math.sum(stBullBar, regimeWindow)
 outOfRegion = regimeMode != 0 and bar_index >= regimeWindow and regLtSum < regimeWindow * 0.5 and regStSum < regimeWindow * 0.5
 position = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : posClamped)
+// persistence ratios that drive the region test: LT-Bull:LT-Bear and ST-bullish:ST-bearish over the window
+ltPersistRatio = regLtSum / math.max(regimeWindow - regLtSum, 1)
+stPersistRatio = regStSum / math.max(regimeWindow - regStSum, 1)
 
 // =============================================================================
 // 6. NAME HELPERS
@@ -361,6 +360,7 @@ plot(showEma ? adjEma : na, "EMA (adj bias)", color = #2962FF, linewidth = 2)
 // per-candle dynamic long bias (own 0..max scale — rescales the pane when shown)
 plot(showDynLB ? effLongBias : na, "Dyn LongBias", color = #FF6D00, linewidth = 2, style = plot.style_stepline)
 
+bgcolor(outOfRegion ? color.new(color.gray, 82) : na, title = "Out-of-region (cash/hold)")
 posColor = na(position) ? na : position >= 0 ? colBull : colBear
 pPos = plot(showExposure ? position : na, "Exposure (position)", color = posColor, linewidth = 2, style = plot.style_stepline)
 pZero = plot(showExposure ? 0.0 : na, "", color = na, display = display.none)
@@ -369,7 +369,7 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 12, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+var table tbl = table.new(position.top_right, 2, 15, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -391,7 +391,12 @@ if showTable and barstate.islast
     f_row(8,  "Bear Count",  str.tostring(ltBearCount), color.white)
     f_row(9,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
     f_row(10, "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
-    f_row(11, "Dyn LongBias", useDynLB ? str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")" : "off (fixed " + str.tostring(longBias, "#.##") + ")", useDynLB ? #FF6D00 : color.gray)
+    f_row(11, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
+    regionTxt = outOfRegion ? (regimeMode == 1 ? "OUT -> cash" : "OUT -> hold") : "IN region"
+    regionCol = outOfRegion ? colBear : colBull
+    f_row(12, "LT ratio " + str.tostring(regimeWindow) + "b", str.tostring(ltPersistRatio, "#.##"), ltPersistRatio >= 1.0 ? colBull : colBear)
+    f_row(13, "ST ratio " + str.tostring(regimeWindow) + "b", str.tostring(stPersistRatio, "#.##"), stPersistRatio >= 1.0 ? colBull : colBear)
+    f_row(14, "Region", regionTxt, regionCol)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
@@ -411,6 +416,6 @@ plot(showDebug ? emaExp      : na, "DBG EMA",       display = display.data_windo
 plot(showDebug ? dynBias     : na, "DBG Dyn Bias",  display = display.data_window)
 plot(showDebug ? dynBiasEma  : na, "DBG Dyn Bias EMA", display = display.data_window)
 plot(effLongBias, "DBG Dyn LongBias", display = display.data_window)
-plot(useDynLB ? zTrait : na, "DBG z (HV+persist)", display = display.data_window)
+plot(zTrait, "DBG z (HV+persist)", display = display.data_window)
 plot(showDebug ? adjEma      : na, "DBG Adj EMA",   display = display.data_window)
 plot(showDebug ? position    : na, "DBG Exposure",  display = display.data_window)

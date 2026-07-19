@@ -9,7 +9,6 @@ namespace StockOdds
 	{
 		public int    ExposureEmaPeriod;
 		public int    BiasPeriod;
-		public double LongBias;
 		public int    BiasEmaPeriod;
 		public double RebalanceDriftPercent;
 
@@ -31,7 +30,6 @@ namespace StockOdds
 
 		public double EmaPeriod;         // averages over the top region
 		public double BiasPeriod;
-		public double LongBias;
 		public double BiasEmaPeriod;
 		public double DriftPercent;
 
@@ -54,7 +52,6 @@ namespace StockOdds
 	{
 		public int    ExposureEmaPeriod;
 		public int    BiasPeriod;
-		public double LongBias;
 		public int    BiasEmaPeriod;
 		public double RebalanceDriftPercent;
 
@@ -77,26 +74,23 @@ namespace StockOdds
 		// Candidate values per knob. Override any of these from Program.cs before Run().
 		public static int[]    ExposureEmaPeriods     = { 3, 5, 8, 12, 20 };
 		public static int[]    BiasPeriods            = { 5, 10, 20, 40 };
-		public static double[] LongBiases             = { 0.0, 0.5, 1.0, 2.0 };
 		public static int[]    BiasEmaPeriods         = { 20, 50, 100, 200 };
 		public static double[] RebalanceDriftPercents = { 0.0, 10.0, 20.0, 30.0 };
 
 		// Run the sim on a bar set with a specific knob combination, restoring the caller's
 		// knobs afterward. Used by the walk-forward test to score a fixed combo on new data.
 		public static BankrollResult RunWith(
-			List<OhlcBar> bars, int ema, int biasP, double longBias, int biasEma, double drift,
+			List<OhlcBar> bars, int ema, int biasP, int biasEma, double drift,
 			double initialBankroll = 10_000.0)
 		{
 			int    sEma      = BankrollSimulator.ExposureEmaPeriod;
 			int    sBiasP    = BankrollSimulator.BiasPeriod;
-			double sLongBias = BankrollSimulator.LongBias;
 			int    sBiasEma  = BankrollSimulator.BiasEmaPeriod;
 			double sDrift    = BankrollSimulator.RebalanceDriftPercent;
 			try
 			{
 				BankrollSimulator.ExposureEmaPeriod     = ema;
 				BankrollSimulator.BiasPeriod            = biasP;
-				BankrollSimulator.LongBias              = longBias;
 				BankrollSimulator.BiasEmaPeriod         = biasEma;
 				BankrollSimulator.RebalanceDriftPercent = drift;
 				return BankrollSimulator.Run(bars, initialBankroll);
@@ -105,7 +99,6 @@ namespace StockOdds
 			{
 				BankrollSimulator.ExposureEmaPeriod     = sEma;
 				BankrollSimulator.BiasPeriod            = sBiasP;
-				BankrollSimulator.LongBias              = sLongBias;
 				BankrollSimulator.BiasEmaPeriod         = sBiasEma;
 				BankrollSimulator.RebalanceDriftPercent = sDrift;
 			}
@@ -125,7 +118,6 @@ namespace StockOdds
 		{
 			int    curEma   = BankrollSimulator.ExposureEmaPeriod;
 			int    curBiasP = BankrollSimulator.BiasPeriod;
-			double curLBias = BankrollSimulator.LongBias;
 			int    curBEma  = BankrollSimulator.BiasEmaPeriod;
 			double curDrift = BankrollSimulator.RebalanceDriftPercent;
 
@@ -149,7 +141,7 @@ namespace StockOdds
 				var dds = new List<double>();
 				foreach (var b in universe.Values)
 				{
-					var r = RunWith(b, curEma, biasP, curLBias, biasEma, curDrift, initialBankroll);
+					var r = RunWith(b, curEma, biasP, biasEma, curDrift, initialBankroll);
 					shs.Add(SharpeOf(r));
 					dds.Add(r.MaxDrawdownPct);
 				}
@@ -189,7 +181,6 @@ namespace StockOdds
 			// capture the current knobs BEFORE any sweep mutates the statics
 			int    curEma   = BankrollSimulator.ExposureEmaPeriod;
 			int    curBiasP = BankrollSimulator.BiasPeriod;
-			double curLBias = BankrollSimulator.LongBias;
 			int    curBEma  = BankrollSimulator.BiasEmaPeriod;
 			double curDrift = BankrollSimulator.RebalanceDriftPercent;
 
@@ -200,14 +191,14 @@ namespace StockOdds
 			var result = new KnobRankResult
 			{
 				HvThreshold = KnobRankHvThreshold, Symbols = universe.Count,
-				Ema = curEma, BiasP = curBiasP, LongBias = curLBias, BiasEma = curBEma, Drift = curDrift,
+				Ema = curEma, BiasP = curBiasP, BiasEma = curBEma, Drift = curDrift,
 			};
 			if (universe.Count == 0)
 				return result;
 
 			// current combo's mean Sharpe across the universe (full window)
 			var curSharpes = universe.Values
-				.Select(b => SharpeOf(RunWith(b, curEma, curBiasP, curLBias, curBEma, curDrift, initialBankroll)))
+				.Select(b => SharpeOf(RunWith(b, curEma, curBiasP, curBEma, curDrift, initialBankroll)))
 				.ToList();
 			double curMean = curSharpes.Average();
 
@@ -228,7 +219,7 @@ namespace StockOdds
 		}
 
 		public static long GridSize =>
-			(long)ExposureEmaPeriods.Length * BiasPeriods.Length * LongBiases.Length *
+			(long)ExposureEmaPeriods.Length * BiasPeriods.Length *
 			BiasEmaPeriods.Length * RebalanceDriftPercents.Length;
 
 		public static List<GridPoint> Run(List<OhlcBar> bars, double initialBankroll = 10_000.0)
@@ -236,7 +227,6 @@ namespace StockOdds
 			// snapshot the knobs we mutate so the caller's config survives the search
 			int    savedEma       = BankrollSimulator.ExposureEmaPeriod;
 			int    savedBiasP     = BankrollSimulator.BiasPeriod;
-			double savedLongBias  = BankrollSimulator.LongBias;
 			int    savedBiasEma   = BankrollSimulator.BiasEmaPeriod;
 			double savedDrift     = BankrollSimulator.RebalanceDriftPercent;
 
@@ -246,13 +236,11 @@ namespace StockOdds
 			{
 				foreach (var ema in ExposureEmaPeriods)
 				foreach (var biasP in BiasPeriods)
-				foreach (var longBias in LongBiases)
 				foreach (var biasEma in BiasEmaPeriods)
 				foreach (var drift in RebalanceDriftPercents)
 				{
 					BankrollSimulator.ExposureEmaPeriod     = ema;
 					BankrollSimulator.BiasPeriod            = biasP;
-					BankrollSimulator.LongBias              = longBias;
 					BankrollSimulator.BiasEmaPeriod         = biasEma;
 					BankrollSimulator.RebalanceDriftPercent = drift;
 
@@ -262,7 +250,6 @@ namespace StockOdds
 					{
 						ExposureEmaPeriod     = ema,
 						BiasPeriod            = biasP,
-						LongBias              = longBias,
 						BiasEmaPeriod         = biasEma,
 						RebalanceDriftPercent = drift,
 						Sharpe                = r.SharpeRatio,
@@ -276,7 +263,6 @@ namespace StockOdds
 				// always restore, even if a run throws
 				BankrollSimulator.ExposureEmaPeriod     = savedEma;
 				BankrollSimulator.BiasPeriod            = savedBiasP;
-				BankrollSimulator.LongBias              = savedLongBias;
 				BankrollSimulator.BiasEmaPeriod         = savedBiasEma;
 				BankrollSimulator.RebalanceDriftPercent = savedDrift;
 			}
@@ -324,7 +310,6 @@ namespace StockOdds
 
 					EmaPeriod           = region.Average(p => (double)p.ExposureEmaPeriod),
 					BiasPeriod          = region.Average(p => (double)p.BiasPeriod),
-					LongBias            = region.Average(p => p.LongBias),
 					BiasEmaPeriod       = region.Average(p => (double)p.BiasEmaPeriod),
 					DriftPercent        = region.Average(p => p.RebalanceDriftPercent),
 
@@ -352,7 +337,6 @@ namespace StockOdds
 		{
 			int    savedEma       = BankrollSimulator.ExposureEmaPeriod;
 			int    savedBiasP     = BankrollSimulator.BiasPeriod;
-			double savedLongBias  = BankrollSimulator.LongBias;
 			int    savedBiasEma   = BankrollSimulator.BiasEmaPeriod;
 			double savedDrift     = BankrollSimulator.RebalanceDriftPercent;
 
@@ -362,13 +346,11 @@ namespace StockOdds
 			{
 				foreach (var ema in ExposureEmaPeriods)
 				foreach (var biasP in BiasPeriods)
-				foreach (var longBias in LongBiases)
 				foreach (var biasEma in BiasEmaPeriods)
 				foreach (var drift in RebalanceDriftPercents)
 				{
 					BankrollSimulator.ExposureEmaPeriod     = ema;
 					BankrollSimulator.BiasPeriod            = biasP;
-					BankrollSimulator.LongBias              = longBias;
 					BankrollSimulator.BiasEmaPeriod         = biasEma;
 					BankrollSimulator.RebalanceDriftPercent = drift;
 
@@ -376,7 +358,6 @@ namespace StockOdds
 					{
 						ExposureEmaPeriod     = ema,
 						BiasPeriod            = biasP,
-						LongBias              = longBias,
 						BiasEmaPeriod         = biasEma,
 						RebalanceDriftPercent = drift,
 					};
@@ -406,7 +387,6 @@ namespace StockOdds
 			{
 				BankrollSimulator.ExposureEmaPeriod     = savedEma;
 				BankrollSimulator.BiasPeriod            = savedBiasP;
-				BankrollSimulator.LongBias              = savedLongBias;
 				BankrollSimulator.BiasEmaPeriod         = savedBiasEma;
 				BankrollSimulator.RebalanceDriftPercent = savedDrift;
 			}
@@ -451,10 +431,10 @@ namespace StockOdds
 
 				double tunedTest = gd == null ? 0.0
 					: SharpeOf(RunWith(teBars, tuned.ExposureEmaPeriod, tuned.BiasPeriod,
-						tuned.LongBias, tuned.BiasEmaPeriod, tuned.RebalanceDriftPercent, initialBankroll));
+						tuned.BiasEmaPeriod, tuned.RebalanceDriftPercent, initialBankroll));
 				double defaultTest = gd == null ? 0.0
 					: SharpeOf(RunWith(teBars, gd.ExposureEmaPeriod, gd.BiasPeriod,
-						gd.LongBias, gd.BiasEmaPeriod, gd.RebalanceDriftPercent, initialBankroll));
+						gd.BiasEmaPeriod, gd.RebalanceDriftPercent, initialBankroll));
 
 				rows.Add(new WalkForwardRow
 				{
@@ -640,7 +620,7 @@ namespace StockOdds
 				var ret = new List<double>();
 				foreach (var (sym, teBars) in w.Test)
 				{
-					var r = RunWith(teBars, gd.ExposureEmaPeriod, gd.BiasPeriod, gd.LongBias,
+					var r = RunWith(teBars, gd.ExposureEmaPeriod, gd.BiasPeriod,
 						gd.BiasEmaPeriod, gd.RebalanceDriftPercent, initialBankroll);
 					sh.Add(SharpeOf(r));
 					ret.Add(r.TotalReturnPct);
@@ -651,7 +631,7 @@ namespace StockOdds
 				{
 					Index = w.Index, TestStart = w.TestStart, TestEnd = w.TestEndLabel,
 					Symbols = w.Test.Count,
-					Ema = gd.ExposureEmaPeriod, BiasP = gd.BiasPeriod, LongBias = gd.LongBias,
+					Ema = gd.ExposureEmaPeriod, BiasP = gd.BiasPeriod,
 					BiasEma = gd.BiasEmaPeriod, Drift = gd.RebalanceDriftPercent,
 					MeanTestSharpe = mean, MedianTestSharpe = median,
 					MeanTestReturnPct = meanRet, PctPositive = pctPos,
@@ -812,7 +792,7 @@ namespace StockOdds
 		public double HvThreshold;
 		public int    Symbols;
 		public int    Ema, BiasP, BiasEma;
-		public double LongBias, Drift;
+		public double Drift;
 
 		public double CurrentMeanSharpe;
 		public double BestMeanSharpe;
@@ -859,7 +839,7 @@ namespace StockOdds
 
 		// smoothing-knob mode: the global default re-tuned on this fold's train
 		public int      Ema, BiasP, BiasEma;
-		public double   LongBias, Drift;
+		public double   Drift;
 
 		// bucket-shape mode: the map shape re-tuned on this fold's train (null in knob mode)
 		public BucketPoint? BucketShape;

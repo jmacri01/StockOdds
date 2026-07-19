@@ -119,19 +119,17 @@ namespace StockOdds
 		//   dynBias     = sum(LT dir over BiasPeriod) / BiasPeriod
 		//   biasEma     = EMA(dynBias, BiasEmaPeriod)
 		//   adjustedEma = |ema| * biasEma + ema
-		// LT dir is (LongBias + 1) on a Bull candle, -1 on a Bear candle. LongBias
+		// LT dir is (effLongBias + 1) on a Bull candle, -1 on a Bear candle. effLongBias
 		// skews the Bull weight: 0 -> +1 (symmetric), -0.5 -> +0.5, +1 -> +2. So an
-		// all-Bull window gives dynBias (LongBias + 1) and all-Bear gives -1. dynBias is
-		// then EMA-smoothed before skewing. Unclamped.
-		// Applies to the smoothed exposure, not the per-candle target.
+		// all-Bull window gives dynBias (effLongBias + 1) and all-Bear gives -1. dynBias is
+		// then EMA-smoothed before skewing. Unclamped. effLongBias is the per-candle dynamic
+		// bias computed below. Applies to the smoothed exposure, not the per-candle target.
 		public static int    BiasPeriod    = 20;
-		public static double LongBias      = 2.0;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
 		// ============ Dynamic (per-candle) LongBias ============
-		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
-		// LongBias is instead recomputed every candle from a combined trait z-score:
+		// The per-candle bias is recomputed every candle from a combined trait z-score:
 		//   z          = (rollingHV - HvRefMean)/HvRefStd + (rollingPersist - PersRefMean)/PersRefStd
 		//   LongBias_t = clamp( DynBase * exp(-DynDecay * z),  DynMin, DynMax )
 		// z is on an ABSOLUTE scale via FIXED reference constants, so a quiet/steady name reads
@@ -143,7 +141,6 @@ namespace StockOdds
 		// on the raw target, not the EMA, so it is independent of ExposureEmaPeriod. Finally the per-candle bias is
 		// EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps because the
 		// persistence ratio is jumpy and the exp map is convex). All knobs are hand-set, not fit.
-		public static bool   DynamicLongBias = true;
 		public static int    HvWindow        = 60;
 		public static int    PersistWindow   = 63;
 		public static double HvRefMean       = 57.0;
@@ -315,7 +312,7 @@ namespace StockOdds
 			// updates curHvPct from the completed return into `latest` (no look-ahead)
 			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
 			{
-				if (!DynamicLongBias || prevBar.Close <= 0 || latest.Close <= 0) return;
+				if (prevBar.Close <= 0 || latest.Close <= 0) return;
 				double lr = Math.Log(latest.Close / prevBar.Close);
 				hvRetWindow.Enqueue(lr);
 				hvSum += lr; hvSqSum += lr * lr;
@@ -353,9 +350,8 @@ namespace StockOdds
 				double target = TargetExposure(lt, st);
 				ema = double.IsNaN(ema) ? target : alpha * target + (1.0 - alpha) * ema;
 
-				// per-candle LongBias: the fixed LongBias, or the trait-scaled dynamic value
-				double effLongBias = LongBias;
-				if (DynamicLongBias)
+				// per-candle LongBias: the trait-scaled dynamic value (always on)
+				double effLongBias;
 				{
 					// rolling persistence (Kaufman efficiency ratio) of the RAW target exposure —
 					// deliberately NOT the exposure EMA, so it is independent of ExposureEmaPeriod

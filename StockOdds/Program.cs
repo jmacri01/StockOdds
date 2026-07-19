@@ -118,17 +118,14 @@ class Program
 		// threshold, then clamped to the configured min/max. Tune the knobs here:
 		BankrollSimulator.ExposureEmaPeriod = 24;
 		BankrollSimulator.BiasPeriod = 15;
-		BankrollSimulator.LongBias = 0.5;
 		BankrollSimulator.BiasEmaPeriod = 150;
 		BankrollSimulator.RebalanceDriftPercent = 30;
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 
-			// Long bias: ON by default — a per-candle dynamic bias scaled by each candle's
-			// z = z(HV) + z(persistence), EMA-smoothed. Set DynamicLongBias = false to fall back
-			// to the fixed LongBias above. Defaults are exp / base 1 / decay 0.6, refs calibrated
-			// to a ~110-name universe. Quiet/low-vol names get a larger bias, hot names a smaller one.
-			BankrollSimulator.DynamicLongBias = true;
+			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),
+			// EMA-smoothed. Defaults are exp / base 1 / decay 0.6, refs calibrated to a ~110-name
+			// universe. Quiet/low-vol names get a larger bias, hot names a smaller one.
 			// BankrollSimulator.DynBase  = 1.0;   // LongBias at z = 0
 			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
 			// Bias-cap default (high-vol screening preset): DynMax raised so the slow-EMA*mult is the
@@ -172,7 +169,7 @@ class Program
 		// 6. GRID SEARCH (optional) — sweep the smoothing knobs for the best Sharpe.
 		//    The (LT, ST) bucket weights configured above are held fixed; only the five
 		//    smoothing knobs move. Candidate value sets live in GridSearch (override
-		//    e.g. GridSearch.LongBiases before calling Run to change the grid).
+		//    e.g. GridSearch.BiasPeriods before calling Run to change the grid).
 		// -------------------------
 		if (RUN_GRID_SEARCH)
 		{

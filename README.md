@@ -4,7 +4,7 @@
 
 > Companion write-up: [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
-StockOdds classifies each candle, rolls that up into a short-term and a long-term trend state, and maps the combined state to a **target market exposure** (0–100%), then scales how hard it leans long by each name's volatility and trend-persistence (the [dynamic long bias](#long-bias-fixed-or-dynamic-per-candle)). It sits in cash through sustained downtrends and re-enters as trends confirm — trading a slice of raw bull-market return for a **higher Sharpe and materially lower drawdown**.
+StockOdds classifies each candle, rolls that up into a short-term and a long-term trend state, and maps the combined state to a **target market exposure** (0–100%), then scales how hard it leans long by each name's volatility and trend-persistence (the [dynamic long bias](#long-bias-per-candle-dynamic)). It sits in cash through sustained downtrends and re-enters as trends confirm — trading a slice of raw bull-market return for a **higher Sharpe and materially lower drawdown**.
 
 ---
 
@@ -56,19 +56,19 @@ That raw target is then:
 2. skewed by a **dynamic long-bias** (leans with the recent trend),
 3. only **rebalanced when it drifts past a deadband** (cuts churn),
 4. **clamped to `[0%, 100%]`** — so negative targets simply become **cash** (no short),
-5. finally, if the name has fallen **out of its bull-dominant region**, overridden per the [out-of-region rule](#long-bias-fixed-or-dynamic-per-candle) — **cash** by default.
+5. finally, if the name has fallen **out of its bull-dominant region**, overridden per the [out-of-region rule](#long-bias-per-candle-dynamic) — **cash** by default.
 
-**Default parameters** (`Program.cs`): Exposure EMA `24`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`. The **long bias is dynamic by default** — recomputed per candle from each name's volatility and exposure-persistence (see [Long bias](#long-bias-fixed-or-dynamic-per-candle) below); set `DynamicLongBias = false` for a single fixed `LongBias`. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `24`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`. The **long bias is dynamic by default** — recomputed per candle from each name's volatility and exposure-persistence (see [Long bias](#long-bias-per-candle-dynamic) below). Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 
-## Long bias: fixed or dynamic (per-candle)
+## Long bias (per-candle, dynamic)
 
-The **long bias** controls how hard a bullish LT regime is leaned into. In the running trend sum, a Bull candle contributes `1 + bias/2` and a Bear candle `−1 + bias/2` (the [`BiasSplit`](#long-bias-fixed-or-dynamic-per-candle) default — the bias is a long tilt on *both* sides so conviction persists through chop; with `BiasSplit = false` it reverts to the classic `1 + bias` / `−1`). A larger bias pushes exposure up harder in uptrends.
+The **long bias** controls how hard a bullish LT regime is leaned into. In the running trend sum, a Bull candle contributes `1 + bias/2` and a Bear candle `−1 + bias/2` (the [`BiasSplit`](#long-bias-per-candle-dynamic) default — the bias is a long tilt on *both* sides so conviction persists through chop; with `BiasSplit = false` it reverts to the classic `1 + bias` / `−1`). A larger bias pushes exposure up harder in uptrends.
 
-### Dynamic long bias (the default)
+### How the per-candle bias is computed
 
-Rather than one `LongBias` for every stock, the bias is **recomputed each candle** from a combined trait z-score, so quiet names lean long and hot names ease off — automatically, per name and over time:
+Rather than one fixed bias for every stock, the bias is **recomputed each candle** from a combined trait z-score, so quiet names lean long and hot names ease off — automatically, per name and over time:
 
 ```
 z          = z(rolling HV) + z(rolling exposure-persistence)          // vs FIXED universe refs
@@ -86,19 +86,19 @@ LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
 
 **Screening preset (the shipped default): `DynMax = 150`, `DynSmoothSlow = 150`, `DynSlowMult = 0.5`.** The bias ceiling is a *slow* 150-bar EMA of the raw bias, scaled to half — and `DynMax` is raised to 150 so the raw bias isn't pre-clamped and the slow-EMA×mult *is* the effective ceiling. This is a deliberate **defensive tilt tuned for the high-vol names you'd screen**: it still captures the runs (per-name compounds preserved/improved — SMCI 733%→765%, IREN 945%→1123%, HOOD 500%→524%) and is more robust through a real bear (full-window incl. 2022, HV-set Sharpe **0.43→0.47** at ~flat drawdown), at the cost of some **bull-only** OOS Sharpe (0.46→0.38). Two honest caveats: (1) it does **not** dominate on the bull-only walk-forward — no `DynMax`/slow/mult combination beats the neutral baseline on *both* the bull-only OOS *and* the full window; it's a Pareto frontier (aggression ⇄ drawdown / bull ⇄ bear), a risk-appetite choice; (2) the full-window edge leans on the **single, in-sample 2022 bear**, so the bear-robustness can't be confirmed out-of-sample. It also **requires the raised `DynMax`** — at `DynMax = 15` the same slow/mult over-clamps and craters names (SMCI 733%→94%). **Revert to the neutral baseline** with `DynMax = 15`, `DynSmoothSlow = 10` (= `DynSmoothPeriod`), `DynSlowMult = 1.0`.
 
-**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**), `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasSplit`** (default **on**), and the out-of-region rule **`BearRegimeMode`** (default **1 = cash**) / **`RegimeWindow`** (**50**) — see below. Set `DynamicLongBias = false` to fall back to a single fixed `BankrollSimulator.LongBias`.
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**), `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasSplit`** (default **on**), and the out-of-region rule **`BearRegimeMode`** (default **1 = cash**) / **`RegimeWindow`** (**50**) — see below.
 
 **Out-of-region rule (`BearRegimeMode`, default cash).** The strategy's measurable edge lives in the **bull-dominant region** — where, over the trailing `RegimeWindow` (**50**) bars, the LT regime is Bull more than half the time *and* the ST state is bullish (Bull / BullNeutral) more than half the time. When a name falls out of that region (both fractions < 50%), `BearRegimeMode` decides what to do: **`1` = go to cash** (the default — flatten and *rotate the capital to another in-region name*), `2` = mirror buy-&-hold (force full exposure), or `0` = keep deploying the strategy. Cash is the default because the goal is to *squeeze gains out of a name while it's in its edge regime*, not to beat any single name end-to-end — "go to cash" means "go find another stock to trade." A caveat for reading backtests: on a **single-name** run the cash default **understates** results (it sits out the out-of-region stretches instead of redeploying the capital elsewhere), so to see a name's continuous full-history behavior set `BearRegimeMode = 0`. One thing the rule *can't* do — and neither can any other knob — is separate a recoverable pullback from a real decline **in advance**: at the decision bar those look identical in every available feature (z, HV, persistence, regime), so it stays a coarse, *trailing* region test rather than a predictive one — the in-advance call is an irreducible judgment left to you.
 
 **Why it's the default — and its honest limits.** On a 110-name walk-forward (~5y OOS) the default `exp / 1 / 0.6` **beats a fixed `LongBias = 0.5`** (mean OOS Sharpe **0.43 vs 0.16**, return **+17% vs +10%**) *and* cuts drawdown — a real, out-of-sample improvement, so it's on by default. It also finally handles the high-vol, low-persistence names (e.g. AEHR/SMCI) that a fixed low bias whipsawed: their low persistence pulls z negative, so they get a high bias and stay long through their runs. Two caveats kept in view: (1) it does **not** beat a *high* fixed bias (~10) on raw Sharpe/return — that captures more of a bull run but gives back drawdown protection; (2) the piece that **provably generalizes OOS is the drawdown reduction**, not return outperformance vs buy-&-hold. This is a risk overlay, not an alpha engine — consistent with the strategy's stated goal.
 
-The dynamic bias is mirrored in the Pine scripts (on by default): watch `LongBias` change per candle via the orange stepline, the table row, and the Data Window (`DBG Dyn LongBias` / `DBG z`).
+The dynamic bias is mirrored in the Pine scripts: watch the per-candle bias change via the orange stepline (`Dyn LongBias`), the table row, and the Data Window (`DBG Dyn LongBias` / `DBG z`). The table also shows the **LT / ST persistence ratios** and the **Region** status (IN / OUT → cash) so the out-of-region cash exit is visible, and the exposure line drops to 0 when it fires.
 
 ---
 
 ## What to expect
 
-Backtested over each name's full available history (~5 years, **including the 2022 bear market**), the **shipped default** (dynamic long bias on — z-scaled, slow/fast-modulated, and split across both LT directions; see below), no per-symbol tuning. These per-name figures are shown with `BearRegimeMode = 0` (deploy continuously end-to-end) so each row reflects the name in isolation; the shipped **cash** default instead sits out each name's out-of-region stretches to rotate capital elsewhere — see [the out-of-region rule](#long-bias-fixed-or-dynamic-per-candle):
+Backtested over each name's full available history (~5 years, **including the 2022 bear market**), the **shipped default** (dynamic long bias on — z-scaled, slow/fast-modulated, and split across both LT directions; see below), no per-symbol tuning. These per-name figures are shown with `BearRegimeMode = 0` (deploy continuously end-to-end) so each row reflects the name in isolation; the shipped **cash** default instead sits out each name's out-of-region stretches to rotate capital elsewhere — see [the out-of-region rule](#long-bias-per-candle-dynamic):
 
 | Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -116,7 +116,7 @@ Backtested over each name's full available history (~5 years, **including the 20
 
 ### The trade-off, honestly
 - **It captures the high-vol runs rather than sitting them out.** The bias leans long into volatile names that trend (ASTS: Sharpe **0.93 vs 0.80**, drawdown **−75% vs −86%**, Ret/DD **11.7 vs 4.8**; OPEN **0.87 vs 0.32**) — where a fixed low bias used to lag buy-&-hold, it now beats it.
-- **The drawdown cut is real but modest — and the newer, more aggressive bias trades some of it for return.** ≈ a fifth shallower vs buy-&-hold on the basket (was ~a quarter with the earlier, tamer bias; ~half with a pure defensive config). On a few extreme names it can even run *deeper* than buy-&-hold (MSTR: −87% vs −84%) when it holds a crashing name long. For maximum capital preservation instead, set `DynamicLongBias = false` with a low fixed `LongBias`, or leave `BearRegimeMode` on cash so it sits out the out-of-region stretches entirely.
+- **The drawdown cut is real but modest — and the newer, more aggressive bias trades some of it for return.** ≈ a fifth shallower vs buy-&-hold on the basket (was ~a quarter with the earlier, tamer bias; ~half with a pure defensive config). On a few extreme names it can even run *deeper* than buy-&-hold (MSTR: −87% vs −84%) when it holds a crashing name long. For maximum capital preservation instead, leave `BearRegimeMode` on cash so it sits out the out-of-region stretches, or lower the bias ceiling (`DynSlowMult` / `DynMax`).
 - **On low-vol names it roughly tracks buy-&-hold** (KO: 0.54 vs 0.52 — a near-tie now, not a clear lag): no deep drawdown to dodge, so leaning long just matches it at best. Across the broad universe the calm 0–25% HV bucket still trails slightly (≈0.38 vs 0.44). Don't expect an edge there.
 - **This basket is high-vol-favorable.** Across a broad random 500-name universe the strategy now **edges buy-&-hold on Sharpe (0.20 vs 0.19)** — a razor-thin lead — while cutting drawdown on ~84% of names. The drawdown edge is the part that generalizes strongly; the Sharpe outperformance is thin and strongest on volatile names.
 
