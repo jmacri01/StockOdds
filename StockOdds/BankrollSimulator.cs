@@ -128,32 +128,6 @@ namespace StockOdds
 		public static double LongBias      = 2.0;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
-		// The skew adjEma = |ema|*biasEma + ema. When biasEma > 1 (which the dynamic bias
-		// allows — it can reach ~3+), a NEGATIVE (bearish) ema is inverted into a growing LONG
-		// (ema*(1-biasEma) flips sign and scales with how bearish the signal is). With
-		// BiasNoInvert = true the skew may pull a bearish ema toward flat but never past it into
-		// a net long (and symmetrically for a bullish ema) — it can't fight its own sign. When it
-		// fires it also BYPASSES the drift band to snap the position flat (a decisive exit, not a
-		// within-band residual) — held goes to 0, so re-entry stays symmetric and every other
-		// bar's drift-band rebalance is unchanged.
-		public static bool   BiasNoInvert  = false;
-		// Level for direction, window for timing. The level-amplified skew (|ema|*biasEma + ema)
-		// decides HOW bullish (biasEma high -> more bullish -> rides the runs). It is then modulated
-		// by the latest window vs its long-run norm: m = clamp(dynBias/biasEma, Min, Max). >1 when the
-		// recent window runs hot (accelerating) nudges exposure up; <1 (decelerating) nudges it down.
-		// The band is kept TIGHT (0.75..1.25) so it only trims/adds at the margin and never de-levers
-		// a real trend (whose skew clamps to max regardless). Guarded off when biasEma<=~0 (bearish
-		// regime — the level already de-risks there).
-		// DEFAULT OFF (2026-07-17): timing's sign flips with the bias-cap regime. At the NEUTRAL config
-		// (DynMax=15, mult=1.0, uncapped bias) it's a win — it ADDS on hot windows and lifts the big-winner
-		// compounds (SMCI 526->733, NVDA 928->981) at equal drawdown. But at the SHIPPED screening default
-		// (DynMax=150, slow150, mult0.5) the ceiling already hard-caps the bias, so timing only TRIMS an
-		// already-capped skew and mildly de-levers the winners (NVDA/OPEN/ASST/MSTR worse on both return and
-		// Sharpe; aggregate Sharpe/DD ~flat). So it's default-OFF for the capped default — turn it ON if you
-		// revert to the neutral (uncapped) config, where it earns its keep.
-		public static bool   BiasTiming    = false;
-		public static double BiasTimingMin = 0.75;
-		public static double BiasTimingMax = 1.25;
 
 		// ============ Dynamic (per-candle) LongBias ============
 		// Leave DynamicLongBias = false to use the fixed LongBias above. Set it true and the
@@ -185,7 +159,7 @@ namespace StockOdds
 		public static double DynMin          = 0.0;
 		// ===== High-vol screening default (see README "screening preset") =====
 		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
-		// MAX(MIN(fast EMA, slow EMA * DynSlowMult), DynMin). DynMax is raised to 150 so the raw
+		// MAX(MIN(fast EMA, slow EMA), DynMin). DynMax is raised to 150 so the raw
 		// bias isn't pre-clamped and the slow-EMA*mult IS the effective, scale-aware ceiling.
 		// This is a deliberate DEFENSIVE tilt for volatile names: it captures the runs (per-name
 		// compounds preserved/improved) and is more robust through a real bear (full-window incl.
@@ -194,13 +168,13 @@ namespace StockOdds
 		// choice, not a free win, and the full-window edge leans on the one in-sample 2022 bear.
 		// NOTE: this default REQUIRES DynMax raised — at DynMax=15 the same slow/mult over-clamps
 		// and craters names (SMCI 733%->94%). To revert to the neutral baseline: DynMax=15,
-		// DynSmoothSlow=DynSmoothPeriod (10), DynSlowMult=1.0.
+		// DynSmoothSlow=DynSmoothPeriod (10).
 		public static double DynMax          = 150.0; // raised so the slow-EMA*mult is the real ceiling
 		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
 		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
 		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
 		// Scale the bias by longEMA/shortEMA = slowBiasEMA / fastBiasEMA (clamped), on a fixed CEILING base:
-		//   effLongBias = (slow * DynSlowMult) * clamp(slow/fast, lo, hi).
+		//   effLongBias = slow * clamp(slow/fast, lo, hi).
 		// This is monotonic-decreasing in the fast EMA — lift the bias as the fast dips below the slow (a
 		// recent pullback in the bias) and damp it as the fast rises above (a recent spike); neutral (= the
 		// plain ceiling) when fast == slow. Using the ceiling (not MIN(fast, ceiling)) as the base removes the
@@ -225,26 +199,11 @@ namespace StockOdds
 		// but gives up some protection). adjEma = |ema| * (BiasBlend*biasEmaDyn +
 		// (1-BiasBlend)*biasEmaFixed) + ema. 1 = pure dynamic, 0 = pure defensive.
 		public static double BiasBlend       = 1.0;
-		// BlendSlope: modulate the defensive/dynamic blend by the GRADE of the plotted-position momentum. Track a fast
-		// (EMA12) and slow (EMA-BlendSlowPeriod) EMA of the FINAL position; when the fast EMA is rolling over (falling
-		// over BlendSlopeBars) AND above the slow (a confirmed late-run top, the empirically low-forward-return zone),
-		// pull the blend toward defensive proportional to the descent's steepness: effBlend = clamp(1 + K*grade, Floor, 1)
-		// where grade = fastEMA_t - fastEMA_{t-BlendSlopeBars} (< 0). Uses lagged position EMAs (non-circular). Gentle:
-		// mild rollovers barely change the blend; only steep tops de-risk. OOS-neutral broadly, trims drawdown and
-		// preserves/adds return on volatile/trending names (its benefit concentrates there; a no-op on quiet names).
-		public static bool   BlendSlope      = true;
-		public static int    BlendSlowPeriod = 120;   // slow position-EMA period (fast is fixed EMA12)
-		public static int    BlendSlopeBars  = 10;    // lookback for the fast-EMA slope grade
-		public static double BlendSlopeK     = 6.0;    // sensitivity: blend reduction per unit of negative grade
-		public static double BlendSlopeFloor = 0.0;    // minimum blend the modulation can reach
-		public static bool   BlendSlopeGate  = true;   // require fastEMA > slowEMA (only de-risk confirmed tops)
-		// FinalSmooth: EMA-smooth the FINAL plotted position (the last output), on top of the drift band. The position
-		// was previously only smoothed indirectly (the drift band gives discrete hysteresis) — a light EMA on the output
-		// damps residual whipsaw/turnover. Broad random-500 validated: raises OOS Sharpe (0.27->0.28, the only change to
-		// improve broad OOS rather than tie) and trims ~1pt drawdown, giving up only marginal return (whipsaw churn, not
-		// trend). Short period only — heavy smoothing over-lags and craters return (EMA20 gave it all back).
-		public static bool   FinalSmooth       = true;
-		public static int    FinalSmoothPeriod = 3;   // paired with ExposureEmaPeriod 24: longer raw EMA wants a lighter final smooth
+		// OUT-OF-REGION rule: when trailing LT-persistence ratio < 1 AND ST-persistence ratio < 1 (both bear-dominant
+		// over RegimeWindow bars), the name is out of its edge regime. 1 = go to CASH (default -- rotate capital to an
+		// in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold (force exposure 1).
+		public static int    BearRegimeMode = 1;
+		public static int    RegimeWindow   = 50;
 		// The defensive leg's fixed bias (independent of LongBias, which is only the
 		// dynamic-OFF fallback — so LongBias has no effect while DynamicLongBias is on).
 		public static double DefensiveBias   = 0.5;
@@ -343,10 +302,7 @@ namespace StockOdds
 			double maxExp = MaxExposurePercent / 100.0;
 
 			double ema = double.NaN;     // EMA of the per-candle target exposure
-			double posFast = double.NaN, posSlow = double.NaN;   // fast/slow EMAs of the FINAL plotted position
-			double finalEma = double.NaN; double aFS = 2.0 / (FinalSmoothPeriod + 1);
-			double aPF = 2.0 / (12 + 1), aPS = 2.0 / (BlendSlowPeriod + 1);
-			var posFastBuf = new List<double>();
+			var regLtQ = new Queue<int>(); var regStQ = new Queue<int>(); int regLtSum = 0, regStSum = 0;   // bear-regime override
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 
@@ -447,9 +403,10 @@ namespace StockOdds
 						? DynBase * Math.Exp(-DynDecay * z)
 						: DynBase + DynSlope * z;
 					raw = Clamp(raw, DynMin, DynMax);
-					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar. A fast and a slow
-					// EMA; effLongBias = MIN of the two, so the lagging slow EMA caps transient spikes
-					// (bias climbs only if sustained) while MIN still lets it drop fast.
+					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar (a fast and a slow EMA).
+					// Modes: BiasEmaRatio=false -> effLongBias = MIN(fast, slow*DynSlowMult). BiasEmaRatio=true (DEFAULT) ->
+					// effLongBias = slow*DynSlowMult*m, m=clamp(slow/fast,Lo,Hi): base is the SLOW EMA*DynSlowMult, fast enters
+					// only via m, which LIFTS the bias when fast<slow (up to Hi) and damps when fast>slow. Hi in [0.25,2.0] broad-optimal.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
 					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
 					if (BiasEmaRatio)
@@ -488,42 +445,12 @@ namespace StockOdds
 
 				// blend the dynamic and defensive skews (BiasBlend: 1=dynamic, 0=defensive)
 				double effBlend = BiasBlend;
-				if (BlendSlope && posFastBuf.Count > BlendSlopeBars && !double.IsNaN(posSlow))
-				{
-					double gPrev = posFastBuf[posFastBuf.Count - 1 - BlendSlopeBars];
-					double grade = posFast - gPrev;
-					if (grade < 0 && (!BlendSlopeGate || posFast > posSlow))
-						effBlend = Clamp(1.0 + BlendSlopeK * grade, BlendSlopeFloor, 1.0);
-				}
 				double blendedBiasEma = DynamicLongBias ? effBlend * biasEma + (1.0 - effBlend) * biasEmaFix : biasEma;
 				double adjEma = Math.Abs(ema) * blendedBiasEma + ema;
-				// Window-vs-norm timing modulation (see BiasTiming above): trims/adds at the margin.
-				if (BiasTiming && biasEma > 0.05)
-					adjEma *= Clamp(dynBias / biasEma, BiasTimingMin, BiasTimingMax);
-				// A long bias may neutralize a bearish EMA toward flat but not INVERT its sign
-				// into a net long (guards against biasEma > 1 flipping a bearish signal to long).
-				bool noInvertExit = false;
-				if (BiasNoInvert)
-				{
-					if (ema < 0 && adjEma > 0) { adjEma = 0; noInvertExit = true; }
-					else if (ema > 0 && adjEma < 0) { adjEma = 0; noInvertExit = true; }
-				}
-				// Normal drift-band rebalance — but when no-invert fires, bypass the band and snap
-				// held to the target (0) so a within-band residual can't keep us leaning the wrong
-				// way. held goes to 0 (not negative), so re-entry stays symmetric and every other
-				// bar's rebalance behaviour is unchanged.
-				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand || noInvertExit)
+				// Normal drift-band rebalance.
+				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
 				double posB = Clamp(held, minExp, maxExp);
-				// Track fast/slow EMAs of the FINAL position for BlendSlope (read one bar lagged above, so non-circular).
-				posFast = double.IsNaN(posFast) ? posB : aPF * posB + (1.0 - aPF) * posFast;
-				posSlow = double.IsNaN(posSlow) ? posB : aPS * posB + (1.0 - aPS) * posSlow;
-				posFastBuf.Add(posFast); if (posFastBuf.Count > BlendSlopeBars + 2) posFastBuf.RemoveAt(0);
-				if (FinalSmooth)
-				{
-					finalEma = double.IsNaN(finalEma) ? posB : aFS * posB + (1.0 - aFS) * finalEma;
-					return finalEma;
-				}
 				return posB;
 			}
 
@@ -540,6 +467,15 @@ namespace StockOdds
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
 				position = StepExposure(lt, st.Value);
+				if (BearRegimeMode != 0)
+				{
+					int ltb = lt == LongTermState.Bull ? 1 : 0;
+					int stb = st.Value == ShortTermState.Bull || st.Value == ShortTermState.BullNeutral ? 1 : 0;
+					regLtQ.Enqueue(ltb); regStQ.Enqueue(stb); regLtSum += ltb; regStSum += stb;
+					while (regLtQ.Count > RegimeWindow) { regLtSum -= regLtQ.Dequeue(); regStSum -= regStQ.Dequeue(); }
+					if (regLtQ.Count >= RegimeWindow && regLtSum < RegimeWindow * 0.5 && regStSum < RegimeWindow * 0.5)
+						position = BearRegimeMode == 1 ? 0.0 : 1.0;   // both ratios < 1: 1=cash, 2=hold(B&H)
+				}
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------

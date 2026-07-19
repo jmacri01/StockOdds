@@ -133,26 +133,15 @@ class Program
 			// BankrollSimulator.DynBase  = 1.0;   // LongBias at z = 0
 			// BankrollSimulator.DynDecay = 0.6;   // exponential steepness
 			// Bias-cap default (high-vol screening preset): DynMax raised so the slow-EMA*mult is the
-			// real ceiling. LongBias = MAX(MIN(fast EMA(10), slow EMA(150)*0.5), DynMin). Defensive tilt
+			// real ceiling. LongBias = MAX(MIN(fast EMA(10), slow EMA(150)), DynMin). Defensive tilt
 			// (captures runs, more bear-robust, gives up some bull-only Sharpe). Revert to the neutral
-			// baseline with DynMax=15, DynSmoothSlow=10, DynSlowMult=1.0.
+			// baseline with DynMax=15, DynSmoothSlow=10.
 			// BankrollSimulator.DynSmoothPeriod = 10;   // fast EMA of the per-candle bias
 			// BankrollSimulator.DynSmoothSlow   = 150;  // slow EMA (default); =DynSmoothPeriod to disable the min-cap
-			// BankrollSimulator.DynSlowMult     = 0.5;  // slow-EMA ceiling multiplier (default); 1.0 = no scaling
 			// BankrollSimulator.DynMax          = 150;  // raw-bias ceiling (default raised)
 			// BankrollSimulator.BiasBlend = 1.0; // 1 = pure dynamic (default), dial down toward 0 for defense
 			// BankrollSimulator.DefensiveBias = 0.5; // the blend's defensive-leg bias (LongBias has no effect when dynamic is on)
-			// BankrollSimulator.BiasNoInvert = true; // stop the bias flipping a bearish EMA into a net long when
-			//                                        // biasEma > 1 (it may trim to flat, not invert). Near-free on
-			//                                        // high-vol names; removes the leverage-into-a-crash tail risk.
-			// BankrollSimulator.BiasTiming = true;  // OFF by default: "level for direction, window for timing" — modulates
-			//                                       // the level skew by clamp(dynBias/biasEma, 0.75, 1.25): up when the recent
-			//                                       // window accelerates vs its norm, down when it decelerates. It's a WIN at the
-			//                                       // neutral config (uncapped bias — lifts big-winner compounds at equal drawdown),
-			//                                       // but at the shipped screening default (dynMax150/slow150/mult0.5) the ceiling
-			//                                       // already caps the bias so timing only trims and mildly de-levers the winners.
-			//                                       // Turn ON only when reverting to the neutral config (dynMax15/mult1.0).
-			// BankrollSimulator.BiasEmaRatio = false; // ON by default: effLongBias = (slow*mult)*clamp(slow/fast,0.25,2).
+			// BankrollSimulator.BiasEmaRatio = false; // ON by default: effLongBias = slow*clamp(slow/fast,0.25,2).
 			//                                         // Monotonic mean-reverting tilt: lifts the bias when the fast EMA dipped
 			//                                         // below the slow, damps when it spiked above; fast==slow = plain ceiling.
 			//                                         // Broad-500 + vs-B&H validated: closes most of the Sharpe gap to B&H and
@@ -161,20 +150,6 @@ class Program
 			//                                         // long tilt on BOTH LT dirs -> conviction persists through LT-Bear chop).
 			//                                         // Broad-500 validated: Sharpe up in every HV bucket (0.17->0.20, 63% of
 			//                                         // names), edges B&H on Sharpe (0.20 vs 0.19), ~flat DD. false = classic 1+bias/-1.
-			// BankrollSimulator.BlendSlope = false;  // ON by default (K=6, slow=120, bars=10, gated). Modulates the
-			//                                         // defensive/dynamic blend by the GRADE of the plotted-position momentum:
-			//                                         // when EMA12(position) is above EMA120(position) AND rolling over, pull the
-			//                                         // blend toward defensive proportional to the descent's steepness (a confirmed
-			//                                         // late-run top = empirically low forward return). Broad-500 OOS-neutral (no
-			//                                         // Sharpe cost anywhere); on volatile/trending names cuts drawdown and adds
-			//                                         // return (110: FW 0.48->0.50, DD 53->52%, ret 166->181%, OOS flat). Off = the
-			//                                         // fast-slow gate is essential; slope alone over-trims (turning it off restores
-			//                                         // the pre-BlendSlope behaviour). BlendSlopeK / BlendSlowPeriod / BlendSlopeBars tune it.
-			// BankrollSimulator.FinalSmooth = false; // ON by default (EMA5). EMA-smooths the FINAL plotted position (the last
-			//                                        // output) on top of the drift band — damps residual whipsaw/turnover.
-			//                                        // Broad-500 validated: raises OOS Sharpe 0.27->0.28 (the only change to lift
-			//                                        // broad OOS rather than tie) and trims ~1pt drawdown, giving up only marginal
-			//                                        // return. Keep FinalSmoothPeriod short (3-8); heavy smoothing over-lags.
 
 		//BankrollSimulator.BullBull = 1.0;
 		//BankrollSimulator.BullBullNeutral = 0.5;
