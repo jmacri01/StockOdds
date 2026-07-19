@@ -187,9 +187,10 @@ namespace StockOdds
 		public static bool   BiasSplit     = true;
 		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
 		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
-		// OUT-OF-REGION rule: when the LT-bull fraction (over RegimeWindowLt bars) < 50% AND the ST-bull fraction
-		// (over RegimeWindowSt bars) < 50% -- both bear-dominant -- the name is out of its edge regime. 1 = go to
-		// CASH (default -- rotate capital to an in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold.
+		// OUT-OF-REGION rule: a name is IN region only when BOTH ratios are bull-dominant -- LT-bull fraction
+		// (over RegimeWindowLt bars) >= 50% AND ST-bull fraction (over RegimeWindowSt bars) >= 50%. When EITHER
+		// falls below 50% the name is out of its edge regime. 1 = go to CASH (default -- rotate capital to an
+		// in-region name); 0 = keep deploying the strategy; 2 = mirror buy&hold.
 		// The windows are ASYMMETRIC: a slow LT window sets the bear-regime CONTEXT, a short ST window is the fast
 		// exit TRIGGER. LT=50/ST=10 validated on a fresh (disjoint) broad-500 OOS: Cash Sharpe 0.21 -> 0.26 vs 50/50,
 		// positive in every HV bucket below 100 (short trigger over-exits only in the thin, noisy HV>100 tail).
@@ -446,8 +447,8 @@ namespace StockOdds
 					regStQ.Enqueue(stb); regStSum += stb;
 					while (regStQ.Count > RegimeWindowSt) regStSum -= regStQ.Dequeue();
 					if (regLtQ.Count >= RegimeWindowLt && regStQ.Count >= RegimeWindowSt
-						&& regLtSum < RegimeWindowLt * 0.5 && regStSum < RegimeWindowSt * 0.5)
-						position = BearRegimeMode == 1 ? 0.0 : 1.0;   // both ratios < 1: 1=cash, 2=hold(B&H)
+						&& (regLtSum < RegimeWindowLt * 0.5 || regStSum < RegimeWindowSt * 0.5))
+						position = BearRegimeMode == 1 ? 0.0 : 1.0;   // out unless BOTH ratios >= 1: 1=cash, 2=hold(B&H)
 				}
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
