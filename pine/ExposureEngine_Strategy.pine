@@ -93,11 +93,7 @@ persRefStd  = input.float(0.010, "Persistence ref std",  group = grpDyn)
 // -- Out-of-region rule (mirrors BankrollSimulator.BearRegimeMode)
 grpRegime = "Out-of-region rule"
 bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "Hold (buy & hold)", "Deploy strategy"], group = grpRegime,
-     tooltip = "When EITHER the trailing LT-Bull fraction OR the ST-bullish fraction over their respective windows is < 50% (i.e. the name is NOT in its bull-dominant region -- both must be >= 50% to be in region): Cash = flatten to 0 (default — rotate capital to an in-region name); Hold = force exposure 1 (mirror buy & hold); Deploy = keep running the strategy.")
-regimeWindowLt = input.int(50, "Regime window — LT (slow context)", minval = 2, group = grpRegime,
-     tooltip = "Trailing window for the LT-Bull fraction — the slow 'are we in a bear regime' context.")
-regimeWindowSt = input.int(10, "Regime window — ST (fast trigger)", minval = 2, group = grpRegime,
-     tooltip = "Trailing window for the ST-bullish fraction — the short exit trigger. Asymmetric LT=50 / ST=10 validated to beat a single 50/50 window on out-of-sample Cash-mode Sharpe (0.21 -> 0.26).")
+     tooltip = "When the raw exposure signal is bearish -- the EMA of the (LT,ST) target exposure (before the bias skew) is < 0: Cash = flatten to 0 (default — rotate capital to an in-region name); Hold = force exposure 1 (mirror buy & hold); Deploy = keep running the strategy.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -259,17 +255,12 @@ loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 
-// OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): over the trailing LT / ST windows
-// (asymmetric: slow LT context, short ST trigger), take the LT-Bull and ST-bullish (Bull/BullNeutral) fractions. A name is IN
-// region only when BOTH are bull-dominant (>= 50%); when EITHER falls below, it is out -> Cash (0, default), Hold (force 1), or
-// keep deploying. regimeMode: 1 = Cash, 2 = Hold, 0 = Deploy.
+// OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
+// bearish -- the EMA of the (LT,ST) target (emaExp, before the bias skew) is < 0. Parameter-free.
+// regimeMode: 1 = Cash (flat), 2 = Hold (full long), 0 = Deploy (keep strategy).
 regimeMode  = bearRegimeMode == "Cash" ? 1 : bearRegimeMode == "Hold (buy & hold)" ? 2 : 0
-ltBullBar   = ltState == 1 ? 1 : 0
-stBullBar   = (not na(stState) and (stState == 3 or stState == 2)) ? 1 : 0
-regLtSum    = math.sum(ltBullBar, regimeWindowLt)
-regStSum    = math.sum(stBullBar, regimeWindowSt)
-inRegion    = bar_index >= math.max(regimeWindowLt, regimeWindowSt) and regLtSum >= regimeWindowLt * 0.5 and regStSum >= regimeWindowSt * 0.5
-outOfRegion = regimeMode != 0 and bar_index >= math.max(regimeWindowLt, regimeWindowSt) and not inRegion
+inRegion    = na(emaExp) or emaExp >= 0
+outOfRegion = regimeMode != 0 and not na(emaExp) and emaExp < 0
 position = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : posClamped)
 
 // =============================================================================
