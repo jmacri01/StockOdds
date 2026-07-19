@@ -56,8 +56,6 @@ emaPeriod = input.int(24, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
 biasPeriod = input.int(15, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
-longBias  = input.float(0.5, "Long bias (amplify)", step = 0.05, group = grpSmooth,
-     tooltip = "Skews the weight of a Bull candle in the dynamic bias to (Long bias + 1); a Bear candle stays -1. dynBias = sum(LT dir, Bias period) / Bias period; adjEMA = |EMA|*dynBias + EMA. 0 = symmetric (+1/-1). Unclamped.")
 biasEmaPeriod = input.int(150, "Bias EMA period", minval = 1, group = grpSmooth,
      tooltip = "The dynamic bias is smoothed by this EMA before it skews the exposure EMA.")
 driftPct  = input.float(30, "Rebalance drift (%)", minval = 0, step = 1, group = grpSmooth,
@@ -69,8 +67,6 @@ maxExpPct = input.float(100,  "Max exposure (%)", minval = -100, maxval = 100, s
 
 // -- Dynamic (per-candle) long bias: scale LongBias by z = z(HV) + z(persistence)
 grpDyn = "Dynamic long bias"
-useDynLB = input.bool(true, "Use dynamic long bias", group = grpDyn,
-     tooltip = "Off = fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet names (z<0) get a LARGE bias, hot high-vol/high-persistence names (z>0) get a SMALL bias.")
 dynBase  = input.float(1.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
 dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
@@ -227,8 +223,8 @@ var float dynLbEma = na
 dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
 var float dynLbEmaSlow = na
 dynLbEmaSlow := na(dynLbEmaSlow) ? dynLBc : (2.0 / (dynSmoothSlow + 1)) * dynLBc + (1 - 2.0 / (dynSmoothSlow + 1)) * dynLbEmaSlow
-effLongBias = useDynLB ? math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin) : longBias
-effLongBias := (useDynLB and biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
+effLongBias = math.max(math.min(dynLbEma, dynLbEmaSlow * dynSlowMult), dynMin)
+effLongBias := (biasEmaRatio and dynLbEma > 1e-6) ? math.max(dynLbEmaSlow * dynSlowMult * math.min(math.max(dynLbEmaSlow / dynLbEma, biasRatioLo), biasRatioHi), dynMin) : effLongBias
 
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
@@ -354,4 +350,4 @@ plot(emaExp,      "DBG EMA",       display = display.data_window)
 plot(adjEma,      "DBG Adj EMA",   display = display.data_window)
 plot(position,    "DBG Exposure",  display = display.data_window)
 plot(effLongBias, "DBG Dyn LongBias",  display = display.data_window)
-plot(useDynLB ? zTrait : na, "DBG z (HV+persist)", display = display.data_window)
+plot(zTrait, "DBG z (HV+persist)", display = display.data_window)

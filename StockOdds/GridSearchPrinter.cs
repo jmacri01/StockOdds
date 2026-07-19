@@ -14,13 +14,13 @@ namespace StockOdds
 			Console.WriteLine($"Combinations evaluated : {results.Count}");
 			Console.WriteLine();
 			Console.WriteLine(
-				$"{"EMA",4} {"BiasP",6} {"LBias",6} {"BiasEMA",8} {"Drift%",7} " +
+				$"{"EMA",4} {"BiasP",6} {"BiasEMA",8} {"Drift%",7} " +
 				$"{"Sharpe",8} {"Return%",10} {"MaxDD%",9}");
 
 			foreach (var p in results.Take(top))
 			{
 				Console.WriteLine(
-					$"{p.ExposureEmaPeriod,4} {p.BiasPeriod,6} {p.LongBias,6:0.##} {p.BiasEmaPeriod,8} " +
+					$"{p.ExposureEmaPeriod,4} {p.BiasPeriod,6} {p.BiasEmaPeriod,8} " +
 					$"{p.RebalanceDriftPercent,7:0.#} {p.Sharpe,8:0.000} {Signed(p.TotalReturnPct),10} " +
 					$"-{p.MaxDrawdownPct,7:0.00}%");
 			}
@@ -32,7 +32,6 @@ namespace StockOdds
 				Console.WriteLine("Best (paste into Program.cs):");
 				Console.WriteLine($"  BankrollSimulator.ExposureEmaPeriod     = {best.ExposureEmaPeriod};");
 				Console.WriteLine($"  BankrollSimulator.BiasPeriod            = {best.BiasPeriod};");
-				Console.WriteLine($"  BankrollSimulator.LongBias              = {best.LongBias};");
 				Console.WriteLine($"  BankrollSimulator.BiasEmaPeriod         = {best.BiasEmaPeriod};");
 				Console.WriteLine($"  BankrollSimulator.RebalanceDriftPercent = {best.RebalanceDriftPercent};");
 			}
@@ -50,13 +49,13 @@ namespace StockOdds
 			Console.WriteLine($"Combinations evaluated : {results.Count}");
 			Console.WriteLine();
 			Console.WriteLine(
-				$"{"EMA",4} {"BiasP",6} {"LBias",6} {"BiasEMA",8} {"Drift%",7} " +
+				$"{"EMA",4} {"BiasP",6} {"BiasEMA",8} {"Drift%",7} " +
 				$"{"MeanShp",8} {"MinShp",8} {"MeanRet%",10} {"MeanDD%",9}");
 
 			foreach (var p in results.Take(top))
 			{
 				Console.WriteLine(
-					$"{p.ExposureEmaPeriod,4} {p.BiasPeriod,6} {p.LongBias,6:0.##} {p.BiasEmaPeriod,8} " +
+					$"{p.ExposureEmaPeriod,4} {p.BiasPeriod,6} {p.BiasEmaPeriod,8} " +
 					$"{p.RebalanceDriftPercent,7:0.#} {p.MeanSharpe,8:0.000} {p.MinSharpe,8:0.000} " +
 					$"{Signed(p.MeanReturnPct),10} -{p.MeanMaxDrawdownPct,7:0.00}%");
 			}
@@ -76,7 +75,6 @@ namespace StockOdds
 				Console.WriteLine("Best (paste into Program.cs):");
 				Console.WriteLine($"  BankrollSimulator.ExposureEmaPeriod     = {best.ExposureEmaPeriod};");
 				Console.WriteLine($"  BankrollSimulator.BiasPeriod            = {best.BiasPeriod};");
-				Console.WriteLine($"  BankrollSimulator.LongBias              = {best.LongBias};");
 				Console.WriteLine($"  BankrollSimulator.BiasEmaPeriod         = {best.BiasEmaPeriod};");
 				Console.WriteLine($"  BankrollSimulator.RebalanceDriftPercent = {best.RebalanceDriftPercent};");
 			}
@@ -93,14 +91,14 @@ namespace StockOdds
 			Console.WriteLine();
 			Console.WriteLine(
 				$"{"Symbol",-8} {"HV%",7} {"Bars",5}   " +
-				$"{"EMA",5} {"BiasP",6} {"LBias",6} {"BiasEMA",8} {"Drift%",7} " +
+				$"{"EMA",5} {"BiasP",6} {"BiasEMA",8} {"Drift%",7} " +
 				$"{"TopShp",7} {"RegRet%",10} {"RegDD%",9}");
 
 			foreach (var o in optima)
 			{
 				Console.WriteLine(
 					$"{o.Symbol,-8} {o.HistoricalVolatilityPct,7:0.0} {o.Bars,5}   " +
-					$"{o.EmaPeriod,5:0.0} {o.BiasPeriod,6:0.0} {o.LongBias,6:0.##} {o.BiasEmaPeriod,8:0.0} " +
+					$"{o.EmaPeriod,5:0.0} {o.BiasPeriod,6:0.0} {o.BiasEmaPeriod,8:0.0} " +
 					$"{o.DriftPercent,7:0.0} {o.TopSharpe,7:0.00} {Signed(o.MeanRegionReturnPct),10} " +
 					$"-{o.MeanRegionMaxDdPct,7:0.00}%");
 			}
@@ -113,7 +111,6 @@ namespace StockOdds
 				Console.WriteLine("Correlation of HV vs. optimal knob (Pearson r, -1..+1):");
 				Console.WriteLine($"  EMA period   : {Corr(hv, optima.Select(o => o.EmaPeriod)):+0.000;-0.000}");
 				Console.WriteLine($"  Bias period  : {Corr(hv, optima.Select(o => o.BiasPeriod)):+0.000;-0.000}");
-				Console.WriteLine($"  Long bias    : {Corr(hv, optima.Select(o => o.LongBias)):+0.000;-0.000}");
 				Console.WriteLine($"  Bias EMA     : {Corr(hv, optima.Select(o => o.BiasEmaPeriod)):+0.000;-0.000}");
 				Console.WriteLine($"  Drift %      : {Corr(hv, optima.Select(o => o.DriftPercent)):+0.000;-0.000}");
 				Console.WriteLine("(r near +1 => that knob rises with volatility; near 0 => no linear relationship.)");
@@ -149,7 +146,7 @@ namespace StockOdds
 			if (gd != null)
 				Console.WriteLine(
 					$"Global default (best mean train Sharpe): EMA={gd.ExposureEmaPeriod} " +
-					$"BiasP={gd.BiasPeriod} LBias={gd.LongBias:0.##} BiasEMA={gd.BiasEmaPeriod} " +
+					$"BiasP={gd.BiasPeriod} BiasEMA={gd.BiasEmaPeriod} " +
 					$"Drift={gd.RebalanceDriftPercent:0.#}%");
 			Console.WriteLine();
 			Console.WriteLine(
@@ -199,7 +196,7 @@ namespace StockOdds
 
 			Console.WriteLine(
 				$"{"Fold",4} {"Test window",23} {"Sym",4}   " +
-				$"{"EMA",4} {"BiasP",6} {"LBias",6} {"BiasEMA",8} {"Drift%",7}   " +
+				$"{"EMA",4} {"BiasP",6} {"BiasEMA",8} {"Drift%",7}   " +
 				$"{"MeanShp",8} {"MedShp",7} {"Ret%",9} {"%Pos",6}");
 
 			foreach (var f in folds)
@@ -207,7 +204,7 @@ namespace StockOdds
 				string window = $"{f.TestStart:yyyy-MM-dd}..{f.TestEnd:yyyy-MM-dd}";
 				Console.WriteLine(
 					$"{f.Index,4} {window,23} {f.Symbols,4}   " +
-					$"{f.Ema,4} {f.BiasP,6} {f.LongBias,6:0.##} {f.BiasEma,8} {f.Drift,7:0.#}   " +
+					$"{f.Ema,4} {f.BiasP,6} {f.BiasEma,8} {f.Drift,7:0.#}   " +
 					$"{f.MeanTestSharpe,8:0.00} {f.MedianTestSharpe,7:0.00} {Signed(f.MeanTestReturnPct),9} " +
 					$"{f.PctPositive * 100.0,5:0.}%");
 			}
@@ -385,7 +382,7 @@ namespace StockOdds
 				return;
 			}
 			Console.WriteLine();
-			Console.WriteLine($"Current knobs : EMA={r.Ema} BiasP={r.BiasP} LBias={r.LongBias:0.##} " +
+			Console.WriteLine($"Current knobs : EMA={r.Ema} BiasP={r.BiasP} " +
 			                  $"BiasEMA={r.BiasEma} Drift={r.Drift:0.#}%");
 			Console.WriteLine();
 			Console.WriteLine($"{"",-26} {"MeanSharpe",11}");
@@ -398,7 +395,7 @@ namespace StockOdds
 			                  $"=> {r.Percentile:0.}th percentile");
 			if (r.Best != null)
 				Console.WriteLine($"Grid-best knobs (overfit) : EMA={r.Best.ExposureEmaPeriod} BiasP={r.Best.BiasPeriod} " +
-				                  $"LBias={r.Best.LongBias:0.##} BiasEMA={r.Best.BiasEmaPeriod} Drift={r.Best.RebalanceDriftPercent:0.#}%");
+				                  $"BiasEMA={r.Best.BiasEmaPeriod} Drift={r.Best.RebalanceDriftPercent:0.#}%");
 
 			double headroom = r.BestMeanSharpe - r.CurrentMeanSharpe;
 			Console.WriteLine();
