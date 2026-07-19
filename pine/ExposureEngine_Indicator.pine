@@ -85,33 +85,10 @@ useDynLB = input.bool(true, "Use dynamic long bias", group = grpDyn,
      tooltip = "Off = use the fixed 'Long bias' above. On = recompute LongBias every candle from z = z(HV) + z(persistence): quiet/steady names (z<0) get a LARGE bias (lean long); hot high-vol/high-persistence names (z>0) get a SMALL bias.")
 showDynLB = input.bool(false, "Plot dynamic long bias line", group = grpDyn,
      tooltip = "Plots the per-candle LongBias. It is on a 0..max scale, not -1..1, so it rescales this pane — turn off the exposure/EMA lines to view it cleanly. It is always in the Data Window and the table regardless.")
-dynScaleMode = input.string("Exponential", "Scale shape", options = ["Exponential", "Linear"], group = grpDyn,
-     tooltip = "Linear: LongBias = Base + Slope * z. Exponential: LongBias = Base * exp(-Decay * z) (never < 0, saturates).")
 dynBase  = input.float(1.0,  "LongBias at z = 0 (Base)", step = 0.5, group = grpDyn)
 dynDecay = input.float(0.6,  "Exp decay (Exponential only)", step = 0.05, group = grpDyn)
-dynSlope = input.float(-1.28,"Linear slope (Linear only)", step = 0.05, group = grpDyn)
 dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
 dynMax   = input.float(150.0, "LongBias max", step = 0.5, group = grpDyn)
-biasBlend = input.float(1.0, "Defensive/dynamic blend", minval = 0, maxval = 1, step = 0.05, group = grpDyn,
-     tooltip = "Blend of two exposure skews: 1 = pure dynamic bias, 0 = pure fixed 'Long bias' (defensive). Defensive halves drawdown but lags the rockets; dynamic captures them but gives up protection.")
-defensiveBias = input.float(0.5, "Defensive-leg bias", step = 0.05, group = grpDyn,
-     tooltip = "Fixed bias for the blend's defensive leg — independent of 'Long bias', which only applies when dynamic is off.")
-blendSlope = input.bool(true, "Blend-slope modulation", group = grpDyn,
-     tooltip = "Pull the blend toward defensive when EMA12 of the plotted position is above EMA120 AND rolling over (a confirmed late-run top = empirically low forward return), proportional to how steep the descent is. Gentle: mild rollovers barely change it. Cuts drawdown / adds return on volatile names; a no-op on quiet ones.")
-blendSlowPeriod = input.int(120, "Blend-slope slow EMA", minval = 20, group = grpDyn)
-blendSlopeBars  = input.int(10,  "Blend-slope lookback", minval = 2, group = grpDyn)
-blendSlopeK     = input.float(6.0, "Blend-slope sensitivity", minval = 0, step = 0.5, group = grpDyn)
-blendSlopeFloor = input.float(0.0, "Blend-slope floor", minval = 0, maxval = 1, step = 0.05, group = grpDyn)
-blendSlopeGate  = input.bool(true, "Blend-slope gate (fast>slow)", group = grpDyn)
-finalSmooth       = input.bool(true, "Smooth final exposure", group = grpDyn,
-     tooltip = "EMA-smooth the final plotted position (the blue line) on top of the drift band, to damp residual whipsaw. Broad-500 validated: raises OOS Sharpe and trims drawdown, giving up only marginal return. Keep the period short (3–8); heavy smoothing over-lags.")
-finalSmoothPeriod = input.int(3, "Final-smooth EMA", minval = 2, group = grpDyn)
-biasNoInvert = input.bool(false, "Bias can't invert signal", group = grpDyn,
-     tooltip = "adjEMA = |EMA|*bias + EMA inverts a bearish EMA into a growing LONG when bias > 1 (which the dynamic bias reaches). On: the bias may trim a bearish EMA to flat (0) but never flip it long (and vice-versa). Bullish bars are unchanged. Near-free on high-vol names; removes the leverage-into-a-crash tail risk.")
-biasTiming = input.bool(false, "Timing modulation (window vs norm)", group = grpDyn,
-     tooltip = "Level for direction, window for timing. The bias level (biasEMA) sets how bullish; then exposure is nudged by the latest window vs its norm: * clamp(dynBias/biasEMA, min, max). >1 accelerating -> up, <1 decelerating -> down. Tight band only trims/adds at the margin; it never de-levers a real trend (its skew clamps to max anyway). DEFAULT OFF: at the shipped screening default (dynMax150/slow150/mult0.5) the ceiling already caps the bias, so timing only trims and mildly de-levers the winners. Turn ON if you revert to the neutral config (dynMax15/mult1.0), where it lifts the big-winner compounds at equal drawdown.")
-timingMin = input.float(0.75, "Timing min", step = 0.05, group = grpDyn)
-timingMax = input.float(1.25, "Timing max", step = 0.05, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
 dynSmoothSlow = input.int(150, "Bias smoothing SLOW (min-cap)", minval = 1, group = grpDyn,
@@ -130,6 +107,13 @@ hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn, toolti
 hvRefStd    = input.float(34.6,   "HV ref std",           group = grpDyn)
 persRefMean = input.float(0.072, "Persistence ref mean", group = grpDyn)
 persRefStd  = input.float(0.010, "Persistence ref std",  group = grpDyn)
+
+// -- Out-of-region rule (mirrors BankrollSimulator.BearRegimeMode)
+grpRegime = "Out-of-region rule"
+bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "Hold (buy & hold)", "Deploy strategy"], group = grpRegime,
+     tooltip = "When BOTH the trailing LT-Bull fraction AND the ST-bullish fraction over the regime window are < 50% (the name is out of its bull-dominant edge regime): Cash = flatten to 0 (default — rotate capital to an in-region name); Hold = force exposure 1 (mirror buy & hold); Deploy = keep running the strategy.")
+regimeWindow = input.int(50, "Regime window (bars)", minval = 2, group = grpRegime,
+     tooltip = "Trailing window over which the LT-Bull and ST-bullish fractions are measured for the out-of-region rule.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -265,7 +249,7 @@ pathLen = math.sum(math.abs(target - target[1]), persistWindow)
 er      = pathLen > 1e-9 ? math.min(1.0, netMove / pathLen) : 1.0
 zP      = not na(target[persistWindow]) and persRefStd > 0 ? (er - persRefMean) / persRefStd : 0.0
 zTrait  = zHv + zP
-dynLBraw = dynScaleMode == "Exponential" ? dynBase * math.exp(-dynDecay * zTrait) : dynBase + dynSlope * zTrait
+dynLBraw = dynBase * math.exp(-dynDecay * zTrait)
 dynLBc  = math.min(math.max(dynLBraw, dynMin), dynMax)
 var float dynLbEma = na
 dynLbEma := na(dynLbEma) ? dynLBc : (2.0 / (dynSmooth + 1)) * dynLBc + (1 - 2.0 / (dynSmooth + 1)) * dynLbEma
@@ -292,52 +276,30 @@ dynBias = biasSum / biasPeriod
 biasAlpha = 2.0 / (biasEmaPeriod + 1)
 var float dynBiasEma = na
 dynBiasEma := na(dynBiasEma) ? dynBias : biasAlpha * dynBias + (1 - biasAlpha) * dynBiasEma
-// DEFENSIVE leg: same sliding sum + EMA on the fixed longBias, then blend the two skews
-biasSigFix = ltState == 1 ? (defensiveBias + 1) : ltState == 0 ? -1 : 0
-var float biasSumFix = 0.0
-biasSumFix += biasSigFix
-if bar_index >= biasPeriod
-    biasSumFix -= biasSigFix[biasPeriod]
-dynBiasFix = biasSumFix / biasPeriod
-var float dynBiasEmaFix = na
-dynBiasEmaFix := na(dynBiasEmaFix) ? dynBiasFix : biasAlpha * dynBiasFix + (1 - biasAlpha) * dynBiasEmaFix
-// BlendSlope: fast/slow EMAs of the FINAL plotted position, updated at bar end (below) so here they hold
-// through the prior bar — non-circular. Steeper rollover of the fast EMA (while above slow) pulls the blend defensive.
-var float posFast = na
-var float posSlow = na
-effBlend = biasBlend
-if blendSlope and not na(posSlow) and not na(posFast[blendSlopeBars])
-    grade = posFast - posFast[blendSlopeBars]
-    if grade < 0 and (not blendSlopeGate or posFast > posSlow)
-        effBlend := math.min(math.max(1.0 + blendSlopeK * grade, blendSlopeFloor), 1.0)
-blendedBiasEma = useDynLB ? effBlend * dynBiasEma + (1 - effBlend) * dynBiasEmaFix : dynBiasEma
-adjBase = na(emaExp) ? na : math.abs(emaExp) * blendedBiasEma + emaExp
-// Timing: level for direction, window for timing — modulate by the latest window vs its norm.
-adjRaw  = (biasTiming and not na(adjBase) and dynBiasEma > 0.05) ? adjBase * math.min(math.max(dynBias / dynBiasEma, timingMin), timingMax) : adjBase
-// No-invert guard: a long bias may trim a bearish EMA to flat but not flip its sign into a net long.
-noInvertExit = biasNoInvert and not na(adjRaw) and ((emaExp < 0 and adjRaw > 0) or (emaExp > 0 and adjRaw < 0))
-adjEma  = noInvertExit ? 0.0 : adjRaw
+// long-bias skew of the EMA: adjEma = |ema| * biasEma + ema  (mirrors C# BankrollSimulator)
+adjEma = na(emaExp) ? na : math.abs(emaExp) * dynBiasEma + emaExp
 
 driftBand = driftPct / 100.0
 var float held = na
-// Normal drift-band rebalance — but when no-invert fires, bypass the band and snap held flat (0)
-// for a decisive exit; every other bar's rebalance is unchanged.
-if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand or noInvertExit)
+// Normal drift-band rebalance.
+if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
     held := adjEma
 
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
-posRaw = na(held) ? na : math.min(math.max(held, loExp), hiExp)
-// BlendSlope: update the position EMAs with the drift-band position (read one bar lagged in the blend above)
-aPFbs = 2.0 / (12 + 1)
-aPSbs = 2.0 / (blendSlowPeriod + 1)
-posFast := na(posRaw) ? posFast : na(posFast) ? posRaw : aPFbs * posRaw + (1 - aPFbs) * posFast
-posSlow := na(posRaw) ? posSlow : na(posSlow) ? posRaw : aPSbs * posRaw + (1 - aPSbs) * posSlow
-// FinalSmooth: EMA the final output (the blue line), on top of the drift band
-var float posFinalEma = na
-aFS = 2.0 / (finalSmoothPeriod + 1)
-posFinalEma := na(posRaw) ? posFinalEma : na(posFinalEma) ? posRaw : aFS * posRaw + (1 - aFS) * posFinalEma
-position = finalSmooth ? posFinalEma : posRaw
+posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
+
+// OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): over the trailing regimeWindow
+// bars, take the LT-Bull fraction and the ST-bullish (Bull/BullNeutral) fraction. When BOTH are
+// bull-dominant < 50%, the name is out of its edge regime -> Cash (0, default), Hold (force 1), or
+// keep deploying. regimeMode: 1 = Cash, 2 = Hold, 0 = Deploy.
+regimeMode  = bearRegimeMode == "Cash" ? 1 : bearRegimeMode == "Hold (buy & hold)" ? 2 : 0
+ltBullBar   = ltState == 1 ? 1 : 0
+stBullBar   = (not na(stState) and (stState == 3 or stState == 2)) ? 1 : 0
+regLtSum    = math.sum(ltBullBar, regimeWindow)
+regStSum    = math.sum(stBullBar, regimeWindow)
+outOfRegion = regimeMode != 0 and bar_index >= regimeWindow and regLtSum < regimeWindow * 0.5 and regStSum < regimeWindow * 0.5
+position = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : posClamped)
 
 // =============================================================================
 // 6. NAME HELPERS
