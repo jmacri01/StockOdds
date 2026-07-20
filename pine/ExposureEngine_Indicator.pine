@@ -37,8 +37,6 @@ showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 grpExp = "Exposure pane"
 showExposure = input.bool(true,  "Show exposure (position) line",  group = grpExp)
 showEma      = input.bool(true,  "Show exposure EMA line",         group = grpExp)
-showAdjRsi   = input.bool(true,  "Show adj EMA × RSI overlay",     group = grpExp,
-     tooltip = "Plots the bias-adjusted EMA after the RSI mean-reversion overlay (adjEma × 50/RSI) — where the RSI scaling pushes the exposure driver. Matches the position line's RSI behaviour; only meaningful when RSI overlay period > 0.")
 showBand     = input.bool(false, "Show rebalance band (EMA ± drift)", group = grpExp)
 showStValue  = input.bool(false, "Show ST-value stepline",         group = grpExp)
 showGuides   = input.bool(false, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
@@ -357,13 +355,6 @@ fill(pUp, pDn, color = color.new(#2962FF, 90), title = "Rebalance band")
 plot(showEma ? emaExp : na, "EMA (raw)",      color = color.new(#2962FF, 65), linewidth = 1)
 plot(showEma ? adjEma : na, "EMA (adj bias)", color = #2962FF, linewidth = 2)
 
-// adjusted EMA AFTER the RSI overlay, as actually traded: clamp(adjEma) then × 50/RSI then clamp
-// (RSI acts post-clamp in the engine, so we clamp adjEma FIRST — this line matches the position in-region).
-rsiMultV      = (rsiOverlayPeriod > 0 and not na(rsiVal) and rsiVal > 0) ? 50.0 / rsiVal : 1.0
-adjEmaClamped = na(adjEma) ? na : math.min(math.max(adjEma, loExp), hiExp)
-adjEmaRsi     = na(adjEmaClamped) ? na : math.min(math.max(adjEmaClamped * rsiMultV, loExp), hiExp)
-plot(showAdjRsi ? adjEmaRsi : na, "EMA (adj + RSI)", color = #E040FB, linewidth = 2)
-
 // per-candle dynamic long bias (own 0..max scale — rescales the pane when shown)
 plot(showDynLB ? effLongBias : na, "Dyn LongBias", color = #FF6D00, linewidth = 2, style = plot.style_stepline)
 
@@ -376,7 +367,7 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+var table tbl = table.new(position.top_right, 2, 12, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -386,23 +377,25 @@ if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
     posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
-    bandTxt = na(adjEma) ? "—" : str.tostring(adjEma - driftBand, "#.##") + " – " + str.tostring(adjEma + driftBand, "#.##")
+    // Exposure as the rebalance-drift range: clamp(adjEma ± drift) — the zone the position holds inside
+    // without rebalancing. Out of region, the rule forces a single value (0 cash / 1 hold), so show that.
+    expLo = str.tostring(math.min(math.max(adjEma - driftBand, loExp), hiExp), "#.##")
+    expHi = str.tostring(math.min(math.max(adjEma + driftBand, loExp), hiExp), "#.##")
+    expTxt = na(adjEma) ? "—" : outOfRegion ? str.tostring(position, "#.##") : expLo + " – " + expHi
     f_row(0,  "LT State",    f_ltName(ltState), ltCol)
     f_row(1,  "ST State",    f_stName(stState), stCol)
     f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
     f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
-    adjEmaTxt = na(adjEma) ? "—" : str.tostring(adjEma, "#.##") + (rsiOverlayPeriod > 0 and not na(adjEmaRsi) ? "  (×RSI " + str.tostring(adjEmaRsi, "#.##") + ")" : "")
-    f_row(4,  "Adj EMA",     adjEmaTxt,  color.white)
-    f_row(5,  "Target",      bandTxt, color.white)
-    f_row(6,  "Exposure",    na(position) ? "—" : str.tostring(position, "#.##"), posCol)
-    f_row(7,  "Bull Count",  str.tostring(ltBullCount), color.white)
-    f_row(8,  "Bear Count",  str.tostring(ltBearCount), color.white)
-    f_row(9,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
-    f_row(10, "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
-    f_row(11, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
+    f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
+    f_row(5,  "Exposure",    expTxt, posCol)
+    f_row(6,  "Bull Count",  str.tostring(ltBullCount), color.white)
+    f_row(7,  "Bear Count",  str.tostring(ltBearCount), color.white)
+    f_row(8,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
+    f_row(9,  "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
+    f_row(10, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
     regionTxt = inRegion ? "IN region" : (regimeMode == 1 ? "OUT -> cash" : regimeMode == 2 ? "OUT -> hold" : "OUT (deploy)")
     regionCol = inRegion ? colBull : colBear
-    f_row(12, "Region", regionTxt, regionCol)
+    f_row(11, "Region", regionTxt, regionCol)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
@@ -424,5 +417,4 @@ plot(showDebug ? dynBiasEma  : na, "DBG Dyn Bias EMA", display = display.data_wi
 plot(effLongBias, "DBG Dyn LongBias", display = display.data_window)
 plot(zTrait, "DBG z (HV+persist)", display = display.data_window)
 plot(showDebug ? adjEma      : na, "DBG Adj EMA",   display = display.data_window)
-plot(showDebug ? adjEmaRsi   : na, "DBG Adj EMA×RSI", display = display.data_window)
 plot(showDebug ? position    : na, "DBG Exposure",  display = display.data_window)
