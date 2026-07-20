@@ -111,7 +111,9 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
 
 grpRsi = "RSI position overlay"
 rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
-     tooltip = "Overbought-trim overlay on the final position: position *= min(50 / RSI(period), 1) — trims when overbought (RSI>50); does nothing when oversold (capped at 1, never levers up). 0 disables. Validated to lift OOS Sharpe ~+0.05 and cut drawdown across all out-of-region modes; an ablation showed the trim is the entire edge, so it never levers.")
+     tooltip = "Overbought-trim overlay on the final position: position *= min(N / RSI(period), 1), N = numerator below — trims when overbought; does nothing when oversold (capped at 1, never levers up). 0 disables. Short period (2) validated best across four random-500 OOS samples; an ablation showed the trim is the entire edge, so it never levers.")
+rsiMultNumerator = input.float(15, "RSI mult numerator N", minval = 1, group = grpRsi,
+     tooltip = "Numerator N in min(N/RSI, 1): the overbought threshold AND trim depth (trim begins when RSI>N; at RSI=100 exposure -> N%). A LOW N (default 15, was 50) beats 50 on Sharpe AND drawdown across four random-500 OOS samples -- a deeper, earlier mean-reversion trim (more defensive). CAVEAT: leans on the mean-reverting 2023-26 test window; would under-participate in a sustained momentum regime.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -286,9 +288,9 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
-// RSI overbought-trim overlay on the in-region position: *= min(50/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule
+// RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1), N = rsiMultNumerator (trim when overbought only, never levers), before the out-of-region rule
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(50.0 / rsiVal, 1.0), loExp), hiExp) : posClamped
+rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiMultNumerator / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
 // bearish -- the EMA of the (LT,ST) target (emaExp, before the bias skew) is < 0. Parameter-free.

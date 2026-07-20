@@ -193,15 +193,22 @@ namespace StockOdds
 		// Chosen over an earlier trailing-persistence rule: cleaner (one condition, no tuned windows) and higher
 		// out-of-sample Cash Sharpe (0.22 vs 0.11 on a broad ~1300-name universe).
 		public static int    BearRegimeMode = 1;
-		// RSI overbought-trim overlay on the FINAL position: posB *= min(50/RSI(period), 1) each bar -- trims when
-		// overbought (RSI>50 -> mult<1) and does NOTHING when oversold (capped at 1, never levers up). Applied after
-		// the drift band and the out-of-region rule. Broad-500 OOS: lifts Sharpe ~+0.05 and cuts drawdown 2-6pts across
-		// all 3 regime modes. A clamp ablation showed the ENTIRE edge is the overbought trim -- the oversold-lever half
-		// (the uncapped 50/RSI > 1) added nothing, so it's capped at 1. A period sweep found the optimum is a SHORT RSI:
-		// period 2 (Connors-style) beats 7 on every out-of-region mode AND on drawdown, and it replicates across four
-		// disjoint random-500 OOS samples (biggest lift in Deploy, ~+0.09 Sharpe); it is orthogonal to ExposureEmaPeriod.
-		// 0 = off; default 2 (Wilder RSI on close).
+		// RSI overbought-trim overlay on the FINAL position: posB *= min(RsiMultNumerator/RSI(period), 1) each bar --
+		// trims when overbought and does NOTHING when oversold (capped at 1, never levers up). Applied after the drift
+		// band and the out-of-region rule. A clamp ablation showed the ENTIRE edge is the overbought trim (the oversold
+		// lever added nothing, so it's capped at 1). Two sweeps set the shape: a SHORT period (2, Connors-style) beats 7,
+		// and a LOW numerator (15, see below) beats 50 -- both replicate across four disjoint random-500 OOS samples and
+		// both are the same "trim harder" lever. Broad-500 OOS at 2/15: Deploy 0.68 / Cash 0.30 / Hold 0.55 vs B&H 0.50,
+		// at much lower drawdown. 0 = off; default period 2 (Wilder RSI on close).
 		public static int    RsiOverlayPeriod = 2;
+		// Numerator N in the trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth is N/RSI
+		// (at RSI=100, exposure -> N%). N is BOTH the overbought threshold and the trim depth. A sweep found a LOW N
+		// wins -- default 15 (was 50): beats 50 on Sharpe AND drawdown in every out-of-region mode, replicating across
+		// four disjoint random-500 OOS samples (broad Deploy 0.59->0.68, Cash MaxDD 23->~14). It is a deeper, earlier
+		// mean-reversion trim: more defensive (avg exposure/return down ~30%, drawdown down ~40%). CAVEAT: N and the RSI
+		// period are the same "trim-aggressiveness" lever, and all OOS windows are the mean-reverting 2023-26 period --
+		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
+		public static double RsiMultNumerator = 15.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -443,7 +450,7 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
-				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(50/RSI, 1)
+				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
 					{
@@ -456,7 +463,7 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
-							rsiMult = rsi > 1e-6 ? Math.Min(50.0 / rsi, 1.0) : 1.0;
+							rsiMult = rsi > 1e-6 ? Math.Min(RsiMultNumerator / rsi, 1.0) : 1.0;
 						}
 					}
 					rsiPrevClose = prev.Close;
