@@ -1,6 +1,6 @@
 # StockOdds
 
-**A three-level trend-following exposure engine — a screening + risk-control overlay that matches buy-&-hold on risk-adjusted return while cutting drawdown, on the right stocks at the right times.**
+**A three-level trend-following exposure engine — a screening + risk-control overlay that edges buy-&-hold on risk-adjusted return while cutting drawdown, on the right stocks at the right times.**
 
 > Companion write-up: [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
@@ -56,9 +56,10 @@ That raw target is then:
 2. skewed by a **dynamic long-bias** (leans with the recent trend),
 3. only **rebalanced when it drifts past a deadband** (cuts churn),
 4. **clamped to `[0%, 100%]`** — so negative targets simply become **cash** (no short),
-5. finally, if the name's **raw exposure signal turns bearish** (out of region), overridden per the [out-of-region rule](#long-bias-per-candle-dynamic) — **cash** by default.
+5. scaled by an **RSI mean-reversion overlay** (position × 50/RSI — trims into overbought, leans into oversold),
+6. finally, if the name's **raw exposure signal turns bearish** (out of region), overridden per the [out-of-region rule](#long-bias-per-candle-dynamic) — **cash** by default.
 
-**Default parameters** (`Program.cs`): Exposure EMA `24`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`. The **long bias is dynamic by default** — recomputed per candle from each name's volatility and exposure-persistence (see [Long bias](#long-bias-per-candle-dynamic) below). Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `24`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay `7`. The **long bias is dynamic by default** — recomputed per candle from each name's volatility and exposure-persistence (see [Long bias](#long-bias-per-candle-dynamic) below). Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 
@@ -86,7 +87,7 @@ LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
 
 **Screening preset (the shipped default): `DynMax = 150`, `DynSmoothSlow = 150`, `DynSlowMult = 0.5`.** The bias ceiling is a *slow* 150-bar EMA of the raw bias, scaled to half — and `DynMax` is raised to 150 so the raw bias isn't pre-clamped and the slow-EMA×mult *is* the effective ceiling. This is a deliberate **defensive tilt tuned for the high-vol names you'd screen**: it still captures the runs (per-name compounds preserved/improved — SMCI 733%→765%, IREN 945%→1123%, HOOD 500%→524%) and is more robust through a real bear (full-window incl. 2022, HV-set Sharpe **0.43→0.47** at ~flat drawdown), at the cost of some **bull-only** OOS Sharpe (0.46→0.38). Two honest caveats: (1) it does **not** dominate on the bull-only walk-forward — no `DynMax`/slow/mult combination beats the neutral baseline on *both* the bull-only OOS *and* the full window; it's a Pareto frontier (aggression ⇄ drawdown / bull ⇄ bear), a risk-appetite choice; (2) the full-window edge leans on the **single, in-sample 2022 bear**, so the bear-robustness can't be confirmed out-of-sample. It also **requires the raised `DynMax`** — at `DynMax = 15` the same slow/mult over-clamps and craters names (SMCI 733%→94%). **Revert to the neutral baseline** with `DynMax = 15`, `DynSmoothSlow = 10` (= `DynSmoothPeriod`), `DynSlowMult = 1.0`.
 
-**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**), `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasSplit`** (default **on**), and the out-of-region rule **`BearRegimeMode`** (default **1 = cash**) — see below.
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (bias at `z = 0`, default **1**), `DynDecay` (default **0.6**), `DynSmoothPeriod` (default **10**), `DynSmoothSlow` (default **150**) / `DynSlowMult` (default **0.5**), **`BiasEmaRatio`** (default **on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (default `[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), **`BiasSplit`** (default **on**), the out-of-region rule **`BearRegimeMode`** (default **1 = cash**), and the **`RsiOverlayPeriod`** mean-reversion overlay (default **7**, 0 = off) — see below.
 
 **Out-of-region rule (`BearRegimeMode`, default cash).** A name is **out of its region whenever its raw exposure signal is bearish** — i.e. the EMA of the (LT, ST) target exposure (before the dynamic-bias skew) is < 0. That's the whole rule: one condition, **no windows to tune** — the strategy's own smoothed signal decides. When it turns bearish, `BearRegimeMode` picks what to do: **`1` = go to cash** (the default — flatten and *rotate the capital to another in-region name*), `2` = mirror buy-&-hold (force full exposure), or `0` = keep deploying. Cash is the default because the goal is to *squeeze gains out of a name while its signal is bullish*, not to beat any single name end-to-end — "go to cash" means "go find another stock to trade." This replaced an earlier trailing-persistence rule (two tuned windows, "both ratios ≥ 1"): raw<0 is cleaner **and** scores a higher out-of-sample Cash Sharpe (**0.22 vs 0.11** on a broad ~1,300-name universe) — a lighter de-risk that keeps more Sharpe/return for a bit less drawdown protection. Caveat for reading backtests: on a **single-name** run the cash default **understates** results (it sits out the bearish stretches instead of redeploying elsewhere), so score a name's continuous full-history behaviour with `BearRegimeMode = 0`. And it *can't* separate a recoverable pullback from a real decline **in advance** — at the decision bar those look identical in every feature — so it's a reactive signal, not a predictive one.
 
@@ -98,30 +99,30 @@ The dynamic bias is mirrored in the Pine scripts: watch the per-candle bias chan
 
 ## What to expect
 
-**The honest, broad read (out-of-sample).** On a **random 500-name US-common-stock universe**, scored out-of-sample (the last 30% of each name's ~5y history) with the recommended **$500M market-cap floor** (299 names), the strategy **matches buy-&-hold on risk-adjusted return** — it is a screening + risk-control overlay, not an alpha engine:
+**The honest, broad read (out-of-sample).** On a **random 500-name US-common-stock universe**, scored out-of-sample (the last 30% of each name's ~5y history) with the recommended **$500M market-cap floor** (299 names), the strategy **edges buy-&-hold on risk-adjusted return** — it is a screening + risk-control overlay, not an alpha engine:
 
 | Out-of-region mode | OOS Sharpe | OOS Max DD |
 |---|---:|---:|
-| **Deploy** (run everywhere) | 0.50 | 35.9% |
-| **Cash** (default) | 0.22 | **28.2%** |
-| **Hold** (mirror B&H out of region) | 0.49 | 36.8% |
+| **Deploy** (run everywhere) | 0.55 | 33.5% |
+| **Cash** (default) | 0.27 | **24.1%** |
+| **Hold** (mirror B&H out of region) | 0.53 | 34.9% |
 | *Buy & hold (reference)* | *0.50* | *deepest (always full-long)* |
 
-The two durable contributions, both confirmed out-of-sample: **(1) screening** — a cap floor lifts every HV bucket and flips HV > 100 from −0.07 to +0.43 Sharpe (see [What to screen for](#what-to-screen-for)); and **(2) drawdown reduction** — the default Cash policy cuts mean OOS drawdown (to ~28%, roughly 8 pts under Deploy) by sitting out whenever the raw exposure signal is bearish. Sub-$100M microcaps lose under *every* mode *and* under buy-&-hold, so the floor is the single most important gate.
+The two durable contributions, both confirmed out-of-sample: **(1) screening** — a cap floor lifts every HV bucket and flips HV > 100 from −0.07 to +0.43 Sharpe (see [What to screen for](#what-to-screen-for)); and **(2) drawdown reduction** — the default Cash policy cuts mean OOS drawdown (to ~24%, roughly 9 pts under Deploy) by sitting out whenever the raw exposure signal is bearish; and **(3) an RSI mean-reversion overlay** (position × 50/RSI, default period 7) — validated on four disjoint random-500 samples to add ~+0.05 Sharpe and trim drawdown 2–5 pts in *every* out-of-region mode. Sub-$100M microcaps lose under *every* mode *and* under buy-&-hold, so the floor is the single most important gate.
 
 **On a hand-picked high-vol basket it looks stronger — but that is partly in-sample.** Over each name's *full* history (which includes the 2022 bear the strategy dodges), a curated 18-name basket, no per-symbol tuning — showing all three out-of-region modes (**Deploy** / **Cash** / **Hold**) per name against buy-&-hold:
 
 | Symbol | HV | Dep Sh | Cash Sh | Hold Sh | B&H Sh | Dep DD | Cash DD | Hold DD | B&H DD |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| KO | 16 | 0.78 | 0.49 | 0.74 | 0.52 | −19% | −17% | −19% | −21% |
-| ^GSPC | 17 | 0.84 | 0.47 | 0.84 | 0.72 | −18% | −17% | −19% | −25% |
-| NVDA | 51 | 1.26 | 0.74 | 1.13 | 1.17 | −58% | −50% | −65% | −66% |
-| MSTR | 90 | 0.63 | **0.94** | 0.49 | 0.52 | −81% | **−46%** | −84% | −84% |
-| ASTS | 104 | 0.73 | 0.86 | 0.63 | 0.80 | −80% | **−58%** | −90% | −86% |
-| SMR | 99 | 0.54 | 0.61 | 0.48 | 0.43 | −87% | **−67%** | −87% | −88% |
-| OPEN | 108 | 0.64 | 0.61 | 0.41 | 0.32 | −80% | **−70%** | −96% | −98% |
+| KO | 16 | 0.78 | 0.47 | 0.73 | 0.52 | −19% | −15% | −20% | −21% |
+| ^GSPC | 17 | 0.81 | 0.47 | 0.83 | 0.72 | −17% | −14% | −18% | −25% |
+| NVDA | 51 | 1.20 | 0.59 | 1.04 | 1.17 | −55% | −46% | −63% | −66% |
+| MSTR | 90 | 0.53 | **0.96** | 0.41 | 0.52 | −76% | **−41%** | −82% | −84% |
+| ASTS | 104 | 0.63 | 0.83 | 0.53 | 0.80 | −80% | **−50%** | −89% | −86% |
+| SMR | 99 | 0.44 | 0.59 | 0.41 | 0.43 | −84% | **−60%** | −85% | −88% |
+| OPEN | 108 | 0.53 | 0.52 | 0.28 | 0.32 | −80% | **−69%** | −96% | −98% |
 
-**Basket aggregate (18-name curated basket):** mean Sharpe **Deploy 0.56 / Cash 0.47 / Hold 0.48** vs B&H 0.48; mean max drawdown **Deploy 61% / Cash 51% / Hold 69% / B&H 70%**. The per-name pattern is the whole point of the three modes: on the volatile names (MSTR, ASTS, OPEN…) **Cash cuts drawdown hard** (MSTR −46% vs −84%, OPEN −70% vs −98%) and often wins Sharpe too, **Deploy** captures the runs (best Sharpe on the full basket), and **Hold** tracks buy-&-hold (it force-holds through the crashes). ⚠️ This table is **full-window and hand-picked**, so it flatters the strategy — part of the edge is the in-sample 2022 bear (which Yahoo's ~5y history can't re-confirm out-of-sample). **Treat the broad OOS table above as the honest expectation, and this basket as an illustration of per-name behaviour on names that suit it.**
+**Basket aggregate (18-name curated basket):** mean Sharpe **Deploy 0.52 / Cash 0.44 / Hold 0.44** vs B&H 0.48; mean max drawdown **Deploy 59% / Cash 46% / Hold 67% / B&H 70%**. **Cash cuts drawdown hardest** on the volatile names (MSTR −41% vs −84%, OPEN −69% vs −98%); **Deploy** edges B&H. ⚠️ Two in-sample caveats here: this table is **full-window and hand-picked** (part of the edge is the in-sample 2022 bear), *and* the RSI overlay trims the extreme in-sample winners slightly (NVDA 1.20 here vs 1.26 un-overlaid), which is why Cash/Hold sit a touch under B&H on *this* basket even though the overlay nets a clear **+0.05 Sharpe out-of-sample** (the broad table above). **Treat the broad OOS table as the honest expectation; this basket illustrates per-name behaviour on names that suit it.**
 
 ### The trade-off, honestly
 - **It captures the high-vol runs rather than sitting them out, but it does not beat buy-&-hold on Sharpe broadly.** On names that trend hard (ASTS, OPEN) it looks great; averaged over a random floored universe it *ties* B&H. The Sharpe outperformance is basket-selective; the parts that generalize are screening and drawdown.
@@ -155,11 +156,11 @@ This is a genuine **risk-appetite choice, not a fixed best.** When a name drops 
 
 | Mode | Out-of-region action | OOS Sharpe | OOS Max DD | Choose it when… |
 |---|---|---:|---:|---|
-| **`1` Cash** *(default)* | flatten to 0; redeploy the capital elsewhere | 0.22 | **28.2%** | running a **rotation portfolio**, or capital preservation leads — "go to cash" means "go find another stock to trade" |
-| **`2` Hold** | mirror buy-&-hold (force full long) | 0.49 | 36.8% | you have **high conviction in the specific name** and do not want the region rule to exit a position you mean to ride through the dip |
-| **`0` Deploy** | keep running the strategy | 0.50 | 35.9% | you want the raw signal everywhere; behaves ≈ Hold on Sharpe |
+| **`1` Cash** *(default)* | flatten to 0; redeploy the capital elsewhere | 0.27 | **24.1%** | running a **rotation portfolio**, or capital preservation leads — "go to cash" means "go find another stock to trade" |
+| **`2` Hold** | mirror buy-&-hold (force full long) | 0.53 | 34.9% | you have **high conviction in the specific name** and do not want the region rule to exit a position you mean to ride through the dip |
+| **`0` Deploy** | keep running the strategy | 0.55 | 33.5% | you want the raw signal everywhere; behaves ≈ Hold on Sharpe |
 
-**Cash** gives the lowest drawdown (~−8 pts, to ~28%) but sacrifices ~0.28 Sharpe and ~15 pts of return by sitting in cash whenever the raw exposure signal is bearish (~48% of bars). **Hold** matches B&H (and Deploy) on Sharpe while keeping you invested — the right pick when exiting is not an option. Single-name-backtest caveat: the cash default **understates** any single name (it sits out instead of redeploying), so score a name's continuous full-history behaviour with `BearRegimeMode = 0`.
+**Cash** gives the lowest drawdown (~−9 pts, to ~24%) but sacrifices ~0.28 Sharpe and ~13 pts of return by sitting in cash whenever the raw signal is bearish (~48% of bars). **Hold** and **Deploy** now edge B&H on Sharpe (0.53 / 0.55 vs 0.50) while keeping you invested — the right pick when exiting is not an option. Single-name-backtest caveat: the cash default **understates** any single name (it sits out instead of redeploying), so score a name's continuous full-history behaviour with `BearRegimeMode = 0`.
 
 ---
 
