@@ -16,12 +16,12 @@ The proof is out-of-sample. Every table below is scored on the **last 30% of eac
 
 | Mode | OOS Sharpe | OOS Max DD | OOS Return |
 |---|---:|---:|---:|
-| **Deploy** | 0.55 | 33.5% | +30% |
-| **Cash** *(default)* | 0.27 | **24.1%** | +15% |
-| **Hold** | 0.53 | 34.9% | +30% |
+| **Deploy** | 0.59 | 31.3% | +31% |
+| **Cash** *(default)* | 0.27 | **23.2%** | +13% |
+| **Hold** | 0.54 | 34.5% | +29% |
 | *Buy & hold* | *0.50* | *37.6%* | *+33%* |
 
-Deploy and Hold **edge buy-&-hold on Sharpe** (0.55 / 0.53 vs 0.50) while running shallower drawdowns. The default **Cash** mode is the risk dial turned to max: it trades return for protection, and its drawdown is **shallower than buy-&-hold on 88% of all names.** The real value shows up in the two cohorts that matter most.
+Deploy and Hold **edge buy-&-hold on Sharpe** (0.59 / 0.54 vs 0.50) while running shallower drawdowns. The default **Cash** mode is the risk dial turned to max: it trades return for protection, and its drawdown is **shallower than buy-&-hold on 91% of all names.** The real value shows up in the two cohorts that matter most.
 
 ### When the stock is falling (100 names with a negative buy-&-hold return)
 
@@ -29,12 +29,12 @@ This is what a risk overlay is *for.* These names lost money over the test windo
 
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Cash** *(default)* | **−1%** | **29.2%** | −0.28 |
-| **Deploy** | −11% | 43.1% | −0.14 |
-| **Hold** | −18% | 45.5% | −0.16 |
+| **Cash** *(default)* | **−4%** | **28.2%** | −0.28 |
+| **Deploy** | −9% | 40.2% | −0.09 |
+| **Hold** | −17% | 44.8% | −0.14 |
 | *Buy & hold* | *−23%* | *48.6%* | *−0.21* |
 
-Buy-&-hold loses **−23% with a −49% drawdown.** The default Cash mode ends **roughly flat (−1%) at a −29% drawdown** — shallower than buy-&-hold on **94 of 100** names. It sidesteps the decline instead of riding it down. *(Sharpe is unstable when returns hug zero — read the Return and Max-DD columns here; they are the story.)*
+Buy-&-hold loses **−23% with a −49% drawdown.** The default Cash mode ends **near-flat (−4%) at a −28% drawdown** — shallower than buy-&-hold on **98 of 100** names. It sidesteps the decline instead of riding it down. *(Sharpe is unstable when returns hug zero — read the Return and Max-DD columns here; they are the story.)*
 
 ### When the stock rips — but violently (26 names, +return but ≥ 50% buy-&-hold drawdown)
 
@@ -42,12 +42,12 @@ The high-flyers. The system keeps most of the upside and takes a much smaller be
 
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Deploy** | +115% | 51.7% | 0.99 |
-| **Hold** | +123% | 53.3% | 0.98 |
-| **Cash** *(default)* | +66% | **35.0%** | 0.74 |
+| **Deploy** | +113% | 49.3% | 1.02 |
+| **Hold** | +121% | 53.1% | 0.98 |
+| **Cash** *(default)* | +60% | **34.5%** | 0.73 |
 | *Buy & hold* | *+138%* | *58.1%* | *0.97* |
 
-Buy-&-hold makes **+138% but suffers a −58% drawdown.** Deploy captures **+115% at −52%**; Cash keeps **+66% at just −35%** — shallower drawdown than buy-&-hold on **all 26** names.
+Buy-&-hold makes **+138% but suffers a −58% drawdown.** Deploy captures **+113% at −49%**; Cash keeps **+60% at just −35%** — shallower drawdown than buy-&-hold on **all 26** names.
 
 ### The three modes
 
@@ -67,16 +67,16 @@ A curated 18-name basket, **no per-symbol tuning**, over each name's *full* hist
 
 | Symbol | HV | Cash Max DD | B&H Max DD | Cash Return | B&H Return |
 |---|---:|---:|---:|---:|---:|
-| ^GSPC | 17 | **14%** | 25% | +20% | +71% |
-| KO | 17 | **19%** | 21% | +22% | +44% |
-| NVDA | 51 | **55%** | 66% | +93% | +945% |
-| COIN | 85 | **68%** | 91% | −12% | −32% |
-| MSTR | 91 | **76%** | 84% | +389% | +70% |
-| ASTS | 104 | **80%** | 86% | +400% | +398% |
-| SMR | 99 | **84%** | 88% | +114% | −23% |
-| OPEN | 109 | **80%** | 98% | +103% | −70% |
+| ^GSPC | 17 | **12%** | 25% | +16% | +72% |
+| KO | 16 | **13%** | 21% | +27% | +44% |
+| NVDA | 51 | **43%** | 66% | +94% | +955% |
+| COIN | 85 | **61%** | 91% | +16% | −30% |
+| MSTR | 90 | **40%** | 84% | +359% | +79% |
+| ASTS | 104 | **48%** | 86% | +468% | +405% |
+| SMR | 99 | **56%** | 88% | +101% | −21% |
+| OPEN | 109 | **67%** | 98% | +127% | −70% |
 
-Cash cuts the drawdown on **every** name. Returns vary: on names that trend hard through their pullbacks (MSTR, SMR, OPEN) Cash *beats* buy-&-hold outright; on a relentless one-way winner (NVDA) it gives up a lot of upside by stepping out. **Basket aggregate (all 18):** mean Sharpe **Deploy 0.52 / Cash 0.44 / Hold 0.44 vs B&H 0.48**; mean Max DD **Deploy 59% / Cash 46% / Hold 67% / B&H 70%.**
+Cash cuts the drawdown on **every** name — and the short RSI-2 trim cuts it hard on the volatile ones (MSTR 40% vs B&H 84%, ASTS 48% vs 86%). Returns vary: on names that trend hard through their pullbacks (MSTR, SMR, OPEN) Cash *beats* buy-&-hold outright; on a relentless one-way winner (NVDA) it gives up a lot of upside by stepping out. **Basket aggregate (all 18):** mean Sharpe **Deploy 0.57 / Cash 0.47 / Hold 0.45 vs B&H 0.49**; mean Max DD **Deploy 54% / Cash 44% / Hold 66% / B&H 70%.**
 
 ### The trade-off, honestly
 
@@ -143,10 +143,10 @@ That raw target is then:
 2. skewed by a **[dynamic long-bias](#the-dynamic-long-bias)** (leans harder with the recent trend, scaled per name),
 3. **rebalanced only when it drifts past a deadband** (cuts churn),
 4. **clamped to `[0%, 100%]`** — negative targets simply become **cash** (no short),
-5. scaled by an **RSI overbought-trim overlay** (position × min(50 / RSI, 1) — trims exposure when overbought, never levers; +~0.05 Sharpe and 2–5 pts less drawdown out-of-sample. An ablation showed the trim is the entire edge — the oversold-lever half added nothing — so the overlay only de-risks),
+5. scaled by an **RSI overbought-trim overlay** (position × min(50 / RSI(2), 1) — trims exposure when overbought, never levers. A short **RSI-2** (Connors-style) is best, validated across four disjoint random-500 samples: lifts Sharpe — most in Deploy, ~+0.09 — and cuts drawdown 2–6 pts out-of-sample. An ablation showed the trim is the entire edge — the oversold-lever half added nothing — so the overlay only de-risks),
 6. and finally, if the **raw exposure signal turns bearish** (out of region), overridden per the chosen **[mode](#the-three-modes)** — cash by default.
 
-**Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay `7`. The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay `2`. The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 
@@ -174,7 +174,7 @@ LongBias_t = EMA_smooth( clamp(raw, DynMin, DynMax) , DynSmoothPeriod )
 
 **Screening preset (shipped default): `DynMax = 150`, `DynSmoothSlow = 150`, `DynSlowMult = 0.5`.** The bias ceiling is a slow 150-bar EMA of the raw bias scaled to half, with `DynMax` raised so the slow-EMA×mult *is* the effective ceiling. A deliberate **defensive tilt tuned for high-vol names**: it captures the runs (SMCI 733%→765%, IREN 945%→1123%) and is more robust through a real bear (full-window incl. 2022, HV-set Sharpe 0.43→0.47) at the cost of some bull-only OOS Sharpe (0.46→0.38). Honest caveats: (1) no `DynMax`/slow/mult combo beats the neutral baseline on *both* the bull-only OOS *and* the full window — it's a Pareto choice; (2) the full-window edge leans on the single in-sample 2022 bear. Revert to neutral with `DynMax = 15`, `DynSmoothSlow = 10`, `DynSlowMult = 1.0`.
 
-**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (**1**), `DynDecay` (**0.6**), `DynSmoothPeriod` (**10**), `DynSmoothSlow` (**150**) / `DynSlowMult` (**0.5**), `BiasEmaRatio` (**on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (`[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), `BiasSplit` (**on**), the out-of-region rule `BearRegimeMode` (**1 = cash**), and `RsiOverlayPeriod` (**7**, 0 = off).
+**Knobs** (all on `BankrollSimulator`, hand-set — *not* fitted to returns): `DynBase` (**1**), `DynDecay` (**0.6**), `DynSmoothPeriod` (**10**), `DynSmoothSlow` (**150**) / `DynSlowMult` (**0.5**), `BiasEmaRatio` (**on**, clamp `0.25–2.0`), `DynMin`/`DynMax` (`[0, 150]`), `HvWindow`/`PersistWindow` (**60 / 63**), refs `HvRefMean`/`HvRefStd` (**57 / 34.6**), `PersRefMean`/`PersRefStd` (**0.072 / 0.010**), `BiasSplit` (**on**), the out-of-region rule `BearRegimeMode` (**1 = cash**), and `RsiOverlayPeriod` (**2**, 0 = off).
 
 **Out-of-region rule (`BearRegimeMode`).** A name is out of region **whenever its raw exposure signal is bearish** — the EMA of the (LT, ST) target (before the bias skew) is < 0. One condition, no windows to tune. `BearRegimeMode` then picks the [mode](#the-three-modes). This replaced an earlier trailing-persistence rule (two tuned windows): raw < 0 is cleaner *and* scores a higher OOS Cash Sharpe (0.22 vs 0.11 on a broad ~1,300-name universe). It's a **reactive** signal — it can't tell a recoverable pullback from a real decline in advance.
 

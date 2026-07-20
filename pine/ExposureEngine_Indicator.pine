@@ -110,7 +110,7 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
      tooltip = "When the raw exposure signal is bearish -- the EMA of the (LT,ST) target exposure (before the bias skew) is < 0: Cash = flatten to 0 (default — rotate capital to an in-region name); Hold = force exposure 1 (mirror buy & hold); Deploy = keep running the strategy.")
 
 grpRsi = "RSI position overlay"
-rsiOverlayPeriod = input.int(7, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
+rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
      tooltip = "Overbought-trim overlay on the final position: position *= min(50 / RSI(period), 1) — trims when overbought (RSI>50); does nothing when oversold (capped at 1, never levers up). 0 disables. Validated to lift OOS Sharpe ~+0.05 and cut drawdown across all out-of-region modes; an ablation showed the trim is the entire edge, so it never levers.")
 
 // #############################################################################
