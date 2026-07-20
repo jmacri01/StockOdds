@@ -367,7 +367,7 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+var table tbl = table.new(position.top_right, 2, 12, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -377,22 +377,25 @@ if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
     posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
-    bandTxt = na(adjEma) ? "—" : str.tostring(adjEma - driftBand, "#.##") + " – " + str.tostring(adjEma + driftBand, "#.##")
+    // Exposure = the actual traded (post-RSI) position ± rebalance drift, clamped. Out of region the rule
+    // forces a single value (0 cash / 1 hold), so show that alone — no rebalance drift there.
+    expLo = str.tostring(math.min(math.max(position - driftBand, loExp), hiExp), "#.##")
+    expHi = str.tostring(math.min(math.max(position + driftBand, loExp), hiExp), "#.##")
+    expTxt = na(position) ? "—" : outOfRegion ? str.tostring(position, "#.##") : expLo + " – " + expHi
     f_row(0,  "LT State",    f_ltName(ltState), ltCol)
     f_row(1,  "ST State",    f_stName(stState), stCol)
     f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
     f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
     f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
-    f_row(5,  "Target",      bandTxt, color.white)
-    f_row(6,  "Exposure",    na(position) ? "—" : str.tostring(position, "#.##"), posCol)
-    f_row(7,  "Bull Count",  str.tostring(ltBullCount), color.white)
-    f_row(8,  "Bear Count",  str.tostring(ltBearCount), color.white)
-    f_row(9,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
-    f_row(10, "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
-    f_row(11, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
+    f_row(5,  "Exposure",    expTxt, posCol)
+    f_row(6,  "Bull Count",  str.tostring(ltBullCount), color.white)
+    f_row(7,  "Bear Count",  str.tostring(ltBearCount), color.white)
+    f_row(8,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
+    f_row(9,  "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
+    f_row(10, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
     regionTxt = inRegion ? "IN region" : (regimeMode == 1 ? "OUT -> cash" : regimeMode == 2 ? "OUT -> hold" : "OUT (deploy)")
     regionCol = inRegion ? colBull : colBear
-    f_row(12, "Region", regionTxt, regionCol)
+    f_row(11, "Region", regionTxt, regionCol)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
