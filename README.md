@@ -109,23 +109,23 @@ The dynamic bias is mirrored in the Pine scripts: watch the per-candle bias chan
 
 The two durable contributions, both confirmed out-of-sample: **(1) screening** — a cap floor lifts every HV bucket and flips HV > 100 from −0.07 to +0.43 Sharpe (see [What to screen for](#what-to-screen-for)); and **(2) drawdown reduction** — the default Cash policy cuts mean OOS drawdown (to ~28%, roughly 8 pts under Deploy) by sitting out whenever the raw exposure signal is bearish. Sub-$100M microcaps lose under *every* mode *and* under buy-&-hold, so the floor is the single most important gate.
 
-**On a hand-picked high-vol basket it looks stronger — but that is partly in-sample.** Over each name's *full* history (which includes the 2022 bear the strategy dodges), a curated 17-name volatile basket, no per-symbol tuning (shown with `BearRegimeMode = 0` so each row is the name in isolation):
+**On a hand-picked high-vol basket it looks stronger — but that is partly in-sample.** Over each name's *full* history (which includes the 2022 bear the strategy dodges), a curated 18-name basket, no per-symbol tuning — showing all three out-of-region modes (**Deploy** / **Cash** / **Hold**) per name against buy-&-hold:
 
-| Symbol | HV | Strat Sharpe | B&H Sharpe | Strat MaxDD | B&H MaxDD | Strat Ret/DD | B&H Ret/DD |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| KO | 17 | **0.54** | 0.52 | **−20%** | −21% | 2.1 | **2.2** |
-| ^GSPC | 17 | **0.85** | 0.72 | **−18%** | −25% | **4.3** | 2.9 |
-| NVDA | 51 | **1.32** | 1.17 | **−54%** | −66% | **19.2** | 14.9 |
-| MSTR | 91 | **0.60** | 0.52 | −87% | **−84%** | **1.5** | 1.1 |
-| ASTS | 104 | **0.93** | 0.80 | **−75%** | −86% | **11.7** | 4.8 |
-| SMR | 99 | **0.74** | 0.43 | **−79%** | −87% | **2.8** | −0.3 |
-| OPEN | 109 | **0.87** | 0.32 | **−69%** | −98% | **10.3** | −0.7 |
+| Symbol | HV | Dep Sh | Cash Sh | Hold Sh | B&H Sh | Dep DD | Cash DD | Hold DD | B&H DD |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| KO | 16 | 0.78 | 0.49 | 0.74 | 0.52 | −19% | −17% | −19% | −21% |
+| ^GSPC | 17 | 0.84 | 0.47 | 0.84 | 0.72 | −18% | −17% | −19% | −25% |
+| NVDA | 51 | 1.26 | 0.74 | 1.13 | 1.17 | −58% | −50% | −65% | −66% |
+| MSTR | 90 | 0.63 | **0.94** | 0.49 | 0.52 | −81% | **−46%** | −84% | −84% |
+| ASTS | 104 | 0.73 | 0.86 | 0.63 | 0.80 | −80% | **−58%** | −90% | −86% |
+| SMR | 99 | 0.54 | 0.61 | 0.48 | 0.43 | −87% | **−67%** | −87% | −88% |
+| OPEN | 108 | 0.64 | 0.61 | 0.41 | 0.32 | −80% | **−70%** | −96% | −98% |
 
-**Basket aggregate (17 volatile names):** mean Sharpe **0.73 vs 0.58** (higher on **16/17**), mean max drawdown **−57% vs −70%**. ⚠️ This table is **full-window and hand-picked**, so it flatters the strategy — part of the Sharpe lead is the in-sample 2022 bear (which Yahoo's ~5y history can't re-confirm out-of-sample). **Treat the broad OOS table above as the honest expectation, and this basket as an illustration of per-name behaviour on names that suit it.**
+**Basket aggregate (18-name curated basket):** mean Sharpe **Deploy 0.56 / Cash 0.47 / Hold 0.48** vs B&H 0.48; mean max drawdown **Deploy 61% / Cash 51% / Hold 69% / B&H 70%**. The per-name pattern is the whole point of the three modes: on the volatile names (MSTR, ASTS, OPEN…) **Cash cuts drawdown hard** (MSTR −46% vs −84%, OPEN −70% vs −98%) and often wins Sharpe too, **Deploy** captures the runs (best Sharpe on the full basket), and **Hold** tracks buy-&-hold (it force-holds through the crashes). ⚠️ This table is **full-window and hand-picked**, so it flatters the strategy — part of the edge is the in-sample 2022 bear (which Yahoo's ~5y history can't re-confirm out-of-sample). **Treat the broad OOS table above as the honest expectation, and this basket as an illustration of per-name behaviour on names that suit it.**
 
 ### The trade-off, honestly
 - **It captures the high-vol runs rather than sitting them out, but it does not beat buy-&-hold on Sharpe broadly.** On names that trend hard (ASTS, OPEN) it looks great; averaged over a random floored universe it *ties* B&H. The Sharpe outperformance is basket-selective; the parts that generalize are screening and drawdown.
-- **The drawdown cut is real but modest.** Cash trims mean OOS drawdown ~6 pts (and in-region-only ~12 pts) vs running everywhere — at the cost of Sharpe and return. On a few extreme names it can still run *deeper* than B&H (MSTR: −87% vs −84%) when it holds a crashing name long. For maximum preservation, keep `BearRegimeMode` on cash or lower the bias ceiling (`DynSlowMult` / `DynMax`).
+- **The drawdown cut is real.** Cash trims mean OOS drawdown ~8 pts vs Deploy on the broad universe, and *far* more on volatile names (MSTR −46% vs B&H −84%, OPEN −70% vs −98% in the basket above) — at the cost of some Sharpe and return. **Hold**, by contrast, force-holds through crashes, so it runs about as deep as B&H or deeper (ASTS −90% vs −86%). For maximum preservation keep `BearRegimeMode` on cash; to capture more of the runs use Deploy or Hold.
 
 ---
 
