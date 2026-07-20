@@ -377,11 +377,11 @@ if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
     posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
-    // Exposure as the rebalance-drift range: clamp(adjEma ± drift) — the zone the position holds inside
-    // without rebalancing. Out of region, the rule forces a single value (0 cash / 1 hold), so show that.
-    expLo = str.tostring(math.min(math.max(adjEma - driftBand, loExp), hiExp), "#.##")
-    expHi = str.tostring(math.min(math.max(adjEma + driftBand, loExp), hiExp), "#.##")
-    expTxt = na(adjEma) ? "—" : outOfRegion ? str.tostring(position, "#.##") : expLo + " – " + expHi
+    // Exposure = the actual traded (post-RSI) position ± rebalance drift, clamped. Out of region the rule
+    // forces a single value (0 cash / 1 hold), so show that alone — no rebalance drift there.
+    expLo = str.tostring(math.min(math.max(position - driftBand, loExp), hiExp), "#.##")
+    expHi = str.tostring(math.min(math.max(position + driftBand, loExp), hiExp), "#.##")
+    expTxt = na(position) ? "—" : outOfRegion ? str.tostring(position, "#.##") : expLo + " – " + expHi
     f_row(0,  "LT State",    f_ltName(ltState), ltCol)
     f_row(1,  "ST State",    f_stName(stState), stCol)
     f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
