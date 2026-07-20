@@ -150,33 +150,14 @@ namespace StockOdds
 		public static double DynBase         = 1.0;    // LongBias at z = 0
 		public static double DynDecay        = 0.6;    // decay rate
 		public static double DynMin          = 0.0;
-		// ===== High-vol screening default (see README "screening preset") =====
-		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
-		// MAX(MIN(fast EMA, slow EMA), DynMin). DynMax is raised to 150 so the raw
-		// bias isn't pre-clamped and the slow-EMA*mult IS the effective, scale-aware ceiling.
-		// This is a deliberate DEFENSIVE tilt for volatile names: it captures the runs (per-name
-		// compounds preserved/improved) and is more robust through a real bear (full-window incl.
-		// 2022: HV Sharpe 0.43->0.47, drawdown flat) at the cost of some bull-ONLY OOS Sharpe
-		// (0.46->0.38). It does NOT dominate on the bull-only walk-forward — it's a risk-appetite
-		// choice, not a free win, and the full-window edge leans on the one in-sample 2022 bear.
-		// NOTE: this default REQUIRES DynMax raised — at DynMax=15 the same slow/mult over-clamps
-		// and craters names (SMCI 733%->94%). To revert to the neutral baseline: DynMax=15,
-		// DynSmoothSlow=DynSmoothPeriod (10).
-		public static double DynMax          = 150.0; // raised so the slow-EMA*mult is the real ceiling
-		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
-		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
-		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
-		// Scale the bias by longEMA/shortEMA = slowBiasEMA / fastBiasEMA (clamped), on a fixed CEILING base:
-		//   effLongBias = slow * clamp(slow/fast, lo, hi).
-		// This is monotonic-decreasing in the fast EMA — lift the bias as the fast dips below the slow (a
-		// recent pullback in the bias) and damp it as the fast rises above (a recent spike); neutral (= the
-		// plain ceiling) when fast == slow. Using the ceiling (not MIN(fast, ceiling)) as the base removes the
-		// non-monotonic "tent" (which peaked at fast = slow/2 and fell back for very low fast). Validated on a
-		// broad random 500-name US-common-stock sample AND vs buy-&-hold: closes most of the Sharpe gap to B&H
-		// (0.13->0.17 vs 0.19), keeps ~the entire drawdown edge (shallower than B&H on 82% of names), and is
-		// best across the 50-100% HV deployment band; the give-up vs the old tent is only on >100% HV lottery
-		// names. On by default. Set false for the plain ceiling'd bias.
-		public static bool   BiasEmaRatio    = true;
+		// The per-candle bias is just EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps
+		// because the persistence ratio is jumpy and the exp map is convex): effLongBias = MAX(EMA(raw), DynMin).
+		// DynMax caps the raw bias before smoothing (rarely binds). NOTE: an earlier slow/fast-EMA "ceiling + ratio"
+		// apparatus (BiasEmaRatio / DynSmoothSlow / DynSlowMult / clamps) was REMOVED -- an OOS test across four
+		// random-500 samples showed this plain fast-EMA bias matched or slightly beat it in every mode, so the
+		// machinery (4 knobs) didn't earn its weight. Keep the bias simple.
+		public static double DynMax          = 150.0; // raw-bias cap (rarely binds)
+		public static int    DynSmoothPeriod = 10;    // EMA smoothing of the per-candle bias (1 = off)
 		// Split the long bias across BOTH LT directions in the rolling sum: a Bull candle contributes
 		// 1 + bias/2 and a Bear candle -1 + bias/2 (instead of 1+bias / -1). The bias becomes a long
 		// tilt on both sides, so a high-bias (quiet+choppy) name keeps its conviction elevated THROUGH
@@ -185,8 +166,6 @@ namespace StockOdds
 		// Sharpe up in EVERY HV bucket (0.17->0.20, 63% of names), edges buy&hold on Sharpe (0.20 vs 0.19),
 		// at ~flat drawdown (only the >100% HV lottery bucket runs ~4pp deeper). On by default.
 		public static bool   BiasSplit     = true;
-		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
-		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
 		// OUT-OF-REGION rule: a name is out of its edge regime whenever the RAW exposure signal is bearish -- i.e.
 		// the EMA of the (LT,ST) target exposure (`ema`, before the bias skew) is < 0. Parameter-free (no windows).
 		// 1 = go to CASH (default -- rotate capital to an in-region name); 0 = keep deploying; 2 = mirror buy&hold.
@@ -322,9 +301,7 @@ namespace StockOdds
 			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
 			double perAbsSum = 0.0, perTgtPrev = double.NaN;
 			double dynLbAlpha = 2.0 / (Math.Max(1, DynSmoothPeriod) + 1);
-			double dynLbAlphaSlow = 2.0 / (Math.Max(1, DynSmoothSlow) + 1);
-			double dynLbEma = double.NaN;             // fast EMA of the per-candle LongBias
-			double dynLbEmaSlow = double.NaN;         // slow EMA — MIN(fast, slow) caps transient spikes
+			double dynLbEma = double.NaN;             // EMA of the per-candle LongBias
 
 			// updates curHvPct from the completed return into `latest` (no look-ahead)
 			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
@@ -398,22 +375,9 @@ namespace StockOdds
 					double z = zHv + zP;
 					double raw = DynBase * Math.Exp(-DynDecay * z);
 					raw = Clamp(raw, DynMin, DynMax);
-					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar (a fast and a slow EMA).
-					// Modes: BiasEmaRatio=false -> effLongBias = MIN(fast, slow*DynSlowMult). BiasEmaRatio=true (DEFAULT) ->
-					// effLongBias = slow*DynSlowMult*m, m=clamp(slow/fast,Lo,Hi): base is the SLOW EMA*DynSlowMult, fast enters
-					// only via m, which LIFTS the bias when fast<slow (up to Hi) and damps when fast>slow. Hi in [0.25,2.0] broad-optimal.
+					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar, then floor at DynMin.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
-					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
-					if (BiasEmaRatio)
-					{
-						// monotonic: ceiling base scaled by the clamped slow/fast ratio (see comment above)
-						double m = Clamp(dynLbEmaSlow / Math.Max(dynLbEma, 1e-6), BiasEmaRatioLo, BiasEmaRatioHi);
-						effLongBias = Math.Max(dynLbEmaSlow * DynSlowMult * m, DynMin);
-					}
-					else
-					{
-						effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
-					}
+					effLongBias = Math.Max(dynLbEma, DynMin);
 				}
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
