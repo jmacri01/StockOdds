@@ -357,9 +357,11 @@ fill(pUp, pDn, color = color.new(#2962FF, 90), title = "Rebalance band")
 plot(showEma ? emaExp : na, "EMA (raw)",      color = color.new(#2962FF, 65), linewidth = 1)
 plot(showEma ? adjEma : na, "EMA (adj bias)", color = #2962FF, linewidth = 2)
 
-// adjusted EMA AFTER the RSI overlay: adjEma × 50/RSI — shows where RSI scaling drives the exposure
-rsiMultV  = (rsiOverlayPeriod > 0 and not na(rsiVal) and rsiVal > 0) ? 50.0 / rsiVal : 1.0
-adjEmaRsi = na(adjEma) ? na : adjEma * rsiMultV
+// adjusted EMA AFTER the RSI overlay, as actually traded: clamp(adjEma) then × 50/RSI then clamp
+// (RSI acts post-clamp in the engine, so we clamp adjEma FIRST — this line matches the position in-region).
+rsiMultV      = (rsiOverlayPeriod > 0 and not na(rsiVal) and rsiVal > 0) ? 50.0 / rsiVal : 1.0
+adjEmaClamped = na(adjEma) ? na : math.min(math.max(adjEma, loExp), hiExp)
+adjEmaRsi     = na(adjEmaClamped) ? na : math.min(math.max(adjEmaClamped * rsiMultV, loExp), hiExp)
 plot(showAdjRsi ? adjEmaRsi : na, "EMA (adj + RSI)", color = #E040FB, linewidth = 2)
 
 // per-candle dynamic long bias (own 0..max scale — rescales the pane when shown)
