@@ -146,7 +146,7 @@ That raw target is then:
 5. scaled by an **RSI overbought-trim overlay** (position × min(50 / RSI, 1) — trims exposure when overbought, never levers; +~0.05 Sharpe and 2–5 pts less drawdown out-of-sample. An ablation showed the trim is the entire edge — the oversold-lever half added nothing — so the overlay only de-risks),
 6. and finally, if the **raw exposure signal turns bearish** (out of region), overridden per the chosen **[mode](#the-three-modes)** — cash by default.
 
-**Default parameters** (`Program.cs`): Exposure EMA `24`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay `7`. The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay `7`. The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 

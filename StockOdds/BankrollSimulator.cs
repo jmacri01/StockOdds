@@ -124,9 +124,9 @@ namespace StockOdds
 		// all-Bull window gives dynBias (effLongBias + 1) and all-Bear gives -1. dynBias is
 		// then EMA-smoothed before skewing. Unclamped. effLongBias is the per-candle dynamic
 		// bias computed below. Applies to the smoothed exposure, not the per-candle target.
-		public static int    BiasPeriod    = 20;
+		public static int    BiasPeriod    = 15;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
-		public static int    BiasEmaPeriod = 100;
+		public static int    BiasEmaPeriod = 150;
 
 		// ============ Dynamic (per-candle) LongBias ============
 		// The per-candle bias is recomputed every candle from a combined trait z-score:

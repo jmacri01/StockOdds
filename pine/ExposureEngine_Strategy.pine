@@ -52,7 +52,7 @@ bearBear  = input.float(-1.00, "ST Bear",         step = 0.05, group = grpBear)
 
 // -- Smoothing & rebalance control
 grpSmooth = "Smoothing & rebalance"
-emaPeriod = input.int(24, "Exposure EMA period", minval = 1, group = grpSmooth,
+emaPeriod = input.int(5, "Exposure EMA period", minval = 1, group = grpSmooth,
      tooltip = "The per-candle target exposure is smoothed by this EMA before it is traded.")
 biasPeriod = input.int(15, "Bias period", minval = 1, group = grpSmooth,
      tooltip = "Look-back for the dynamic long bias. The LT direction (+1 Bull, -1 Bear) is summed over this many candles. A window evenly split Bull/Bear gives 0; all-Bull gives +1, all-Bear -1.")
