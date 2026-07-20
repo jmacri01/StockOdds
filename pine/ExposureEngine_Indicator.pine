@@ -37,6 +37,8 @@ showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 grpExp = "Exposure pane"
 showExposure = input.bool(true,  "Show exposure (position) line",  group = grpExp)
 showEma      = input.bool(true,  "Show exposure EMA line",         group = grpExp)
+showAdjRsi   = input.bool(true,  "Show adj EMA × RSI overlay",     group = grpExp,
+     tooltip = "Plots the bias-adjusted EMA after the RSI mean-reversion overlay (adjEma × 50/RSI) — where the RSI scaling pushes the exposure driver. Matches the position line's RSI behaviour; only meaningful when RSI overlay period > 0.")
 showBand     = input.bool(false, "Show rebalance band (EMA ± drift)", group = grpExp)
 showStValue  = input.bool(false, "Show ST-value stepline",         group = grpExp)
 showGuides   = input.bool(false, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
@@ -355,6 +357,11 @@ fill(pUp, pDn, color = color.new(#2962FF, 90), title = "Rebalance band")
 plot(showEma ? emaExp : na, "EMA (raw)",      color = color.new(#2962FF, 65), linewidth = 1)
 plot(showEma ? adjEma : na, "EMA (adj bias)", color = #2962FF, linewidth = 2)
 
+// adjusted EMA AFTER the RSI overlay: adjEma × 50/RSI — shows where RSI scaling drives the exposure
+rsiMultV  = (rsiOverlayPeriod > 0 and not na(rsiVal) and rsiVal > 0) ? 50.0 / rsiVal : 1.0
+adjEmaRsi = na(adjEma) ? na : adjEma * rsiMultV
+plot(showAdjRsi ? adjEmaRsi : na, "EMA (adj + RSI)", color = #E040FB, linewidth = 2)
+
 // per-candle dynamic long bias (own 0..max scale — rescales the pane when shown)
 plot(showDynLB ? effLongBias : na, "Dyn LongBias", color = #FF6D00, linewidth = 2, style = plot.style_stepline)
 
@@ -382,7 +389,8 @@ if showTable and barstate.islast
     f_row(1,  "ST State",    f_stName(stState), stCol)
     f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
     f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
-    f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
+    adjEmaTxt = na(adjEma) ? "—" : str.tostring(adjEma, "#.##") + (rsiOverlayPeriod > 0 and not na(adjEmaRsi) ? "  (×RSI " + str.tostring(adjEmaRsi, "#.##") + ")" : "")
+    f_row(4,  "Adj EMA",     adjEmaTxt,  color.white)
     f_row(5,  "Target",      bandTxt, color.white)
     f_row(6,  "Exposure",    na(position) ? "—" : str.tostring(position, "#.##"), posCol)
     f_row(7,  "Bull Count",  str.tostring(ltBullCount), color.white)
@@ -414,4 +422,5 @@ plot(showDebug ? dynBiasEma  : na, "DBG Dyn Bias EMA", display = display.data_wi
 plot(effLongBias, "DBG Dyn LongBias", display = display.data_window)
 plot(zTrait, "DBG z (HV+persist)", display = display.data_window)
 plot(showDebug ? adjEma      : na, "DBG Adj EMA",   display = display.data_window)
+plot(showDebug ? adjEmaRsi   : na, "DBG Adj EMA×RSI", display = display.data_window)
 plot(showDebug ? position    : na, "DBG Exposure",  display = display.data_window)
