@@ -111,7 +111,7 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
 
 grpRsi = "RSI position overlay"
 rsiOverlayPeriod = input.int(7, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
-     tooltip = "Mean-reversion overlay on the final position: position *= 50 / RSI(period) — trims into overbought (RSI>50), leans into oversold (RSI<50, capped at max). 0 disables. Validated to lift OOS Sharpe ~+0.05 and cut drawdown across all out-of-region modes.")
+     tooltip = "Overbought-trim overlay on the final position: position *= min(50 / RSI(period), 1) — trims when overbought (RSI>50); does nothing when oversold (capped at 1, never levers up). 0 disables. Validated to lift OOS Sharpe ~+0.05 and cut drawdown across all out-of-region modes; an ablation showed the trim is the entire edge, so it never levers.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -286,9 +286,9 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
-// RSI mean-reversion overlay on the in-region position: *= 50/RSI (trim overbought, lean oversold), before the out-of-region rule
+// RSI overbought-trim overlay on the in-region position: *= min(50/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * 50.0 / rsiVal, loExp), hiExp) : posClamped
+rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(50.0 / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
 // bearish -- the EMA of the (LT,ST) target (emaExp, before the bias skew) is < 0. Parameter-free.

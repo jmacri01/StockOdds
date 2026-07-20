@@ -193,10 +193,11 @@ namespace StockOdds
 		// Chosen over an earlier trailing-persistence rule: cleaner (one condition, no tuned windows) and higher
 		// out-of-sample Cash Sharpe (0.22 vs 0.11 on a broad ~1300-name universe).
 		public static int    BearRegimeMode = 1;
-		// RSI mean-reversion overlay on the FINAL position: posB *= 50/RSI(period) each bar -- trims into overbought
-		// (RSI>50) and leans into oversold (RSI<50, capped at the max clamp). Applied after the drift band and the
-		// out-of-region rule. Broad-500 OOS: lifts Sharpe ~+0.05 and cuts drawdown 2-6pts across all 3 regime modes.
-		// 0 = off; default 7 (Wilder RSI on close).
+		// RSI overbought-trim overlay on the FINAL position: posB *= min(50/RSI(period), 1) each bar -- trims when
+		// overbought (RSI>50 -> mult<1) and does NOTHING when oversold (capped at 1, never levers up). Applied after
+		// the drift band and the out-of-region rule. Broad-500 OOS: lifts Sharpe ~+0.05 and cuts drawdown 2-6pts across
+		// all 3 regime modes. A clamp ablation showed the ENTIRE edge is the overbought trim -- the oversold-lever half
+		// (the uncapped 50/RSI > 1) added nothing, so it's capped at 1. 0 = off; default 7 (Wilder RSI on close).
 		public static int    RsiOverlayPeriod = 7;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
@@ -439,7 +440,7 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
-				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = 50/RSI
+				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(50/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
 					{
@@ -452,7 +453,7 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
-							rsiMult = rsi > 1e-6 ? 50.0 / rsi : 1.0;
+							rsiMult = rsi > 1e-6 ? Math.Min(50.0 / rsi, 1.0) : 1.0;
 						}
 					}
 					rsiPrevClose = prev.Close;
