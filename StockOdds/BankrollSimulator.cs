@@ -197,11 +197,14 @@ namespace StockOdds
 		// trim in proportion to exposure. OUT-OF-REGION (ema<0) N stays fixed at RsiMultNumerator --
 		// that trim is load-bearing in Deploy (dropping it blows Deploy MaxDD 28->38) and must NOT be
 		// softened by the (1-ema)>1 blow-up. Set RsiExposureMult=0 to disable (fixed N everywhere, the
-		// pre-2026-07-20 behavior). Default 20, chosen by an OOS sweep across three disjoint random-500
-		// samples: it Pareto-beats every fixed N (Deploy Sharpe 0.564->0.582 AND MaxDD 28->26; Cash
-		// Sharpe 0.19->0.21 at MaxDD 18->12). A fixed N can only trade Sharpe for drawdown along a flat
-		// line; the shaping lifts Sharpe at matched drawdown -- confirmed vs an N={8,10,12,15} control.
-		public static double RsiExposureMult = 20.0;
+		// pre-2026-07-20 behavior -- the DEFAULT). Shaping (mult 20) does reduce the drawdown TAIL
+		// (Cash p90 MaxDD 23.5->16.1) and Pareto-beats a fixed N on Sharpe, but a layer ablation on the
+		// Calmar lens showed it trims return in ~proportion to drawdown (Calmar flat-to-negative: Deploy
+		// 0.677->0.650, Hold 0.462->0.379) -- it makes worst-case drawdowns shallower without lifting
+		// return-per-unit-risk, and it costs the Hold benchmark. So it is kept as an OPT-IN tail-DD tool,
+		// OFF by default; the shipped default is the fixed RsiMultNumerator (15) trim. Set >0 to enable
+		// exposure shaping (20 was the OOS-optimal mult if you do).
+		public static double RsiExposureMult = 0.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
