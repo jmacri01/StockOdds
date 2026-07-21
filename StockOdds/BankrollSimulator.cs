@@ -175,69 +175,18 @@ namespace StockOdds
 		// RSI overbought-trim overlay on the FINAL position: posB *= min(RsiMultNumerator/RSI(period), 1) each bar --
 		// trims when overbought and does NOTHING when oversold (capped at 1, never levers up). Applied after the drift
 		// band and the out-of-region rule. A clamp ablation showed the ENTIRE edge is the overbought trim (the oversold
-		// lever added nothing, so it's capped at 1). Two sweeps set the shape: a SHORT period (2, Connors-style) beats 7,
-		// and a LOW numerator (15, see below) beats 50 -- both replicate across four disjoint random-500 OOS samples and
-		// both are the same "trim harder" lever. Broad-500 OOS at 2/15: Deploy 0.68 / Cash 0.30 / Hold 0.55 vs B&H 0.50,
-		// at much lower drawdown. 0 = off; default period 2 (Wilder RSI on close).
+		// lever added nothing, so it's capped at 1). The period and numerator are the same "trim-aggressiveness" lever;
+		// a SHORT period (2, Connors-style) beats 7. 0 = off; default period 2 (Wilder RSI on close). See RsiMultNumerator.
 		public static int    RsiOverlayPeriod = 2;
-		// Numerator N in the trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth is N/RSI
-		// (at RSI=100, exposure -> N%). N is BOTH the overbought threshold and the trim depth. A sweep found a LOW N
-		// wins -- default 15 (was 50): beats 50 on Sharpe AND drawdown in every out-of-region mode, replicating across
-		// four disjoint random-500 OOS samples (broad Deploy 0.59->0.68, Cash MaxDD 23->~14). It is a deeper, earlier
-		// mean-reversion trim: more defensive (avg exposure/return down ~30%, drawdown down ~40%). CAVEAT: N and the RSI
-		// period are the same "trim-aggressiveness" lever, and all OOS windows are the mean-reverting 2023-26 period --
-		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
-		public static double RsiMultNumerator = 15.0;
+		// Numerator N in the overbought-trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth
+		// is N/RSI (at RSI=100, exposure -> N%). This is the ONLY conditioning on the trim -- a single fixed number.
+		// Default 50: a light overbought trim that keeps upside participation while capping the tail. Lower N trims
+		// harder (more defensive, less participation); higher N / RsiOverlayPeriod=0 approaches no trim. Chosen as the
+		// single knob after volume/ATR/exposure-shaping conditioning was removed for failing to help BOTH the curated
+		// basket AND the broad OOS sets simultaneously (basket wants no trim, broad wants a hard trim -- 50 is the
+		// participation-tilted point that is coherent on both without overfitting to survivor names).
+		public static double RsiMultNumerator = 50.0;
 
-		// Quiet-bull volume trim (DEFAULT ON). When the name is LT-Bull and its decision-bar volume is
-		// BELOW its recent average (relVol = vol / avg(prior RsiQuietVolWindow bars) < 1), the RSI numerator
-		// drops to RsiQuietBullN (a harder trim); otherwise it stays at RsiMultNumerator. Rationale: quiet /
-		// below-average-volume bull bars are conviction-less drift that gives back over the next weeks
-		// (a replicated, orthogonal volume signal — the ONLY non-price feature that survived OOS), so trim
-		// them harder; volume-normal/elevated bull bars keep the base N. Volume is orthogonal to the price
-		// RSI, so this ADDS edge rather than duplicating the trim. OOS (4 random-500 samples, both modes):
-		// beats fixed N=15 on Sharpe AND drawdown on all four (Deploy ~0.65->0.67 / DD -1, Cash ~0.30->0.32
-		// / DD -2), replicated; the edge is robust to the window (any 13-30 equivalent, 15 chosen). Set
-		// RsiQuietVolWindow = 0 to disable (pure fixed RsiMultNumerator, the pre-volume behavior). Only fires
-		// in LT-Bull; LT-Bear and volume-normal bull bars are unaffected.
-		public static int    RsiQuietVolWindow = 15;
-		public static double RsiQuietBullN     = 8.0;
-
-		// Range-expansion trim (DEFAULT ON, mode 1). On LT-Bull bars whose range (high-low) exceeds
-		// RangeTrimThreshold x ATR(RangeTrimAtrPeriod) [as of the prior bar], de-risk. Motivated by the
-		// replicated (4/4 OOS) finding that EXTREME-wide-range LT-Bull bars precede fwd-20 give-back
-		// (blow-off), while the equivalent bar in LT-Bear precedes recovery -- so this only fires in LT-Bull.
-		//   Mode 1 (shipped): tighten the RSI numerator to min(numer, RangeTrimN) -> a deeper RSI trim. The
-		//     RSI gate is the point: it only bites when the wide bar is ALSO overbought (a wide UP bar), so
-		//     it de-levers the give-back bars and leaves wide DOWN bars alone. Beat mode 2 on Cash Sharpe.
-		//   Mode 2: multiply the final position by RangeTrimMult -> a blind standalone de-lever (kept as an option).
-		// ORTHOGONAL to the quiet-bull volume trim: that fires on LOW-volume bull bars, this on EXTREME-WIDE
-		// (usually high-volume) bull bars -- nearly disjoint. The two ADD: range trim lifts Deploy Sharpe
-		// ~+0.02 and Cash ~+0.03 whether or not the volume rule is on, replicated on all 4 random-500 samples,
-		// at lower drawdown. Threshold 1.8 (top ~5% of bars) beat 1.5/1.3; the edge is in the extreme tail.
-		// CAVEAT: like the rest of the overlay, a defensive trim tuned on a mean-reverting window. 0 = off.
-		public static int    RangeTrimAtrPeriod = 30;    // 0 = off; ATR period for range/ATR
-		public static double RangeTrimThreshold = 1.8;   // range/ATR trigger (top ~5% at ATR30)
-		public static int    RangeTrimMode      = 1;     // 0 off, 1 = tighten RSI N (shipped), 2 = separate position mult
-		public static double RangeTrimN         = 3.0;   // mode 1
-		public static double RangeTrimMult      = 0.5;   // mode 2
-
-		// Exposure-shaped numerator (IN-REGION ONLY). Instead of a fixed N, scale the trim by how
-		// exposed the position already is: N = clamp((1 - ema) * RsiExposureMult, 1, 100), where ema is
-		// the (lag-1) raw exposure EMA. Near-full-long (ema->1) => N->1 (fade overbought hard, since a
-		// pullback hurts most when you're most exposed); lightly long (ema->0) => N->RsiExposureMult
-		// (~the old fixed baseline, little to protect). This is a RISK-SIZING rule, not a trait bet:
-		// trim in proportion to exposure. OUT-OF-REGION (ema<0) N stays fixed at RsiMultNumerator --
-		// that trim is load-bearing in Deploy (dropping it blows Deploy MaxDD 28->38) and must NOT be
-		// softened by the (1-ema)>1 blow-up. Set RsiExposureMult=0 to disable (fixed N everywhere, the
-		// pre-2026-07-20 behavior -- the DEFAULT). Shaping (mult 20) does reduce the drawdown TAIL
-		// (Cash p90 MaxDD 23.5->16.1) and Pareto-beats a fixed N on Sharpe, but a layer ablation on the
-		// Calmar lens showed it trims return in ~proportion to drawdown (Calmar flat-to-negative: Deploy
-		// 0.677->0.650, Hold 0.462->0.379) -- it makes worst-case drawdowns shallower without lifting
-		// return-per-unit-risk, and it costs the Hold benchmark. So it is kept as an OPT-IN tail-DD tool,
-		// OFF by default; the shipped default is the fixed RsiMultNumerator (15) trim. Set >0 to enable
-		// exposure shaping (20 was the OOS-optimal mult if you do).
-		public static double RsiExposureMult = 0.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -336,26 +285,7 @@ namespace StockOdds
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
-			double relVol = 1.0;
-			double rangeMultCur = 1.0;   // mode-2 range trim multiplier for the current decision bar
 
-			// Precompute Wilder ATR(RangeTrimAtrPeriod): atrArr[k] = ATR through bar k inclusive.
-			double[] atrArr = null;
-			if (RangeTrimAtrPeriod > 0)
-			{
-				atrArr = new double[bars.Count];
-				double atr = double.NaN, seed = 0.0; int sc = 0;
-				for (int k = 0; k < bars.Count; k++)
-				{
-					if (k >= 1)
-					{
-						double tr = Math.Max(bars[k].High - bars[k].Low, Math.Max(Math.Abs(bars[k].High - bars[k - 1].Close), Math.Abs(bars[k].Low - bars[k - 1].Close)));
-						if (sc < RangeTrimAtrPeriod) { seed += tr; sc++; if (sc == RangeTrimAtrPeriod) atr = seed / RangeTrimAtrPeriod; }
-						else atr = (atr * (RangeTrimAtrPeriod - 1) + tr) / RangeTrimAtrPeriod;
-					}
-					atrArr[k] = atr;
-				}
-			}
 
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
@@ -469,7 +399,6 @@ namespace StockOdds
 					held = adjEma;
 				double posB = Clamp(held, minExp, maxExp);
 				if (RsiOverlayPeriod > 0) posB = Clamp(posB * rsiMult, minExp, maxExp);
-				if (RangeTrimMode == 2) posB = Clamp(posB * rangeMultCur, minExp, maxExp);   // range-expansion -> standalone de-lever
 				return posB;
 			}
 
@@ -485,17 +414,6 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
-				relVol = 1.0;   // decision-bar volume vs avg of the prior RsiQuietVolWindow bars
-				if (RsiQuietVolWindow > 0 && i - 1 - RsiQuietVolWindow >= 0)
-				{
-					double vsum = 0.0; for (int vj = i - 1 - RsiQuietVolWindow; vj <= i - 2; vj++) vsum += bars[vj].Volume;
-					double vavg = vsum / RsiQuietVolWindow; if (vavg > 0) relVol = prev.Volume / vavg;
-				}
-				// range-expansion trigger: decision bar (prev) range vs ATR as of the bar before it, in LT-Bull only
-				bool rangeTrig = false;
-				if (RangeTrimAtrPeriod > 0 && lt == LongTermState.Bull && i - 2 >= 0 && atrArr[i - 2] > 0)
-					rangeTrig = (prev.High - prev.Low) / atrArr[i - 2] > RangeTrimThreshold;
-				rangeMultCur = (RangeTrimMode == 2 && rangeTrig) ? RangeTrimMult : 1.0;
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -510,11 +428,6 @@ namespace StockOdds
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
 							double numer = RsiMultNumerator;
-							if (RsiExposureMult > 0.0 && !double.IsNaN(ema) && ema >= 0.0)   // in-region: scale trim by exposure
-								numer = Clamp((1.0 - ema) * RsiExposureMult, 1.0, 100.0);
-							else if (RsiQuietVolWindow > 0 && lt == LongTermState.Bull && relVol < 1.0)   // quiet-bull volume -> harder trim
-								numer = RsiQuietBullN;
-							if (RangeTrimMode == 1 && rangeTrig) numer = Math.Min(numer, RangeTrimN);   // range-expansion -> deeper RSI trim
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}

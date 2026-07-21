@@ -61,7 +61,6 @@ namespace StockOdds
 			var highs = quote.GetProperty("high");
 			var lows = quote.GetProperty("low");
 			var closes = quote.GetProperty("close");
-			var hasVol = quote.TryGetProperty("volume", out var volumes);
 
 			var bars = new List<OhlcBar>();
 
@@ -77,18 +76,13 @@ namespace StockOdds
 
 				long ts = timestamps[i].GetInt64();
 
-				double vol = 0.0;
-				if (hasVol && volumes[i].ValueKind != JsonValueKind.Null)
-					vol = volumes[i].GetDouble();
-
 				bars.Add(new OhlcBar
 				{
 					Date = DateTimeOffset.FromUnixTimeSeconds(ts).UtcDateTime,
 					Open = o.Value,
 					High = h.Value,
 					Low = l.Value,
-					Close = c.Value,
-					Volume = vol
+					Close = c.Value
 				});
 			}
 
