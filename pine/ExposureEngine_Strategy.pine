@@ -90,8 +90,10 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
 grpRsi = "RSI position overlay"
 rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
      tooltip = "Overbought-trim overlay on the final position: position *= min(N / RSI(period), 1), N = numerator below — trims when overbought; does nothing when oversold (capped at 1, never levers up). 0 disables. Short period (2) validated best across four random-500 OOS samples; an ablation showed the trim is the entire edge, so it never levers.")
-rsiMultNumerator = input.float(15, "RSI mult numerator N", minval = 1, group = grpRsi,
-     tooltip = "Numerator N in min(N/RSI, 1): the overbought threshold AND trim depth (trim begins when RSI>N; at RSI=100 exposure -> N%). A LOW N (default 15, was 50) beats 50 on Sharpe AND drawdown across four random-500 OOS samples -- a deeper, earlier mean-reversion trim (more defensive). CAVEAT: leans on the mean-reverting 2023-26 test window; would under-participate in a sustained momentum regime.")
+rsiMultNumerator = input.float(15, "RSI mult numerator N (out-of-region / shaping off)", minval = 1, group = grpRsi,
+     tooltip = "Numerator N in min(N/RSI, 1): the overbought threshold AND trim depth (trim begins when RSI>N; at RSI=100 exposure -> N%). Used out-of-region (Deploy's ema<0 bars) and whenever exposure shaping is off. A LOW N (default 15, was 50) beats 50 on Sharpe AND drawdown across four random-500 OOS samples -- a deeper, earlier mean-reversion trim (more defensive). CAVEAT: leans on the mean-reverting 2023-26 test window; would under-participate in a sustained momentum regime.")
+rsiExposureMult = input.float(20, "RSI exposure shaping mult (0 = fixed N)", minval = 0, group = grpRsi,
+     tooltip = "IN-REGION, scale the trim by how exposed the position is: N = clamp((1 - ema) * this, 1, 100). Near-full-long (ema->1) => N->1 (fade overbought hard when a pullback hurts most); lightly long (ema->0) => N->this (~the fixed baseline). A risk-sizing rule, not a trait bet. Out-of-region N stays fixed at the numerator above. Default 20 Pareto-beats every fixed N across three random-500 OOS samples (Deploy Sharpe 0.564->0.582 at lower drawdown; Cash Sharpe up at MaxDD 18->12). 0 = disable (fixed N everywhere).")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -249,9 +251,11 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
-// RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1), N = rsiMultNumerator (trim when overbought only, never levers), before the out-of-region rule
+// RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
+// N is exposure-shaped in-region: N = clamp((1 - emaExp) * rsiExposureMult, 1, 100) -- trim harder the more exposed you are; out-of-region it stays fixed at rsiMultNumerator.
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiMultNumerator / rsiVal, 1.0), loExp), hiExp) : posClamped
+rsiNumer = (rsiExposureMult > 0 and not na(emaExp) and emaExp >= 0) ? math.min(math.max((1 - emaExp) * rsiExposureMult, 1.0), 100.0) : rsiMultNumerator
+rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiNumer / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
 // bearish -- the EMA of the (LT,ST) target (emaExp, before the bias skew) is < 0. Parameter-free.

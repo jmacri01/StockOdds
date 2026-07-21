@@ -189,6 +189,20 @@ namespace StockOdds
 		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
 		public static double RsiMultNumerator = 15.0;
 
+		// Exposure-shaped numerator (IN-REGION ONLY). Instead of a fixed N, scale the trim by how
+		// exposed the position already is: N = clamp((1 - ema) * RsiExposureMult, 1, 100), where ema is
+		// the (lag-1) raw exposure EMA. Near-full-long (ema->1) => N->1 (fade overbought hard, since a
+		// pullback hurts most when you're most exposed); lightly long (ema->0) => N->RsiExposureMult
+		// (~the old fixed baseline, little to protect). This is a RISK-SIZING rule, not a trait bet:
+		// trim in proportion to exposure. OUT-OF-REGION (ema<0) N stays fixed at RsiMultNumerator --
+		// that trim is load-bearing in Deploy (dropping it blows Deploy MaxDD 28->38) and must NOT be
+		// softened by the (1-ema)>1 blow-up. Set RsiExposureMult=0 to disable (fixed N everywhere, the
+		// pre-2026-07-20 behavior). Default 20, chosen by an OOS sweep across three disjoint random-500
+		// samples: it Pareto-beats every fixed N (Deploy Sharpe 0.564->0.582 AND MaxDD 28->26; Cash
+		// Sharpe 0.19->0.21 at MaxDD 18->12). A fixed N can only trade Sharpe for drawdown along a flat
+		// line; the shaping lifts Sharpe at matched drawdown -- confirmed vs an N={8,10,12,15} control.
+		public static double RsiExposureMult = 20.0;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -427,7 +441,10 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
-							rsiMult = rsi > 1e-6 ? Math.Min(RsiMultNumerator / rsi, 1.0) : 1.0;
+							double numer = RsiMultNumerator;
+							if (RsiExposureMult > 0.0 && !double.IsNaN(ema) && ema >= 0.0)   // in-region: scale trim by exposure
+								numer = Clamp((1.0 - ema) * RsiExposureMult, 1.0, 100.0);
+							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
 					rsiPrevClose = prev.Close;
