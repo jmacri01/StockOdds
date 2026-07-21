@@ -175,33 +175,18 @@ namespace StockOdds
 		// RSI overbought-trim overlay on the FINAL position: posB *= min(RsiMultNumerator/RSI(period), 1) each bar --
 		// trims when overbought and does NOTHING when oversold (capped at 1, never levers up). Applied after the drift
 		// band and the out-of-region rule. A clamp ablation showed the ENTIRE edge is the overbought trim (the oversold
-		// lever added nothing, so it's capped at 1). Two sweeps set the shape: a SHORT period (2, Connors-style) beats 7,
-		// and a LOW numerator (15, see below) beats 50 -- both replicate across four disjoint random-500 OOS samples and
-		// both are the same "trim harder" lever. Broad-500 OOS at 2/15: Deploy 0.68 / Cash 0.30 / Hold 0.55 vs B&H 0.50,
-		// at much lower drawdown. 0 = off; default period 2 (Wilder RSI on close).
+		// lever added nothing, so it's capped at 1). The period and numerator are the same "trim-aggressiveness" lever;
+		// a SHORT period (2, Connors-style) beats 7. 0 = off; default period 2 (Wilder RSI on close). See RsiMultNumerator.
 		public static int    RsiOverlayPeriod = 2;
-		// Numerator N in the trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth is N/RSI
-		// (at RSI=100, exposure -> N%). N is BOTH the overbought threshold and the trim depth. A sweep found a LOW N
-		// wins -- default 15 (was 50): beats 50 on Sharpe AND drawdown in every out-of-region mode, replicating across
-		// four disjoint random-500 OOS samples (broad Deploy 0.59->0.68, Cash MaxDD 23->~14). It is a deeper, earlier
-		// mean-reversion trim: more defensive (avg exposure/return down ~30%, drawdown down ~40%). CAVEAT: N and the RSI
-		// period are the same "trim-aggressiveness" lever, and all OOS windows are the mean-reverting 2023-26 period --
-		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
-		public static double RsiMultNumerator = 15.0;
+		// Numerator N in the overbought-trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth
+		// is N/RSI (at RSI=100, exposure -> N%). This is the ONLY conditioning on the trim -- a single fixed number.
+		// Default 50: a light overbought trim that keeps upside participation while capping the tail. Lower N trims
+		// harder (more defensive, less participation); higher N / RsiOverlayPeriod=0 approaches no trim. Chosen as the
+		// single knob after volume/ATR/exposure-shaping conditioning was removed for failing to help BOTH the curated
+		// basket AND the broad OOS sets simultaneously (basket wants no trim, broad wants a hard trim -- 50 is the
+		// participation-tilted point that is coherent on both without overfitting to survivor names).
+		public static double RsiMultNumerator = 50.0;
 
-		// Exposure-shaped numerator (IN-REGION ONLY). Instead of a fixed N, scale the trim by how
-		// exposed the position already is: N = clamp((1 - ema) * RsiExposureMult, 1, 100), where ema is
-		// the (lag-1) raw exposure EMA. Near-full-long (ema->1) => N->1 (fade overbought hard, since a
-		// pullback hurts most when you're most exposed); lightly long (ema->0) => N->RsiExposureMult
-		// (~the old fixed baseline, little to protect). This is a RISK-SIZING rule, not a trait bet:
-		// trim in proportion to exposure. OUT-OF-REGION (ema<0) N stays fixed at RsiMultNumerator --
-		// that trim is load-bearing in Deploy (dropping it blows Deploy MaxDD 28->38) and must NOT be
-		// softened by the (1-ema)>1 blow-up. Set RsiExposureMult=0 to disable (fixed N everywhere, the
-		// pre-2026-07-20 behavior). Default 20, chosen by an OOS sweep across three disjoint random-500
-		// samples: it Pareto-beats every fixed N (Deploy Sharpe 0.564->0.582 AND MaxDD 28->26; Cash
-		// Sharpe 0.19->0.21 at MaxDD 18->12). A fixed N can only trade Sharpe for drawdown along a flat
-		// line; the shaping lifts Sharpe at matched drawdown -- confirmed vs an N={8,10,12,15} control.
-		public static double RsiExposureMult = 20.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -300,6 +285,7 @@ namespace StockOdds
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
+
 
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
@@ -442,8 +428,6 @@ namespace StockOdds
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
 							double numer = RsiMultNumerator;
-							if (RsiExposureMult > 0.0 && !double.IsNaN(ema) && ema >= 0.0)   // in-region: scale trim by exposure
-								numer = Clamp((1.0 - ema) * RsiExposureMult, 1.0, 100.0);
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
