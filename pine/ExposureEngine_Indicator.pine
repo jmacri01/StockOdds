@@ -112,6 +112,12 @@ quietVolWindow = input.int(15, "Quiet-bull volume window (0 = off)", minval = 0,
      tooltip = "Trailing volume window for the quiet-bull rule. When exposure shaping is OFF and the bar is LT-Bull with relVol < 1 (volume below its prior-N-bar average), the RSI numerator tightens to 'Quiet-bull N' below -- trimming harder into low-participation strength. Volume is the only NON-price signal that survived four random-500 OOS samples; this quiet-bull rule was the only conditioning that beat the fixed numerator on BOTH Sharpe and drawdown across all four. 0 disables (revert to the fixed numerator everywhere).")
 quietBullN = input.float(8, "Quiet-bull N", minval = 1, group = grpRsi,
      tooltip = "RSI numerator used on quiet-volume LT-Bull bars (relVol < 1). Lower than the base numerator (8 vs 15) => a deeper overbought trim exactly when a bull bar prints on below-average volume.")
+rangeTrimAtr = input.int(30, "Range-trim ATR period (0 = off)", minval = 0, group = grpRsi,
+     tooltip = "Range-expansion trim. On LT-Bull bars whose range (high-low) exceeds 'Range-trim threshold' x ATR(this)[prior bar], the RSI numerator tightens to 'Range-trim N' -- a deeper overbought trim on extreme-wide bull bars, which precede fwd give-back (replicated 4/4 OOS). ORTHOGONAL to the quiet-bull volume rule (that fires on LOW-volume bars, this on WIDE/high-volume bars); the two ADD. 0 disables.")
+rangeTrimThresh = input.float(1.8, "Range-trim threshold (range/ATR)", minval = 0.1, group = grpRsi,
+     tooltip = "Trigger level: fires when LT-Bull and range/ATR exceeds this (1.8 ~ top 5% of bars). Higher = rarer/more-extreme bars only; 1.8 beat 1.5/1.3 OOS (the edge is in the extreme tail).")
+rangeTrimN = input.float(3, "Range-trim N", minval = 1, group = grpRsi,
+     tooltip = "RSI numerator used on extreme-wide LT-Bull bars (range/ATR > threshold). The trim is min(current N, this), and only bites when RSI is also high -- so it de-levers wide UP (overbought) bars and leaves wide DOWN bars alone.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -286,10 +292,14 @@ posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 // RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
 // N is exposure-shaped in-region: N = clamp((1 - emaExp) * rsiExposureMult, 1, 100) -- trim harder the more exposed you are; out-of-region it stays fixed at rsiMultNumerator.
 // Quiet-bull rule: when shaping is off, LT-Bull bars printing on below-average volume (relVol < 1) tighten N to quietBullN.
+// Range-trim rule: extreme-wide LT-Bull bars (range/ATR > threshold) further tighten N to min(N, rangeTrimN).
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
 // relVol = this bar's volume vs the average of the prior quietVolWindow bars (EXCLUDING the current bar).
 relVol = quietVolWindow > 0 and not na(ta.sma(volume, quietVolWindow)[1]) and ta.sma(volume, quietVolWindow)[1] > 0 ? volume / ta.sma(volume, quietVolWindow)[1] : 1.0
 rsiNumer = (rsiExposureMult > 0 and not na(emaExp) and emaExp >= 0) ? math.min(math.max((1 - emaExp) * rsiExposureMult, 1.0), 100.0) : (quietVolWindow > 0 and ltState == 1 and relVol < 1.0 ? quietBullN : rsiMultNumerator)
+// range/ATR as of the PRIOR bar (ta.atr[1]); tighten N on extreme-wide LT-Bull bars
+rangeRatio = rangeTrimAtr > 0 and not na(ta.atr(rangeTrimAtr)[1]) and ta.atr(rangeTrimAtr)[1] > 0 ? (high - low) / ta.atr(rangeTrimAtr)[1] : 0.0
+rsiNumer := (rangeTrimAtr > 0 and ltState == 1 and rangeRatio > rangeTrimThresh) ? math.min(rsiNumer, rangeTrimN) : rsiNumer
 rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiNumer / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is

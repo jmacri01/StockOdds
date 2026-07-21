@@ -203,6 +203,25 @@ namespace StockOdds
 		public static int    RsiQuietVolWindow = 15;
 		public static double RsiQuietBullN     = 8.0;
 
+		// Range-expansion trim (DEFAULT ON, mode 1). On LT-Bull bars whose range (high-low) exceeds
+		// RangeTrimThreshold x ATR(RangeTrimAtrPeriod) [as of the prior bar], de-risk. Motivated by the
+		// replicated (4/4 OOS) finding that EXTREME-wide-range LT-Bull bars precede fwd-20 give-back
+		// (blow-off), while the equivalent bar in LT-Bear precedes recovery -- so this only fires in LT-Bull.
+		//   Mode 1 (shipped): tighten the RSI numerator to min(numer, RangeTrimN) -> a deeper RSI trim. The
+		//     RSI gate is the point: it only bites when the wide bar is ALSO overbought (a wide UP bar), so
+		//     it de-levers the give-back bars and leaves wide DOWN bars alone. Beat mode 2 on Cash Sharpe.
+		//   Mode 2: multiply the final position by RangeTrimMult -> a blind standalone de-lever (kept as an option).
+		// ORTHOGONAL to the quiet-bull volume trim: that fires on LOW-volume bull bars, this on EXTREME-WIDE
+		// (usually high-volume) bull bars -- nearly disjoint. The two ADD: range trim lifts Deploy Sharpe
+		// ~+0.02 and Cash ~+0.03 whether or not the volume rule is on, replicated on all 4 random-500 samples,
+		// at lower drawdown. Threshold 1.8 (top ~5% of bars) beat 1.5/1.3; the edge is in the extreme tail.
+		// CAVEAT: like the rest of the overlay, a defensive trim tuned on a mean-reverting window. 0 = off.
+		public static int    RangeTrimAtrPeriod = 30;    // 0 = off; ATR period for range/ATR
+		public static double RangeTrimThreshold = 1.8;   // range/ATR trigger (top ~5% at ATR30)
+		public static int    RangeTrimMode      = 1;     // 0 off, 1 = tighten RSI N (shipped), 2 = separate position mult
+		public static double RangeTrimN         = 3.0;   // mode 1
+		public static double RangeTrimMult      = 0.5;   // mode 2
+
 		// Exposure-shaped numerator (IN-REGION ONLY). Instead of a fixed N, scale the trim by how
 		// exposed the position already is: N = clamp((1 - ema) * RsiExposureMult, 1, 100), where ema is
 		// the (lag-1) raw exposure EMA. Near-full-long (ema->1) => N->1 (fade overbought hard, since a
@@ -318,6 +337,25 @@ namespace StockOdds
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
 			double relVol = 1.0;
+			double rangeMultCur = 1.0;   // mode-2 range trim multiplier for the current decision bar
+
+			// Precompute Wilder ATR(RangeTrimAtrPeriod): atrArr[k] = ATR through bar k inclusive.
+			double[] atrArr = null;
+			if (RangeTrimAtrPeriod > 0)
+			{
+				atrArr = new double[bars.Count];
+				double atr = double.NaN, seed = 0.0; int sc = 0;
+				for (int k = 0; k < bars.Count; k++)
+				{
+					if (k >= 1)
+					{
+						double tr = Math.Max(bars[k].High - bars[k].Low, Math.Max(Math.Abs(bars[k].High - bars[k - 1].Close), Math.Abs(bars[k].Low - bars[k - 1].Close)));
+						if (sc < RangeTrimAtrPeriod) { seed += tr; sc++; if (sc == RangeTrimAtrPeriod) atr = seed / RangeTrimAtrPeriod; }
+						else atr = (atr * (RangeTrimAtrPeriod - 1) + tr) / RangeTrimAtrPeriod;
+					}
+					atrArr[k] = atr;
+				}
+			}
 
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
@@ -431,6 +469,7 @@ namespace StockOdds
 					held = adjEma;
 				double posB = Clamp(held, minExp, maxExp);
 				if (RsiOverlayPeriod > 0) posB = Clamp(posB * rsiMult, minExp, maxExp);
+				if (RangeTrimMode == 2) posB = Clamp(posB * rangeMultCur, minExp, maxExp);   // range-expansion -> standalone de-lever
 				return posB;
 			}
 
@@ -452,6 +491,11 @@ namespace StockOdds
 					double vsum = 0.0; for (int vj = i - 1 - RsiQuietVolWindow; vj <= i - 2; vj++) vsum += bars[vj].Volume;
 					double vavg = vsum / RsiQuietVolWindow; if (vavg > 0) relVol = prev.Volume / vavg;
 				}
+				// range-expansion trigger: decision bar (prev) range vs ATR as of the bar before it, in LT-Bull only
+				bool rangeTrig = false;
+				if (RangeTrimAtrPeriod > 0 && lt == LongTermState.Bull && i - 2 >= 0 && atrArr[i - 2] > 0)
+					rangeTrig = (prev.High - prev.Low) / atrArr[i - 2] > RangeTrimThreshold;
+				rangeMultCur = (RangeTrimMode == 2 && rangeTrig) ? RangeTrimMult : 1.0;
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -470,6 +514,7 @@ namespace StockOdds
 								numer = Clamp((1.0 - ema) * RsiExposureMult, 1.0, 100.0);
 							else if (RsiQuietVolWindow > 0 && lt == LongTermState.Bull && relVol < 1.0)   // quiet-bull volume -> harder trim
 								numer = RsiQuietBullN;
+							if (RangeTrimMode == 1 && rangeTrig) numer = Math.Min(numer, RangeTrimN);   // range-expansion -> deeper RSI trim
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
