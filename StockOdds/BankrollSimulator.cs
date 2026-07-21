@@ -124,9 +124,9 @@ namespace StockOdds
 		// all-Bull window gives dynBias (effLongBias + 1) and all-Bear gives -1. dynBias is
 		// then EMA-smoothed before skewing. Unclamped. effLongBias is the per-candle dynamic
 		// bias computed below. Applies to the smoothed exposure, not the per-candle target.
-		public static int    BiasPeriod    = 20;
+		public static int    BiasPeriod    = 15;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
-		public static int    BiasEmaPeriod = 100;
+		public static int    BiasEmaPeriod = 150;
 
 		// ============ Dynamic (per-candle) LongBias ============
 		// The per-candle bias is recomputed every candle from a combined trait z-score:
@@ -150,33 +150,14 @@ namespace StockOdds
 		public static double DynBase         = 1.0;    // LongBias at z = 0
 		public static double DynDecay        = 0.6;    // decay rate
 		public static double DynMin          = 0.0;
-		// ===== High-vol screening default (see README "screening preset") =====
-		// The bias cap is a SLOW EMA (150) of the raw bias, scaled to half: effLongBias =
-		// MAX(MIN(fast EMA, slow EMA), DynMin). DynMax is raised to 150 so the raw
-		// bias isn't pre-clamped and the slow-EMA*mult IS the effective, scale-aware ceiling.
-		// This is a deliberate DEFENSIVE tilt for volatile names: it captures the runs (per-name
-		// compounds preserved/improved) and is more robust through a real bear (full-window incl.
-		// 2022: HV Sharpe 0.43->0.47, drawdown flat) at the cost of some bull-ONLY OOS Sharpe
-		// (0.46->0.38). It does NOT dominate on the bull-only walk-forward — it's a risk-appetite
-		// choice, not a free win, and the full-window edge leans on the one in-sample 2022 bear.
-		// NOTE: this default REQUIRES DynMax raised — at DynMax=15 the same slow/mult over-clamps
-		// and craters names (SMCI 733%->94%). To revert to the neutral baseline: DynMax=15,
-		// DynSmoothSlow=DynSmoothPeriod (10).
-		public static double DynMax          = 150.0; // raised so the slow-EMA*mult is the real ceiling
-		public static int    DynSmoothPeriod = 10;     // fast EMA smoothing of the per-candle bias (1 = off)
-		public static int    DynSmoothSlow   = 150;    // slow EMA; MIN(fast, slow*mult) caps transient spikes
-		public static double DynSlowMult     = 0.5;    // scales the slow-EMA ceiling (proportional bias cap)
-		// Scale the bias by longEMA/shortEMA = slowBiasEMA / fastBiasEMA (clamped), on a fixed CEILING base:
-		//   effLongBias = slow * clamp(slow/fast, lo, hi).
-		// This is monotonic-decreasing in the fast EMA — lift the bias as the fast dips below the slow (a
-		// recent pullback in the bias) and damp it as the fast rises above (a recent spike); neutral (= the
-		// plain ceiling) when fast == slow. Using the ceiling (not MIN(fast, ceiling)) as the base removes the
-		// non-monotonic "tent" (which peaked at fast = slow/2 and fell back for very low fast). Validated on a
-		// broad random 500-name US-common-stock sample AND vs buy-&-hold: closes most of the Sharpe gap to B&H
-		// (0.13->0.17 vs 0.19), keeps ~the entire drawdown edge (shallower than B&H on 82% of names), and is
-		// best across the 50-100% HV deployment band; the give-up vs the old tent is only on >100% HV lottery
-		// names. On by default. Set false for the plain ceiling'd bias.
-		public static bool   BiasEmaRatio    = true;
+		// The per-candle bias is just EMA-smoothed over DynSmoothPeriod so it can't whipsaw (the raw value jumps
+		// because the persistence ratio is jumpy and the exp map is convex): effLongBias = MAX(EMA(raw), DynMin).
+		// DynMax caps the raw bias before smoothing (rarely binds). NOTE: an earlier slow/fast-EMA "ceiling + ratio"
+		// apparatus (BiasEmaRatio / DynSmoothSlow / DynSlowMult / clamps) was REMOVED -- an OOS test across four
+		// random-500 samples showed this plain fast-EMA bias matched or slightly beat it in every mode, so the
+		// machinery (4 knobs) didn't earn its weight. Keep the bias simple.
+		public static double DynMax          = 150.0; // raw-bias cap (rarely binds)
+		public static int    DynSmoothPeriod = 10;    // EMA smoothing of the per-candle bias (1 = off)
 		// Split the long bias across BOTH LT directions in the rolling sum: a Bull candle contributes
 		// 1 + bias/2 and a Bear candle -1 + bias/2 (instead of 1+bias / -1). The bias becomes a long
 		// tilt on both sides, so a high-bias (quiet+choppy) name keeps its conviction elevated THROUGH
@@ -185,19 +166,28 @@ namespace StockOdds
 		// Sharpe up in EVERY HV bucket (0.17->0.20, 63% of names), edges buy&hold on Sharpe (0.20 vs 0.19),
 		// at ~flat drawdown (only the >100% HV lottery bucket runs ~4pp deeper). On by default.
 		public static bool   BiasSplit     = true;
-		public static double BiasEmaRatioLo  = 0.25;   // clamp floor on slow/fast (max damp)
-		public static double BiasEmaRatioHi  = 2.0;    // clamp ceiling on slow/fast (max lift)
 		// OUT-OF-REGION rule: a name is out of its edge regime whenever the RAW exposure signal is bearish -- i.e.
 		// the EMA of the (LT,ST) target exposure (`ema`, before the bias skew) is < 0. Parameter-free (no windows).
 		// 1 = go to CASH (default -- rotate capital to an in-region name); 0 = keep deploying; 2 = mirror buy&hold.
 		// Chosen over an earlier trailing-persistence rule: cleaner (one condition, no tuned windows) and higher
 		// out-of-sample Cash Sharpe (0.22 vs 0.11 on a broad ~1300-name universe).
 		public static int    BearRegimeMode = 1;
-		// RSI mean-reversion overlay on the FINAL position: posB *= 50/RSI(period) each bar -- trims into overbought
-		// (RSI>50) and leans into oversold (RSI<50, capped at the max clamp). Applied after the drift band and the
-		// out-of-region rule. Broad-500 OOS: lifts Sharpe ~+0.05 and cuts drawdown 2-6pts across all 3 regime modes.
-		// 0 = off; default 7 (Wilder RSI on close).
-		public static int    RsiOverlayPeriod = 7;
+		// RSI overbought-trim overlay on the FINAL position: posB *= min(RsiMultNumerator/RSI(period), 1) each bar --
+		// trims when overbought and does NOTHING when oversold (capped at 1, never levers up). Applied after the drift
+		// band and the out-of-region rule. A clamp ablation showed the ENTIRE edge is the overbought trim (the oversold
+		// lever added nothing, so it's capped at 1). Two sweeps set the shape: a SHORT period (2, Connors-style) beats 7,
+		// and a LOW numerator (15, see below) beats 50 -- both replicate across four disjoint random-500 OOS samples and
+		// both are the same "trim harder" lever. Broad-500 OOS at 2/15: Deploy 0.68 / Cash 0.30 / Hold 0.55 vs B&H 0.50,
+		// at much lower drawdown. 0 = off; default period 2 (Wilder RSI on close).
+		public static int    RsiOverlayPeriod = 2;
+		// Numerator N in the trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth is N/RSI
+		// (at RSI=100, exposure -> N%). N is BOTH the overbought threshold and the trim depth. A sweep found a LOW N
+		// wins -- default 15 (was 50): beats 50 on Sharpe AND drawdown in every out-of-region mode, replicating across
+		// four disjoint random-500 OOS samples (broad Deploy 0.59->0.68, Cash MaxDD 23->~14). It is a deeper, earlier
+		// mean-reversion trim: more defensive (avg exposure/return down ~30%, drawdown down ~40%). CAVEAT: N and the RSI
+		// period are the same "trim-aggressiveness" lever, and all OOS windows are the mean-reverting 2023-26 period --
+		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
+		public static double RsiMultNumerator = 15.0;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -311,9 +301,7 @@ namespace StockOdds
 			var perAbsWindow = new Queue<double>(Math.Max(1, PersistWindow));
 			double perAbsSum = 0.0, perTgtPrev = double.NaN;
 			double dynLbAlpha = 2.0 / (Math.Max(1, DynSmoothPeriod) + 1);
-			double dynLbAlphaSlow = 2.0 / (Math.Max(1, DynSmoothSlow) + 1);
-			double dynLbEma = double.NaN;             // fast EMA of the per-candle LongBias
-			double dynLbEmaSlow = double.NaN;         // slow EMA — MIN(fast, slow) caps transient spikes
+			double dynLbEma = double.NaN;             // EMA of the per-candle LongBias
 
 			// updates curHvPct from the completed return into `latest` (no look-ahead)
 			void UpdateHv(OhlcBar prevBar, OhlcBar latest)
@@ -387,22 +375,9 @@ namespace StockOdds
 					double z = zHv + zP;
 					double raw = DynBase * Math.Exp(-DynDecay * z);
 					raw = Clamp(raw, DynMin, DynMax);
-					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar (a fast and a slow EMA).
-					// Modes: BiasEmaRatio=false -> effLongBias = MIN(fast, slow*DynSlowMult). BiasEmaRatio=true (DEFAULT) ->
-					// effLongBias = slow*DynSlowMult*m, m=clamp(slow/fast,Lo,Hi): base is the SLOW EMA*DynSlowMult, fast enters
-					// only via m, which LIFTS the bias when fast<slow (up to Hi) and damps when fast>slow. Hi in [0.25,2.0] broad-optimal.
+					// EMA-smooth the per-candle bias so it can't whipsaw bar-to-bar, then floor at DynMin.
 					dynLbEma = double.IsNaN(dynLbEma) ? raw : dynLbAlpha * raw + (1.0 - dynLbAlpha) * dynLbEma;
-					dynLbEmaSlow = double.IsNaN(dynLbEmaSlow) ? raw : dynLbAlphaSlow * raw + (1.0 - dynLbAlphaSlow) * dynLbEmaSlow;
-					if (BiasEmaRatio)
-					{
-						// monotonic: ceiling base scaled by the clamped slow/fast ratio (see comment above)
-						double m = Clamp(dynLbEmaSlow / Math.Max(dynLbEma, 1e-6), BiasEmaRatioLo, BiasEmaRatioHi);
-						effLongBias = Math.Max(dynLbEmaSlow * DynSlowMult * m, DynMin);
-					}
-					else
-					{
-						effLongBias = Math.Max(Math.Min(dynLbEma, dynLbEmaSlow * DynSlowMult), DynMin);
-					}
+					effLongBias = Math.Max(dynLbEma, DynMin);
 				}
 
 				// dynamic long bias: rolling LT-direction sum over BiasPeriod candles /
@@ -439,7 +414,7 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
-				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = 50/RSI
+				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
 					{
@@ -452,7 +427,7 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
-							rsiMult = rsi > 1e-6 ? 50.0 / rsi : 1.0;
+							rsiMult = rsi > 1e-6 ? Math.Min(RsiMultNumerator / rsi, 1.0) : 1.0;
 						}
 					}
 					rsiPrevClose = prev.Close;
