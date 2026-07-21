@@ -122,6 +122,9 @@ class Program
 		BankrollSimulator.RebalanceDriftPercent = 30;
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
+		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
+		BankrollSimulator.RsiMultNumerator = 15;          // fixed N out-of-region / when shaping off
+		BankrollSimulator.RsiExposureMult  = 20;          // in-region: N = (1 - ema) * this (0 = fixed N)
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),
 			// EMA-smoothed. Defaults are exp / base 1 / decay 0.6, refs calibrated to a ~110-name
