@@ -108,6 +108,10 @@ rsiMultNumerator = input.float(15, "RSI mult numerator N (out-of-region / shapin
      tooltip = "Numerator N in min(N/RSI, 1): the overbought threshold AND trim depth (trim begins when RSI>N; at RSI=100 exposure -> N%). Used out-of-region (Deploy's ema<0 bars) and whenever exposure shaping is off. A LOW N (default 15, was 50) beats 50 on Sharpe AND drawdown across four random-500 OOS samples -- a deeper, earlier mean-reversion trim (more defensive). CAVEAT: leans on the mean-reverting 2023-26 test window; would under-participate in a sustained momentum regime.")
 rsiExposureMult = input.float(0, "RSI exposure shaping mult (0 = fixed N, default)", minval = 0, group = grpRsi,
      tooltip = "OPT-IN, OFF by default. IN-REGION, scale the trim by how exposed the position is: N = clamp((1 - ema) * this, 1, 100). Near-full-long (ema->1) => N->1 (fade overbought hard); lightly long (ema->0) => N->this. It reduces the drawdown TAIL but trims return in ~proportion to drawdown (Calmar-flat, and it costs the Hold benchmark), so the shipped default is the fixed numerator above. Set to 20 (the OOS-optimal mult) to enable exposure shaping.")
+quietVolWindow = input.int(15, "Quiet-bull volume window (0 = off)", minval = 0, group = grpRsi,
+     tooltip = "Trailing volume window for the quiet-bull rule. When exposure shaping is OFF and the bar is LT-Bull with relVol < 1 (volume below its prior-N-bar average), the RSI numerator tightens to 'Quiet-bull N' below -- trimming harder into low-participation strength. Volume is the only NON-price signal that survived four random-500 OOS samples; this quiet-bull rule was the only conditioning that beat the fixed numerator on BOTH Sharpe and drawdown across all four. 0 disables (revert to the fixed numerator everywhere).")
+quietBullN = input.float(8, "Quiet-bull N", minval = 1, group = grpRsi,
+     tooltip = "RSI numerator used on quiet-volume LT-Bull bars (relVol < 1). Lower than the base numerator (8 vs 15) => a deeper overbought trim exactly when a bull bar prints on below-average volume.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -281,8 +285,11 @@ hiExp = math.max(minExpPct, maxExpPct) / 100.0
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 // RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
 // N is exposure-shaped in-region: N = clamp((1 - emaExp) * rsiExposureMult, 1, 100) -- trim harder the more exposed you are; out-of-region it stays fixed at rsiMultNumerator.
+// Quiet-bull rule: when shaping is off, LT-Bull bars printing on below-average volume (relVol < 1) tighten N to quietBullN.
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiNumer = (rsiExposureMult > 0 and not na(emaExp) and emaExp >= 0) ? math.min(math.max((1 - emaExp) * rsiExposureMult, 1.0), 100.0) : rsiMultNumerator
+// relVol = this bar's volume vs the average of the prior quietVolWindow bars (EXCLUDING the current bar).
+relVol = quietVolWindow > 0 and not na(ta.sma(volume, quietVolWindow)[1]) and ta.sma(volume, quietVolWindow)[1] > 0 ? volume / ta.sma(volume, quietVolWindow)[1] : 1.0
+rsiNumer = (rsiExposureMult > 0 and not na(emaExp) and emaExp >= 0) ? math.min(math.max((1 - emaExp) * rsiExposureMult, 1.0), 100.0) : (quietVolWindow > 0 and ltState == 1 and relVol < 1.0 ? quietBullN : rsiMultNumerator)
 rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiNumer / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is

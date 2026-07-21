@@ -123,7 +123,9 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
-		BankrollSimulator.RsiMultNumerator = 15;          // fixed N out-of-region / when shaping off
+		BankrollSimulator.RsiMultNumerator = 15;          // base N
+		BankrollSimulator.RsiQuietVolWindow = 15;         // quiet-bull volume trim: relVol window (0 = off)
+		BankrollSimulator.RsiQuietBullN    = 8;           // N when LT-Bull & relVol<1 (below-avg volume)
 		BankrollSimulator.RsiExposureMult  = 0;           // exposure shaping OFF by default (opt-in; 20 = OOS-optimal if on)
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),

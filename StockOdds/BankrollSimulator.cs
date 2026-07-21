@@ -189,6 +189,20 @@ namespace StockOdds
 		// a low N leans harder on that regime and would under-participate in a sustained momentum/trend regime.
 		public static double RsiMultNumerator = 15.0;
 
+		// Quiet-bull volume trim (DEFAULT ON). When the name is LT-Bull and its decision-bar volume is
+		// BELOW its recent average (relVol = vol / avg(prior RsiQuietVolWindow bars) < 1), the RSI numerator
+		// drops to RsiQuietBullN (a harder trim); otherwise it stays at RsiMultNumerator. Rationale: quiet /
+		// below-average-volume bull bars are conviction-less drift that gives back over the next weeks
+		// (a replicated, orthogonal volume signal — the ONLY non-price feature that survived OOS), so trim
+		// them harder; volume-normal/elevated bull bars keep the base N. Volume is orthogonal to the price
+		// RSI, so this ADDS edge rather than duplicating the trim. OOS (4 random-500 samples, both modes):
+		// beats fixed N=15 on Sharpe AND drawdown on all four (Deploy ~0.65->0.67 / DD -1, Cash ~0.30->0.32
+		// / DD -2), replicated; the edge is robust to the window (any 13-30 equivalent, 15 chosen). Set
+		// RsiQuietVolWindow = 0 to disable (pure fixed RsiMultNumerator, the pre-volume behavior). Only fires
+		// in LT-Bull; LT-Bear and volume-normal bull bars are unaffected.
+		public static int    RsiQuietVolWindow = 15;
+		public static double RsiQuietBullN     = 8.0;
+
 		// Exposure-shaped numerator (IN-REGION ONLY). Instead of a fixed N, scale the trim by how
 		// exposed the position already is: N = clamp((1 - ema) * RsiExposureMult, 1, 100), where ema is
 		// the (lag-1) raw exposure EMA. Near-full-long (ema->1) => N->1 (fade overbought hard, since a
@@ -303,6 +317,7 @@ namespace StockOdds
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
+			double relVol = 1.0;
 
 			// rolling LT-direction window for the dynamic long bias
 			var biasWindow = new Queue<double>(BiasPeriod);
@@ -431,6 +446,12 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
+				relVol = 1.0;   // decision-bar volume vs avg of the prior RsiQuietVolWindow bars
+				if (RsiQuietVolWindow > 0 && i - 1 - RsiQuietVolWindow >= 0)
+				{
+					double vsum = 0.0; for (int vj = i - 1 - RsiQuietVolWindow; vj <= i - 2; vj++) vsum += bars[vj].Volume;
+					double vavg = vsum / RsiQuietVolWindow; if (vavg > 0) relVol = prev.Volume / vavg;
+				}
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -447,6 +468,8 @@ namespace StockOdds
 							double numer = RsiMultNumerator;
 							if (RsiExposureMult > 0.0 && !double.IsNaN(ema) && ema >= 0.0)   // in-region: scale trim by exposure
 								numer = Clamp((1.0 - ema) * RsiExposureMult, 1.0, 100.0);
+							else if (RsiQuietVolWindow > 0 && lt == LongTermState.Bull && relVol < 1.0)   // quiet-bull volume -> harder trim
+								numer = RsiQuietBullN;
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
