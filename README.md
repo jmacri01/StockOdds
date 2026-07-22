@@ -4,7 +4,7 @@
 
 > Companion write-up (the origin of the trend model): [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
-This is **not an alpha engine** and doesn't pretend to be. It's an exposure-control overlay driven by one deliberately simple trim: on a random 500-stock universe it **edges buy-&-hold on risk-adjusted return (Deploy/Hold) at a lower drawdown**, and the default **Cash** mode trades return for the shallowest drawdown of the three. On the stocks that hurt most — falling, or ripping higher with gut-wrenching pullbacks — it takes less pain than buy-&-hold to get there. No shorting: a bearish signal means *cash*, never short.
+This is **not an alpha engine** and doesn't pretend to be. It's an exposure-control overlay driven by a light, deliberately simple trim (a fixed overbought trim plus final-position smoothing): on a random 500-stock universe it **edges buy-&-hold on risk-adjusted return (Deploy/Hold) at a lower drawdown**, and the default **Cash** mode trades return for the shallowest drawdown of the three. On the stocks that hurt most — falling, or ripping higher with gut-wrenching pullbacks — it takes less pain than buy-&-hold to get there. No shorting: a bearish signal means *cash*, never short.
 
 ---
 
@@ -16,12 +16,12 @@ The proof is out-of-sample. Every table below is scored on the **last 30% of eac
 
 | Mode | OOS Sharpe | OOS Max DD | OOS Return |
 |---|---:|---:|---:|
-| **Deploy** | 0.58 | 29.4% | +32% |
-| **Cash** *(default)* | 0.26 | **21.7%** | +13% |
-| **Hold** | 0.53 | 32.1% | +30% |
+| **Deploy** | 0.53 | 29.3% | +29% |
+| **Cash** *(default)* | 0.30 | **18.9%** | +15% |
+| **Hold** | 0.53 | 31.1% | +30% |
 | *Buy & hold* | *0.49* | *34.8%* | *+34%* |
 
-Deploy and Hold **edge buy-&-hold on Sharpe** (0.58 / 0.53 vs 0.49) while capturing most of its return (+32% / +30% vs +34%) at a lower drawdown. The default **Cash** mode is the low-drawdown dial: it gives up risk-adjusted return (Sharpe 0.26, *below* B&H — by design, since it sits out of bearish regimes) to run the shallowest drawdown of the three (**21.7% vs B&H's 34.8%**), still shallower than buy-&-hold on **90% of all names.** The engine is driven by a single **fixed RSI-2 overbought trim (numerator 50)** — a light trim that keeps participation while capping the tail. The real value shows up in the two cohorts that matter most.
+Deploy and Hold **edge buy-&-hold on Sharpe** (0.53 / 0.53 vs 0.49) while capturing most of its return (+29% / +30% vs +34%) at a lower drawdown. The default **Cash** mode is the low-drawdown dial: it trades some return for the shallowest drawdown of the three (**18.9% vs B&H's 34.8%**, Sharpe 0.30), shallower than buy-&-hold on **95% of all names.** The engine is driven by a single **fixed RSI-2 overbought trim (numerator 50)** plus a light **EMA-smoothing of the final position** — together a light-touch overlay that keeps participation while capping the tail. The real value shows up in the two cohorts that matter most.
 
 ### When the stock is falling (99 names with a negative buy-&-hold return)
 
@@ -29,12 +29,12 @@ This is what a risk overlay is *for.* These names lost money over the test windo
 
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Cash** *(default)* | **−9%** | **26.7%** | −0.30 |
-| **Deploy** | −14% | 40.0% | −0.13 |
-| **Hold** | −17% | 45.8% | −0.17 |
+| **Cash** *(default)* | **−9%** | **22.7%** | −0.31 |
+| **Deploy** | −16% | 40.9% | −0.19 |
+| **Hold** | −17% | 44.8% | −0.19 |
 | *Buy & hold* | *−23%* | *48.1%* | *−0.24* |
 
-Buy-&-hold loses **−23% with a −48% drawdown.** The default Cash mode cuts that to **−9% at a −27% drawdown** — shallower than buy-&-hold on **96 of 99** names — by going to cash when the trend breaks. This is where the light-trim / high-participation choice shows its cost: unlike a hard-trim configuration, it *does* participate in part of the decline (−9%, not near-flat), but it still loses far less than buy-&-hold and at meaningfully lower drawdown. *(Sharpe is unstable when returns hug zero — read the Return and Max-DD columns here; they are the story.)*
+Buy-&-hold loses **−23% with a −48% drawdown.** The default Cash mode cuts that to **−9% at a −23% drawdown** — shallower than buy-&-hold on **97 of 99** names — by going to cash when the trend breaks. This is where the light-trim / high-participation choice shows its cost: unlike a hard-trim configuration, it *does* participate in part of the decline (−9%, not near-flat), but it still loses far less than buy-&-hold and at meaningfully lower drawdown. *(Sharpe is unstable when returns hug zero — read the Return and Max-DD columns here; they are the story.)*
 
 ### When the stock rips — but violently (27 names, +return but ≥ 50% buy-&-hold drawdown)
 
@@ -42,12 +42,12 @@ The high-flyers. The system gives up a chunk of the upside but takes a *much* sm
 
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Deploy** | +129% | 49.9% | 1.04 |
-| **Hold** | +117% | 54.1% | 0.98 |
-| **Cash** *(default)* | +81% | **36.1%** | 0.72 |
+| **Deploy** | +123% | 46.3% | 1.04 |
+| **Hold** | +127% | 50.7% | 1.02 |
+| **Cash** *(default)* | +89% | **29.6%** | 0.87 |
 | *Buy & hold* | *+145%* | *56.2%* | *0.99* |
 
-Buy-&-hold makes **+145% but suffers a −56% drawdown.** This is where the light-trim choice pays off: Deploy now captures **+129% — nearly all of B&H's upside — at −50%** (edging its Sharpe, 1.04 vs 0.99), and even the defensive Cash mode keeps **+81% at just −36%**, shallower than buy-&-hold on **all 27** names. The fixed N=50 trim only shaves the most overbought spikes, so on relentless rockets you stay largely invested — the opposite trade-off from a hard-trim configuration, which would cap these names heavily.
+Buy-&-hold makes **+145% but suffers a −56% drawdown.** This is where the light-touch overlay pays off most: Deploy captures **+123% — most of B&H's upside — at −46%** (edging its Sharpe, 1.04 vs 0.99), and even the defensive Cash mode keeps **+89% at just −30%** (Sharpe 0.87), shallower than buy-&-hold on **all 27** names. The light trim plus position-smoothing keeps you largely invested through the rockets while damping the pullbacks — the opposite trade-off from a hard-trim configuration, which would cap these names heavily.
 
 ### The three modes
 
@@ -67,21 +67,21 @@ A curated 18-name basket, **no per-symbol tuning**, over each name's *full* hist
 
 | Symbol | HV | Cash Max DD | B&H Max DD | Cash Return | B&H Return |
 |---|---:|---:|---:|---:|---:|
-| ^GSPC | 17 | **14%** | 25% | +16% | +71% |
-| KO | 16 | **14%** | 21% | +25% | +51% |
-| NVDA | 51 | **46%** | 66% | +108% | +904% |
-| COIN | 85 | **65%** | 91% | +23% | −28% |
-| MSTR | 90 | **40%** | 84% | +386% | +73% |
-| ASTS | 104 | **49%** | 86% | +546% | +376% |
-| SMR | 99 | **58%** | 88% | +98% | −15% |
-| OPEN | 109 | **66%** | 98% | +99% | −74% |
+| ^GSPC | 17 | **13%** | 25% | +27% | +71% |
+| KO | 16 | **11%** | 21% | +15% | +51% |
+| NVDA | 51 | **34%** | 66% | +244% | +904% |
+| COIN | 85 | **46%** | 91% | +32% | −28% |
+| MSTR | 90 | **45%** | 84% | +236% | +73% |
+| ASTS | 104 | **45%** | 86% | +965% | +376% |
+| SMR | 99 | **52%** | 88% | +185% | −15% |
+| OPEN | 109 | **69%** | 98% | +62% | −74% |
 
-Cash cuts the drawdown on **every** name — but because the N=50 trim is light, it now **keeps far more of the upside** than a hard-trim configuration would: MSTR +386%, ASTS +546%, NVDA +108%, all while running roughly half to two-thirds of buy-&-hold's drawdown. On this high-flyer basket the light trim actually **edges buy-&-hold on risk-adjusted return: Basket aggregate (all 18) mean Sharpe Deploy 0.51 / Cash 0.48 / Hold 0.48 vs B&H 0.47**, at mean Max DD **Deploy 60% / Cash 46% / Hold 67% / B&H 70%.** This is the participation-tilted trade in action — but remember it's **partly in-sample** (survivor-heavy, includes the 2022 bear); the broad OOS tables above are the honest expectation, where Cash gives up Sharpe for the lowest drawdown.
+Cash cuts the drawdown on **every** name — and the light trim plus position-smoothing **keeps far more of the upside** than a hard-trim configuration would: NVDA +244%, MSTR +236%, ASTS +965%, all at roughly half of buy-&-hold's drawdown. On this high-flyer basket it **edges buy-&-hold on risk-adjusted return: Basket aggregate (all 18) mean Sharpe Deploy 0.53 / Cash 0.56 / Hold 0.48 vs B&H 0.47**, at mean Max DD **Deploy 59% / Cash 40% / Hold 66% / B&H 70%.** This is the participation-tilted trade in action — but remember it's **partly in-sample** (survivor-heavy, includes the 2022 bear); the broad OOS tables above are the honest expectation.
 
 ### The trade-off, honestly
 
-- **It is a risk overlay, not alpha.** It keeps most of buy-&-hold's return (Deploy +32% vs +34%) while carrying a lower drawdown (29% vs 35%), and comes out *ahead* on risk-adjusted return in the invested modes (Deploy/Hold Sharpe 0.58/0.53 vs B&H 0.49). The parts that **generalize out-of-sample are drawdown reduction and screening**; don't expect return outperformance.
-- **The drawdown cut is the durable edge — modest by design.** The single fixed N=50 trim pulls Deploy drawdown to ~29% (vs B&H ~35%) and the default **Cash** to ~22%, below buy-&-hold but not dramatically — this is a *light* trim chosen to preserve participation, not to minimize drawdown. Cash trades risk-adjusted return (Sharpe below B&H) for the shallowest drawdown; Deploy/Hold stay more invested and edge B&H on Sharpe. A lower numerator (or `RsiOverlayPeriod`) trims harder if you want more protection at the cost of upside.
+- **It is a risk overlay, not alpha.** It keeps most of buy-&-hold's return (Deploy +29% vs +34%) while carrying a lower drawdown (29% vs 35%), and comes out *ahead* on risk-adjusted return in the invested modes (Deploy/Hold Sharpe 0.53/0.53 vs B&H 0.49). The parts that **generalize out-of-sample are drawdown reduction and screening**; don't expect return outperformance.
+- **The drawdown cut is the durable edge — modest by design.** The light N=50 trim plus final-position smoothing pulls Deploy drawdown to ~29% (vs B&H ~35%) and the default **Cash** to ~19%, below buy-&-hold — a *light-touch* overlay chosen to preserve participation, not to minimize drawdown. Cash trades some return for the shallowest drawdown; Deploy/Hold stay more invested and edge B&H on Sharpe. A lower numerator (or `RsiOverlayPeriod`) trims harder if you want more protection at the cost of upside.
 - **A regime caveat, smaller than before.** The overbought trim is a short-horizon mean-reversion tool tuned on the 2023–26 (mean-reverting) window. At N=50 it barely trims, so it leans on that regime *far less* than a hard-trim setting would — the main driver of returns here is the core trend signal + cash-out-of-region, not the trim.
 
 ---
@@ -145,9 +145,10 @@ That raw target is then:
 3. **rebalanced only when it drifts past a deadband** (cuts churn) — except that when the target saturates full exposure the position snaps to 100% rather than lagging low, so the sized exposure stays accurate at the ceiling,
 4. **clamped to `[0%, 100%]`** — negative targets simply become **cash** (no short),
 5. scaled by a single **RSI overbought-trim overlay** (position × min(N / RSI(2), 1) — trims exposure when overbought, never levers. A short **RSI-2** (Connors-style) is best; the numerator **N is a single fixed number (50)** — a *light* trim that only shaves the most overbought spikes, chosen to keep upside participation while capping the tail. Lower N trims harder (more defensive, less upside); `RsiOverlayPeriod = 0` turns it off. This is the **only** conditioning on the trim — earlier volume, ATR-range, and exposure-shaping rules were removed because none helped the curated high-flyer basket *and* the broad OOS sets at the same time. An ablation showed the trim is the entire edge — the oversold-lever half added nothing — so the overlay only de-risks),
-6. and finally, if the **raw exposure signal turns bearish** (out of region), overridden per the chosen **[mode](#the-three-modes)** — cash by default.
+6. overridden, if the **raw exposure signal turns bearish** (out of region), per the chosen **[mode](#the-three-modes)** — cash by default,
+7. and finally **EMA-smoothed (period 5)** as a *final position* — averaging out the RSI-2 single-bar chatter. Unlike a harder trim (which cuts drawdown by holding *less*), this cuts it by holding *steadier*, so it preserves upside participation. It improves Sortino over the fixed-N baseline and is strongest in the mid-high HV band (50–100, the deployment sweet spot); `PositionSmoothPeriod = 0` turns it off.
 
-**Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay period `2` / numerator `50` (a single fixed trim — no volume/ATR/exposure-shaping conditioning). The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
+**Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–100%`, RSI overlay period `2` / numerator `50`, final-position smoothing `5` (no volume/ATR/exposure-shaping conditioning). The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
 
 ---
 

@@ -106,6 +106,8 @@ rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, grou
      tooltip = "Overbought-trim overlay on the final position: position *= min(N / RSI(period), 1), N = numerator below — trims when overbought; does nothing when oversold (capped at 1, never levers up). 0 disables. Short period (2) validated best across four random-500 OOS samples; an ablation showed the trim is the entire edge, so it never levers.")
 rsiMultNumerator = input.float(50, "RSI mult numerator N", minval = 1, group = grpRsi,
      tooltip = "The single trim knob. N in min(N/RSI, 1): trimming begins when RSI>N; at RSI=100 exposure -> N%. Default 50 = a light overbought trim that keeps upside participation while capping the tail. Lower N trims harder (more defensive); RSI overlay period 0 = off. This is the ONLY conditioning on the trim -- volume/ATR/exposure-shaping rules were removed for not helping the curated basket and the broad OOS sets simultaneously.")
+posSmoothPeriod = input.int(5, "Final position smoothing (EMA bars, 0 = off)", minval = 0, group = grpRsi,
+     tooltip = "EMA-smooth the FINAL traded position (after clamp, RSI trim, and the out-of-region rule) so RSI-2 single-bar chatter is averaged out. Cuts downside/drawdown by holding STEADIER (vs a lower N, which cuts it by holding less) so it preserves upside participation. Improves Sortino over the fixed-N baseline; benefit concentrates in the 50-100 HV band. 0 disables.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -292,7 +294,11 @@ rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsi
 regimeMode  = bearRegimeMode == "Cash" ? 1 : bearRegimeMode == "Hold (buy & hold)" ? 2 : 0
 inRegion    = na(emaExp) or emaExp >= 0
 outOfRegion = regimeMode != 0 and not na(emaExp) and emaExp < 0
-position = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : rsiPos)
+rawPos = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : rsiPos)
+// EMA-smooth the final position (matches BankrollSimulator.PositionSmoothPeriod)
+var float posEma = na
+posEma := (posSmoothPeriod > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (posSmoothPeriod + 1)) * rawPos + (1.0 - 2.0 / (posSmoothPeriod + 1)) * posEma) : rawPos
+position = posEma
 
 // =============================================================================
 // 6. NAME HELPERS

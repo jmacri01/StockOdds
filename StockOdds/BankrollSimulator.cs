@@ -186,6 +186,15 @@ namespace StockOdds
 		// basket AND the broad OOS sets simultaneously (basket wants no trim, broad wants a hard trim -- 50 is the
 		// participation-tilted point that is coherent on both without overfitting to survivor names).
 		public static double RsiMultNumerator = 50.0;
+		// Final-position EMA smoothing (DEFAULT ON, period 5). Smooths the FINAL traded position -- after clamp,
+		// RSI trim, accurate-sizing, and the out-of-region override -- so the RSI-2 single-bar chatter (spike-down,
+		// snap-back) is averaged out. Unlike lowering the RSI numerator (which cuts drawdown by holding LESS), this
+		// cuts drawdown by holding STEADIER, so it preserves upside participation -- the one thing a lower N can't.
+		// Validated: improves Sortino over the fixed-N=50 baseline (4/5 samples) and the basket on all metrics;
+		// benefit concentrates in the mid-high HV band (50-100, the deployment sweet spot -- Sortino 0.63->0.89 at
+		// 75-100). Period is stable p3-p8 (no overfit). CAVEAT: on low-HV names a harder trim (lower N) does better,
+		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
+		public static int PositionSmoothPeriod = 5;
 
 		// Accurate full sizing (DEFAULT ON): when the TRUE target (pre-clamp adjEma) saturates full exposure, snap
 		// the drift-band follower up to the clamp ceiling -- held = max(maxExp, max(maxExp-drift, adjEma-drift)) --
@@ -291,6 +300,7 @@ namespace StockOdds
 			double held = double.NaN;    // deadband follower of the EMA (unclamped)
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
+			double posSmooth = double.NaN;
 
 
 			// rolling LT-direction window for the dynamic long bias
@@ -447,6 +457,7 @@ namespace StockOdds
 				// out-of-region when the raw exposure (ema) is bearish: 1=cash, 2=hold(B&H)
 				if (BearRegimeMode != 0 && ema < 0.0)
 					position = BearRegimeMode == 1 ? 0.0 : 1.0;
+				if (PositionSmoothPeriod > 0) { double aP = 2.0 / (PositionSmoothPeriod + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------
