@@ -276,6 +276,10 @@ if not na(adjEma) and (na(held) or math.abs(held - adjEma) > driftBand)
 
 loExp = math.min(minExpPct, maxExpPct) / 100.0
 hiExp = math.max(minExpPct, maxExpPct) / 100.0
+// Accurate full sizing: if the target saturates full, snap the follower to the clamp ceiling so we size to full
+// (not stale-low, e.g. 0.7) despite the drift band. Correctness fix; OOS performance unchanged.
+if not na(adjEma) and adjEma >= hiExp
+    held := math.max(hiExp, math.max(hiExp - driftBand, adjEma - driftBand))
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 // RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))

@@ -187,6 +187,12 @@ namespace StockOdds
 		// participation-tilted point that is coherent on both without overfitting to survivor names).
 		public static double RsiMultNumerator = 50.0;
 
+		// Accurate full sizing (DEFAULT ON): when the TRUE target (pre-clamp adjEma) saturates full exposure, snap
+		// the drift-band follower up to the clamp ceiling -- held = max(maxExp, max(maxExp-drift, adjEma-drift)) --
+		// so the position sizes to 1.0 instead of being left stale-low (e.g. 0.7) by the rebalance deadband. This is
+		// a correctness fix (the traded/displayed exposure matches the target at the full boundary), not an edge:
+		// OOS performance is unchanged (the under-sizing window is narrow). false = legacy drift-band-only sizing.
+		public static bool AccurateFullSizing = true;
 
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
@@ -397,6 +403,10 @@ namespace StockOdds
 				// Normal drift-band rebalance.
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
+				// Accurate full sizing: if the target saturates full, snap the follower to the clamp ceiling so we
+				// actually size to full (fix the drift-band leaving the position stale-low, e.g. 0.7 instead of 1).
+				if (AccurateFullSizing && adjEma >= maxExp)
+					held = Math.Max(maxExp, Math.Max(maxExp - driftBand, adjEma - driftBand));
 				double posB = Clamp(held, minExp, maxExp);
 				if (RsiOverlayPeriod > 0) posB = Clamp(posB * rsiMult, minExp, maxExp);
 				return posB;

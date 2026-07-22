@@ -142,7 +142,7 @@ The `(LT, ST)` pair maps to a signed target exposure (a gradient from most-bulli
 That raw target is then:
 1. **EMA-smoothed** (avoids whipsawing on single-bar state flips),
 2. skewed by a **[dynamic long-bias](#the-dynamic-long-bias)** (leans harder with the recent trend, scaled per name),
-3. **rebalanced only when it drifts past a deadband** (cuts churn),
+3. **rebalanced only when it drifts past a deadband** (cuts churn) — except that when the target saturates full exposure the position snaps to 100% rather than lagging low, so the sized exposure stays accurate at the ceiling,
 4. **clamped to `[0%, 100%]`** — negative targets simply become **cash** (no short),
 5. scaled by a single **RSI overbought-trim overlay** (position × min(N / RSI(2), 1) — trims exposure when overbought, never levers. A short **RSI-2** (Connors-style) is best; the numerator **N is a single fixed number (50)** — a *light* trim that only shaves the most overbought spikes, chosen to keep upside participation while capping the tail. Lower N trims harder (more defensive, less upside); `RsiOverlayPeriod = 0` turns it off. This is the **only** conditioning on the trim — earlier volume, ATR-range, and exposure-shaping rules were removed because none helped the curated high-flyer basket *and* the broad OOS sets at the same time. An ablation showed the trim is the entire edge — the oversold-lever half added nothing — so the overlay only de-risks),
 6. and finally, if the **raw exposure signal turns bearish** (out of region), overridden per the chosen **[mode](#the-three-modes)** — cash by default.
