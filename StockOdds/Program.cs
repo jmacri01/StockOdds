@@ -120,6 +120,7 @@ class Program
 		BankrollSimulator.BiasPeriod = 15;
 		BankrollSimulator.BiasEmaPeriod = 150;
 		BankrollSimulator.RebalanceDriftPercent = 30;
+		BankrollSimulator.AccurateFullSizing    = true;   // size to full when the target saturates (don't lag at 0.7)
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
 		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
