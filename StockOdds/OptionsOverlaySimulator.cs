@@ -54,6 +54,8 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
+		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
+		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
@@ -76,7 +78,7 @@ namespace StockOdds
 
 		// Core = the persistent LEAP/stock (from EstablishCore); everything else is a trim leg (from ResizeShorts),
 		// including any long "remainder" put. Core legs roll at their own expiry; trim legs are rebuilt on resize.
-		private sealed class Leg { public bool Call; public bool Stock; public bool Core; public double Qty; public double K; public DateTime Exp; public double VPrev; }
+		private sealed class Leg { public bool Call; public bool Stock; public bool Core; public double Qty; public double K; public DateTime Exp; public double VPrev; public double VOpen; }
 
 		// Run the overlay against a completed engine result over the [startDate, end] window.
 		// engine.Positions[k] is the target exposure on the bar dated engine.ReturnDates[k].
@@ -128,12 +130,13 @@ namespace StockOdds
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
-					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= 1);
-					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || NeedsRebuild(legs, target))
+					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
+						bool profitHit = ShortProfitTarget > 0 && legs.Any(l => l.Qty < 0 && l.VOpen > 1e-9 && l.VPrev <= ShortProfitTarget * l.VOpen);
+					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, target, date);
-						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
 				}
@@ -156,6 +159,14 @@ namespace StockOdds
 		// (the delta deadband alone is too wide to catch it).
 		private static bool NeedsRebuild(List<Leg> legs, double target)
 		{
+			if (Strategy == OverlayStrategy.ShortPut)
+			{
+				// coreless: build the put when we want exposure and have none; drop it when the target goes flat.
+				// (independent of the deadband, so a wide band can't strand it un-built or stuck-on.)
+				bool hasP = legs.Any(l => !l.Core);
+				double t = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
+				return t > FlatEps ? !hasP : hasP;
+			}
 			if (Strategy != OverlayStrategy.SplitStockPut) return false;
 			bool hasStock = legs.Any(l => l.Stock);
 			bool hasPut = legs.Any(l => l.Qty < 0 && !l.Call);
