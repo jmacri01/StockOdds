@@ -60,7 +60,7 @@ namespace StockOdds
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
 		public static double PutLeapDelta       = 0.15;  // shallow far-OTM base put (straddle put leg / put-diagonal base)
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
-		public static double ShortPutCap        = 0.75; // ShortPut strategy: cap the single short put's delta
+		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
 		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
 		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
