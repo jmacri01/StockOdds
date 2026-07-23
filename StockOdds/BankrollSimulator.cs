@@ -78,6 +78,9 @@ namespace StockOdds
 		// per-bar series (aligned) so a walk-forward can score a sub-window after a warmup
 		public List<DateTime> ReturnDates { get; set; } = new();
 		public List<double>   StratReturns { get; set; } = new();
+		// the actual traded exposure (clamped/RSI/smoothed/region-adjusted position) applied each bar,
+		// aligned with ReturnDates/StratReturns. Consumed by the options-overlay simulator.
+		public List<double>   Positions { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -286,6 +289,7 @@ namespace StockOdds
 
 			// per-bar return series for Sharpe (strategy = sized/signed, buy&hold = raw move),
 			// over the exact same bars so the two ratios are comparable.
+			var positions = new List<double>();
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
@@ -486,6 +490,7 @@ namespace StockOdds
 				stratReturns.Add(tradeReturn);
 				bhReturns.Add(r);
 				returnDates.Add(bar.Date);
+				positions.Add(position);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -518,6 +523,7 @@ namespace StockOdds
 			// Sharpe ratios (risk-free = 0) and buy & hold drawdown over the same bars.
 			result.StratReturns = stratReturns;
 			result.ReturnDates = returnDates;
+			result.Positions = positions;
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
 			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
 			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);
