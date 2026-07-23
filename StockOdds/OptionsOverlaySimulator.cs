@@ -157,6 +157,14 @@ namespace StockOdds
 		// (the delta deadband alone is too wide to catch it).
 		private static bool NeedsRebuild(List<Leg> legs, double target)
 		{
+			if (Strategy == OverlayStrategy.ShortPut)
+			{
+				// coreless: build the put when we want exposure and have none; drop it when the target goes flat.
+				// (independent of the deadband, so a wide band can't strand it un-built or stuck-on.)
+				bool hasP = legs.Any(l => !l.Core);
+				double t = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
+				return t > FlatEps ? !hasP : hasP;
+			}
 			if (Strategy != OverlayStrategy.SplitStockPut) return false;
 			bool hasStock = legs.Any(l => l.Stock);
 			bool hasPut = legs.Any(l => l.Qty < 0 && !l.Call);
