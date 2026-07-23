@@ -379,14 +379,14 @@ if showTable and barstate.islast
     ltCol = ltState == 1 ? colBull : colBear
     stCol = na(stState) ? color.gray : stState == 3 ? colBull : stState == 2 ? colBullN : stState == 1 ? colBearN : colBear
     posCol = na(position) ? color.gray : position >= 0 ? colBull : colBear
-    // Exposure = the actual traded (post-RSI) position ± rebalance drift, clamped. Out of region the rule
-    // forces a single value (0 cash / 1 hold), so show that alone. Likewise when the target saturates full and
-    // accurate-full-sizing has pinned the position at the ceiling, the exposure can't drift down (only up-capped),
-    // so show the single full value — not a misleading "0.70 – 1.00" range.
+    // Exposure = the actual traded (post-RSI) position ± rebalance drift, clamped — shown as a band both
+    // in- AND out-of-region (out of region the smoothed position bleeds toward 0/1, so it sits in that band).
+    // Only collapse to a single value when the target saturates full and accurate-full-sizing has pinned the
+    // position at the ceiling (can't drift down, only up-capped) — there a "0.70 – 1.00" range would mislead.
     atFull = not na(position) and not na(adjEma) and position >= hiExp - 1e-6 and adjEma >= hiExp
     expLo = str.tostring(math.min(math.max(position - driftBand, loExp), hiExp), "#.##")
     expHi = str.tostring(math.min(math.max(position + driftBand, loExp), hiExp), "#.##")
-    expTxt = na(position) ? "—" : (outOfRegion or atFull) ? str.tostring(position, "#.##") : expLo + " – " + expHi
+    expTxt = na(position) ? "—" : atFull ? str.tostring(position, "#.##") : expLo + " – " + expHi
     f_row(0,  "LT State",    f_ltName(ltState), ltCol)
     f_row(1,  "ST State",    f_stName(stState), stCol)
     f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
