@@ -24,8 +24,10 @@ namespace StockOdds
 		ShortPut,     // no core; a single short put at delta = min(target, ShortPutCap); flat when target ~ 0
 		CoveredStock, // long shares + short calls
 		PutDiagonal,  // long put LEAP (PutLeapDelta) + short puts
-		PmccStrangle  // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
+		PmccStrangle, // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
 		              // pinned at StrangleMinDelta, the other floats so net delta hits the target
+		SplitStockPut // regime switch at 0.5: target >= 0.5 -> long stock + covered calls to target;
+		              // target < 0.5 -> no stock, a single short put sized to the target
 	}
 
 	public sealed class OverlayResult
@@ -114,7 +116,7 @@ namespace StockOdds
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double tnet = Strategy == OverlayStrategy.ShortPut ? (Math.Min(target, ShortPutCap) > FlatEps ? Math.Min(target, ShortPutCap) : 0.0) : target;
 					bool shortExpiring = legs.Any(l => l.Qty < 0 && (l.Exp - date).TotalDays <= 1);
-					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring)
+					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => l.Qty < 0)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, target, date);
@@ -135,7 +137,19 @@ namespace StockOdds
 			return res;
 		}
 
-		private static bool HasCore(OverlayStrategy s) => s != OverlayStrategy.ShortPut;
+		private static bool HasCore(OverlayStrategy s) => s != OverlayStrategy.ShortPut && s != OverlayStrategy.SplitStockPut;
+
+		// SplitStockPut only: the structure must be rebuilt when the target crosses the 0.5 regime line
+		// (the delta deadband alone is too wide to catch it).
+		private static bool NeedsRebuild(List<Leg> legs, double target)
+		{
+			if (Strategy != OverlayStrategy.SplitStockPut) return false;
+			bool hasStock = legs.Any(l => l.Stock);
+			bool hasPut = legs.Any(l => l.Qty < 0 && !l.Call);
+			if (target >= 0.5) return !hasStock;              // want stock regime
+			if (target > FlatEps) return hasStock || !hasPut; // want put regime
+			return legs.Count > 0;                            // want flat
+		}
 
 		private static void EstablishCore(List<Leg> legs, double S, double iv, DateTime now)
 		{
@@ -169,6 +183,22 @@ namespace StockOdds
 			{
 				double tgt = Math.Min(target, ShortPutCap);
 				if (tgt > FlatEps) legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				return;
+			}
+			if (Strategy == OverlayStrategy.SplitStockPut)
+			{
+				legs.Clear(); // rebuild the whole structure (stock churns only at the 0.5 crossing / deadband)
+				if (target >= 0.5)
+				{
+					legs.Add(new Leg { Stock = true, Qty = 1, Exp = now.AddYears(100), VPrev = S });
+					double need2 = target - 1.0; // stock delta 1 -> short calls to trim down to target
+					if (need2 < -1e-4) { double K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta); legs.Add(new Leg { Call = true, Qty = need2 / ShortLegDelta, K = K, Exp = exp, VPrev = Price(true, S, K, iv, Ts) }); }
+				}
+				else if (target > FlatEps)
+				{
+					double d = Math.Min(0.95, target); double K = StrikeForDelta(false, S, iv, Ts, d);
+					legs.Add(new Leg { Call = false, Qty = -1, K = K, Exp = exp, VPrev = Price(false, S, K, iv, Ts) });
+				}
 				return;
 			}
 			if (Strategy == OverlayStrategy.PmccStrangle)
