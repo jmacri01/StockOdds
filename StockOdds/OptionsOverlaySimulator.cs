@@ -30,8 +30,10 @@ namespace StockOdds
 		              // target < 0.5 -> no stock, a single short put sized to the target
 		CallSpread,   // short-dated (ShortDteDays) bull call spread as the core: long call at CallLeapDelta,
 		              // short call struck so net delta = target (1x1 vertical, same expiry, rolled monthly)
-		PutSpread     // short-dated (ShortDteDays) bull PUT spread, both legs ~40 DTE: long put at
+		PutSpread,    // short-dated (ShortDteDays) bull PUT spread, both legs ~40 DTE: long put at
 		              // PutLeapDelta (protection) + short higher-strike put struck so net delta = target
+		PmccPutFloor  // PMCC whose short calls are capped at ShortCallCap of delta reduction; any remaining
+		              // reduction (at low target) comes from BUYING a put instead of piling on more short calls
 	}
 
 	public sealed class OverlayResult
@@ -57,6 +59,7 @@ namespace StockOdds
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
+		public static double ShortCallCap      = 0.50; // PmccPutFloor: cap on the delta reduction from short calls; remainder via a long put
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
 		public static double PutLeapDelta       = 0.15;  // shallow far-OTM base put (straddle put leg / put-diagonal base)
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
@@ -71,7 +74,9 @@ namespace StockOdds
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
 		public static double HvFloor            = 0.08; // floor on annualized HV
 
-		private sealed class Leg { public bool Call; public bool Stock; public double Qty; public double K; public DateTime Exp; public double VPrev; }
+		// Core = the persistent LEAP/stock (from EstablishCore); everything else is a trim leg (from ResizeShorts),
+		// including any long "remainder" put. Core legs roll at their own expiry; trim legs are rebuilt on resize.
+		private sealed class Leg { public bool Call; public bool Stock; public bool Core; public double Qty; public double K; public DateTime Exp; public double VPrev; }
 
 		// Run the overlay against a completed engine result over the [startDate, end] window.
 		// engine.Positions[k] is the target exposure on the bar dated engine.ReturnDates[k].
@@ -109,26 +114,26 @@ namespace StockOdds
 				}
 				else
 				{
-					if (HasCore(Strategy) && !legs.Any(l => l.Qty > 0))
-					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Qty > 0)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); } }
+					if (HasCore(Strategy) && !legs.Any(l => l.Core))
+					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Core)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); } }
 
 					// roll the (option) LEAP core one day before expiry
-					if (legs.Any(l => l.Qty > 0 && !l.Stock && (l.Exp - date).TotalDays <= 1))
+					if (legs.Any(l => l.Core && !l.Stock && (l.Exp - date).TotalDays <= 1))
 					{
-						foreach (var l in legs.Where(l => l.Qty > 0 && !l.Stock)) friction += Cost(l, l.VPrev);
-						legs.RemoveAll(l => l.Qty > 0 && !l.Stock); EstablishCore(legs, S, iv, date);
-						foreach (var l in legs.Where(l => l.Qty > 0 && !l.Stock)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => l.Core && !l.Stock)) friction += Cost(l, l.VPrev);
+						legs.RemoveAll(l => l.Core && !l.Stock); EstablishCore(legs, S, iv, date);
+						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
 					}
 
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
-					bool shortExpiring = legs.Any(l => l.Qty < 0 && (l.Exp - date).TotalDays <= 1);
+					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= 1);
 					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || NeedsRebuild(legs, target))
 					{
-						foreach (var l in legs.Where(l => l.Qty < 0)) friction += Cost(l, l.VPrev);
+						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, target, date);
-						foreach (var l in legs.Where(l => l.Qty < 0)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
 				}
@@ -165,36 +170,52 @@ namespace StockOdds
 			switch (Strategy)
 			{
 				case OverlayStrategy.Straddle:
-					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
-					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
+					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
+					legs.Add(new Leg { Core = true, Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.Pmcc:
 				case OverlayStrategy.PmccStrangle:
-					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
+				case OverlayStrategy.PmccPutFloor:
+					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.ShortPut:
 					break;
 				case OverlayStrategy.CoveredStock:
-					legs.Add(new Leg { Stock = true, Qty = 1, Exp = now.AddYears(100) });
+					legs.Add(new Leg { Core = true, Stock = true, Qty = 1, Exp = now.AddYears(100) });
 					break;
 				case OverlayStrategy.PutDiagonal:
-					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
+					legs.Add(new Leg { Core = true, Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.CallSpread: {
 					double Tc = ShortDteDays / 365.0; var expc = now.AddDays(ShortDteDays);
-					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, Tc, CallLeapDelta), Exp = expc });
+					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, Tc, CallLeapDelta), Exp = expc });
 					break; }
 				case OverlayStrategy.PutSpread: {
 					double Tp = ShortDteDays / 365.0; var expp = now.AddDays(ShortDteDays);
-					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Tp, PutLeapDelta), Exp = expp });
+					legs.Add(new Leg { Core = true, Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Tp, PutLeapDelta), Exp = expp });
 					break; }
 			}
 		}
 
 		private static void ResizeShorts(List<Leg> legs, double S, double iv, double target, DateTime now)
 		{
-			legs.RemoveAll(l => l.Qty < 0);
+			legs.RemoveAll(l => !l.Core); // drop all trim legs (short calls/puts + any remainder long put); keep the core
 			double Ts = ShortDteDays / 365.0; var exp = now.AddDays(ShortDteDays);
+			if (Strategy == OverlayStrategy.PmccPutFloor)
+			{
+				// PMCC where the short calls are capped at ShortCallCap of delta reduction; the rest of the
+				// reduction (when target is low) comes from BUYING a put (long put = negative delta hedge).
+				var coreL = legs.FirstOrDefault(l => l.Core && l.Call);
+				if (coreL == null) return;
+				double coreD = coreL.Qty * LegDelta(coreL, S, iv, now);
+				double reduction = coreD - target;            // >0 when we must cut delta down to target
+				if (reduction <= 1e-4) return;                // target >= core delta: hold the call alone (capped)
+				double scRed = Math.Min(reduction, ShortCallCap);
+				legs.Add(new Leg { Call = true, Qty = -scRed / ShortLegDelta, K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta), Exp = exp }); // short calls (capped)
+				double putRed = reduction - scRed;            // remainder handled by a long put
+				if (putRed > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.90, putRed)), Exp = exp });
+				return;
+			}
 			if (Strategy == OverlayStrategy.ShortPut)
 			{
 				double tgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
