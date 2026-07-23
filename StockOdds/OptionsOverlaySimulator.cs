@@ -51,7 +51,10 @@ namespace StockOdds
 		public static double PutLeapDelta       = 0.25;
 		public static double ShortPutCap        = 0.75; // ShortPut strategy: cap the single short put's delta
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
-		public static bool   CloseAtZero        = false;// at flat: true = liquidate to cash, false = hold core + hedge to 0 delta
+		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
+		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
+		// to cash if it still hasn't budged off flat (captures quick recoveries, cuts the tail of a real decline).
+		public static int    FlatHoldDays       = -1;
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
 		public static double HvFloor            = 0.08; // floor on annualized HV
 
@@ -69,7 +72,7 @@ namespace StockOdds
 			foreach (var b in bars) closeByDate[b.Date] = b.Close;
 			var hvByDate = TrailingHv(bars);
 
-			double bankroll = 0; bool started = false; var legs = new List<Leg>();
+			double bankroll = 0; bool started = false; var legs = new List<Leg>(); int flatCount = 0;
 			for (int k = 0; k < engine.Positions.Count && k < engine.ReturnDates.Count; k++)
 			{
 				DateTime date = engine.ReturnDates[k];
@@ -85,7 +88,9 @@ namespace StockOdds
 				else foreach (var l in legs) { double v = LegValue(l, S, iv, date); if (double.IsNaN(v) || double.IsInfinity(v)) v = l.VPrev; pnl += l.Qty * (v - l.VPrev); l.VPrev = v; }
 
 				bool flat = target <= FlatEps;
-				if (CloseAtZero && flat)
+				if (flat) flatCount++; else flatCount = 0;
+				bool doClose = flat && FlatHoldDays >= 0 && flatCount > FlatHoldDays;
+				if (doClose)
 				{
 					if (legs.Count > 0) { foreach (var l in legs) friction += Cost(l, l.VPrev); legs.Clear(); res.Rolls++; }
 				}

@@ -255,7 +255,17 @@ Same OOS methodology as the tables above, but **pooled across four disjoint rand
 
 **Why the put diagonal beats a plain short put.** It isn't a hedged short put — it's a *larger* short-put book plus a bought tail hedge. To hit the same net delta it must short more puts (to offset the long put's −0.25 delta), so it collects more premium and theta; the long-dated put is a bought hedge that pays off precisely on falling names (its **+1% vs the short put's −7%** frictionless return on decliners) and caps the drawdown of that bigger short book. More carry in the good tape, less pain in the bad — but it trades the most contracts and leans hardest on the flat-vol (no-skew) assumption.
 
-**Bottom line:** net of honest frictions, no structure reliably beats buy-&-hold; the genuinely interesting pockets are the long-put structures' **downside cushion on decliners** and the **convexity plays on violent / high-flyer names** — all contingent on near-mid execution and the model's flat-vol assumption (skew untested). Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
+### Tuning the PMCC (delta, DTE, and the flat-at-0 rule)
+
+Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC has three knobs:
+
+- **Call-LEAP delta — deeper is better for return.** 0.80–0.90 beats the 0.75 default; a deep-ITM call is more stock-like with less time premium to bleed and a defined downside. On the **concentrated flyer basket, Δ0.90 raises return *and* lowers drawdown** — `Δ0.90 / 360 DTE / hold ≈ +88% at 29% DD (ret/DD ≈ 3.0)`, beating buy-&-hold's 2.65 and Cash's 1.54. On broad the deeper delta lifts return at a slightly higher drawdown.
+- **LEAP DTE — 360 is the all-round sweet spot; 540–720 leans defensive.** A longer-dated call bleeds theta more slowly and rolls less often, so it loses the least on decliners (−8 to −9% at 720 vs −10 to −12% at 180); 180 DTE rolls ~3×/yr and pays more roll cost on the broad set. The effect is modest and a bit noisy — don't over-fit the DTE.
+- **At target 0, hold-and-hedge to 0 delta — don't close out, and don't use a short timeout.** Holding beats closing in *every* cell (closing crystallizes a sell-low/buy-high round trip against the lagging, mean-reverting exit signal). A 5- or 10-day "hold then exit" *underperforms* pure hold at equal-or-worse drawdown — even on decliners — because a short timeout fires on most dips and pays that same round-trip tax a few days late. Only a rarely-triggering ~20-day timeout ≈ pure hold. The `FlatHoldDays` knob defaults to −1 (hold indefinitely); leave it there.
+
+**Sweet spot for the flyer use-case: PMCC, ~0.90-delta call LEAP, 360 DTE, hold-and-hedge at 0** — the one configuration that clearly beats buy-&-hold on return/max-DD, and only on concentrated high-flyers; on the broad universe plain buy-&-hold still wins that ratio.
+
+**Bottom line:** net of honest frictions, no structure reliably beats buy-&-hold on the broad universe; the genuinely interesting pockets are the long-put structures' **downside cushion on decliners** and the **convexity plays on violent / high-flyer names** (where PMCC Δ0.90/360/hold leads on return/max-DD) — all contingent on near-mid execution and the model's flat-vol assumption (skew untested). Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
 
