@@ -192,7 +192,7 @@ Instead of holding the underlying at the engine's target exposure, this expresse
 
 | Structure | Long core | Delta steered by |
 |---|---|---|
-| **Straddle LEAP** | long **0.80Δ** call + 0.25Δ put (365 DTE) | short calls / puts |
+| **Straddle LEAP** | long **0.80Δ** call + **0.15Δ** put (365 DTE) | short calls / puts |
 | **PMCC** *(recommended)* | long **0.80Δ** call LEAP (365 DTE) | short calls |
 | **Short-put** | *(none)* | one short put at delta = min(target, 0.75) |
 | **Covered stock** | long shares | short calls |
@@ -207,7 +207,7 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+37% / 34.8* | — |
 | *Cash (engine)* | *+13% / 18.7* | — |
-| Straddle | +33% / 17.1 | +27% / 18.8 |
+| Straddle | +34% / 16.7 | +27% / 18.0 |
 | **PMCC** | **+37% / 16.6** | **+29% / 18.1** |
 | Short-put | +26% / 18.7 | +20% / 20.0 |
 | Covered stock | +43% / 22.2 | +34% / 23.9 |
@@ -218,7 +218,7 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *−23% / 46.9* | — |
 | *Cash (engine)* | *−9% / 23.2* | — |
-| Straddle | +1% / 18.6 | −3% / 20.0 |
+| Straddle | +3% / 17.5 | −2% / 19.2 |
 | **PMCC** | **+4% / 17.4** | **−1% / 18.7** |
 | Short-put | −3% / 19.9 | −7% / 21.7 |
 | Covered stock | +10% / 22.5 | +3% / 25.0 |
@@ -229,7 +229,7 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+146% / 55.8* | — |
 | *Cash (engine)* | *+66% / 31.8* | — |
-| Straddle | +127% / 34.9 | +109% / 36.4 |
+| Straddle | +111% / 32.7 | +95% / 35.4 |
 | **PMCC** | +124% / 34.4 | **+106% / 36.1** |
 | Short-put | +95% / 36.8 | +78% / 38.5 |
 | Covered stock | +147% / 41.1 | +120% / 44.9 |
@@ -240,7 +240,7 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+128% / 48.2* | — |
 | *Cash (engine)* | *+45% / 29.2* | — |
-| Straddle | +145% / 31.5 | +142% / 30.3 |
+| Straddle | +133% / 31.8 | +128% / 31.3 |
 | **PMCC** | +131% / 26.7 | **+110% / 28.9** |
 | Short-put | +91% / 26.6 | +76% / 27.8 |
 | Covered stock | +139% / 34.0 | +115% / 34.5 |

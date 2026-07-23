@@ -58,7 +58,7 @@ namespace StockOdds
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
-		public static double PutLeapDelta       = 0.25;
+		public static double PutLeapDelta       = 0.15;  // shallow far-OTM base put (straddle put leg / put-diagonal base)
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
 		public static double ShortPutCap        = 0.75; // ShortPut strategy: cap the single short put's delta
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
