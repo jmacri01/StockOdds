@@ -54,6 +54,7 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
+		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
@@ -128,7 +129,7 @@ namespace StockOdds
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
-					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= 1);
+					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
 					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
