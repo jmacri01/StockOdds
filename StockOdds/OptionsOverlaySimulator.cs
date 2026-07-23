@@ -52,7 +52,9 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
-		public static double ShortDteDays      = 40;   // calendar DTE for the rolled short legs
+		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
+		                                               // more theta (universal across strategies, robust to 2% spread);
+		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
