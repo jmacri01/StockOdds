@@ -28,8 +28,10 @@ namespace StockOdds
 		              // pinned at StrangleMinDelta, the other floats so net delta hits the target
 		SplitStockPut,// regime switch at 0.5: target >= 0.5 -> long stock + covered calls to target;
 		              // target < 0.5 -> no stock, a single short put sized to the target
-		CallSpread    // short-dated (ShortDteDays) bull call spread as the core: long call at CallLeapDelta,
+		CallSpread,   // short-dated (ShortDteDays) bull call spread as the core: long call at CallLeapDelta,
 		              // short call struck so net delta = target (1x1 vertical, same expiry, rolled monthly)
+		PutSpread     // short-dated (ShortDteDays) bull PUT spread, both legs ~40 DTE: long put at
+		              // PutLeapDelta (protection) + short higher-strike put struck so net delta = target
 	}
 
 	public sealed class OverlayResult
@@ -178,6 +180,10 @@ namespace StockOdds
 					double Tc = ShortDteDays / 365.0; var expc = now.AddDays(ShortDteDays);
 					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, Tc, CallLeapDelta), Exp = expc });
 					break; }
+				case OverlayStrategy.PutSpread: {
+					double Tp = ShortDteDays / 365.0; var expp = now.AddDays(ShortDteDays);
+					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Tp, PutLeapDelta), Exp = expp });
+					break; }
 			}
 		}
 
@@ -216,6 +222,17 @@ namespace StockOdds
 				double coreD = core.Qty * LegDelta(core, S, iv, now);
 				double sd = coreD - target;
 				if (sd > 1e-3) { double Kc = StrikeForDelta(true, S, iv, TimeToExp(core, now), Math.Min(0.95, sd)); legs.Add(new Leg { Call = true, Qty = -1, K = Kc, Exp = core.Exp }); }
+				return;
+			}
+			if (Strategy == OverlayStrategy.PutSpread)
+			{
+				// 1x1 bull put vertical: long put (protection) is the core; short a higher-strike put at the
+				// SAME expiry, struck so net delta = target. net = coreDelta(≈−PutLeapDelta) + |shortPutDelta|.
+				var core = legs.FirstOrDefault(l => l.Qty > 0);
+				if (core == null) return;
+				double coreDp = core.Qty * LegDelta(core, S, iv, now); // ≈ −PutLeapDelta
+				double sp = target - coreDp; // short-put delta magnitude to reach target (> 0)
+				if (sp > 1e-3) { double Kp = StrikeForDelta(false, S, iv, TimeToExp(core, now), Math.Min(0.90, sp)); legs.Add(new Leg { Call = false, Qty = -1, K = Kp, Exp = core.Exp }); }
 				return;
 			}
 			if (Strategy == OverlayStrategy.PmccStrangle)
