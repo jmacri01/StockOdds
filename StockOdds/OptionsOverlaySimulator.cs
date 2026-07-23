@@ -23,7 +23,9 @@ namespace StockOdds
 		Pmcc,         // long call LEAP + short calls only (can reduce delta, never add above the LEAP)
 		ShortPut,     // no core; a single short put at delta = min(target, ShortPutCap); flat when target ~ 0
 		CoveredStock, // long shares + short calls
-		PutDiagonal   // long put LEAP (PutLeapDelta) + short puts
+		PutDiagonal,  // long put LEAP (PutLeapDelta) + short puts
+		PmccStrangle  // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
+		              // pinned at StrangleMinDelta, the other floats so net delta hits the target
 	}
 
 	public sealed class OverlayResult
@@ -47,14 +49,16 @@ namespace StockOdds
 		public static double ShortDteDays      = 40;   // calendar DTE for the rolled short legs
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
-		public static double CallLeapDelta      = 0.75;
+		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
 		public static double PutLeapDelta       = 0.25;
+		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
 		public static double ShortPutCap        = 0.75; // ShortPut strategy: cap the single short put's delta
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
 		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
 		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
 		// to cash if it still hasn't budged off flat (captures quick recoveries, cuts the tail of a real decline).
-		public static int    FlatHoldDays       = -1;
+		// 20 is the sweet spot: ≈ pure hold on every universe while keeping the position finite.
+		public static int    FlatHoldDays       = 20;
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
 		public static double HvFloor            = 0.08; // floor on annualized HV
 
@@ -143,6 +147,7 @@ namespace StockOdds
 					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.Pmcc:
+				case OverlayStrategy.PmccStrangle:
 					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.ShortPut:
@@ -164,6 +169,17 @@ namespace StockOdds
 			{
 				double tgt = Math.Min(target, ShortPutCap);
 				if (tgt > FlatEps) legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				return;
+			}
+			if (Strategy == OverlayStrategy.PmccStrangle)
+			{
+				// always 1 short call + 1 short put; nearer leg pinned at StrangleMinDelta, the other floats.
+				double coreD = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * LegDelta(l, S, iv, now));
+				double diff = target - coreD;   // >0 need more delta (deepen the put), <0 need less (deepen the call)
+				double callD = Math.Min(0.95, diff < 0 ? StrangleMinDelta - diff : StrangleMinDelta);
+				double putD  = Math.Min(0.95, diff > 0 ? StrangleMinDelta + diff : StrangleMinDelta);
+				legs.Add(new Leg { Call = true,  Qty = -1, K = StrikeForDelta(true,  S, iv, Ts, callD), Exp = exp });
+				legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, putD),  Exp = exp });
 				return;
 			}
 			double coreDelta = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * LegDelta(l, S, iv, now));
