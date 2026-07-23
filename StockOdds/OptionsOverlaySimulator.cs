@@ -26,8 +26,10 @@ namespace StockOdds
 		PutDiagonal,  // long put LEAP (PutLeapDelta) + short puts
 		PmccStrangle, // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
 		              // pinned at StrangleMinDelta, the other floats so net delta hits the target
-		SplitStockPut // regime switch at 0.5: target >= 0.5 -> long stock + covered calls to target;
+		SplitStockPut,// regime switch at 0.5: target >= 0.5 -> long stock + covered calls to target;
 		              // target < 0.5 -> no stock, a single short put sized to the target
+		CallSpread    // short-dated (ShortDteDays) bull call spread as the core: long call at CallLeapDelta,
+		              // short call struck so net delta = target (1x1 vertical, same expiry, rolled monthly)
 	}
 
 	public sealed class OverlayResult
@@ -172,6 +174,10 @@ namespace StockOdds
 				case OverlayStrategy.PutDiagonal:
 					legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
 					break;
+				case OverlayStrategy.CallSpread: {
+					double Tc = ShortDteDays / 365.0; var expc = now.AddDays(ShortDteDays);
+					legs.Add(new Leg { Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, Tc, CallLeapDelta), Exp = expc });
+					break; }
 			}
 		}
 
@@ -199,6 +205,17 @@ namespace StockOdds
 					double d = Math.Min(0.95, target); double K = StrikeForDelta(false, S, iv, Ts, d);
 					legs.Add(new Leg { Call = false, Qty = -1, K = K, Exp = exp, VPrev = Price(false, S, K, iv, Ts) });
 				}
+				return;
+			}
+			if (Strategy == OverlayStrategy.CallSpread)
+			{
+				// 1x1 bull call vertical: long call is the core; short a single call at the SAME expiry,
+				// struck so net delta = target. No short when target >= the long call's delta (capped).
+				var core = legs.FirstOrDefault(l => l.Qty > 0);
+				if (core == null) return;
+				double coreD = core.Qty * LegDelta(core, S, iv, now);
+				double sd = coreD - target;
+				if (sd > 1e-3) { double Kc = StrikeForDelta(true, S, iv, TimeToExp(core, now), Math.Min(0.95, sd)); legs.Add(new Leg { Call = true, Qty = -1, K = Kc, Exp = core.Exp }); }
 				return;
 			}
 			if (Strategy == OverlayStrategy.PmccStrangle)
