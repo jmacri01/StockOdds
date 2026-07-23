@@ -192,9 +192,9 @@ Instead of holding the underlying at the engine's target exposure, this expresse
 
 | Structure | Long core | Delta steered by |
 |---|---|---|
-| **Straddle LEAP** | long **0.80Δ** call + 0.25Δ put (365 DTE) | short calls / puts |
+| **Straddle LEAP** | long **0.80Δ** call + **0.15Δ** put (365 DTE) | short calls / puts |
 | **PMCC** *(recommended)* | long **0.80Δ** call LEAP (365 DTE) | short calls |
-| **Short-put** | *(none)* | one short put at delta = min(target, 0.75) |
+| **Short-put** | *(none)* | one short put at delta = min(target, **0.50**) — ATM, peak theta |
 | **Covered stock** | long shares | short calls |
 | **Put diagonal** | long **0.15Δ** put LEAP (365 DTE) | short puts |
 
@@ -207,9 +207,9 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+37% / 34.8* | — |
 | *Cash (engine)* | *+13% / 18.7* | — |
-| Straddle | +33% / 17.1 | +27% / 18.8 |
+| Straddle | +34% / 16.7 | +27% / 18.0 |
 | **PMCC** | **+37% / 16.6** | **+29% / 18.1** |
-| Short-put | +26% / 18.7 | +20% / 20.0 |
+| Short-put | +26% / 14.7 | +22% / 15.4 |
 | Covered stock | +43% / 22.2 | +34% / 23.9 |
 | Put diagonal | +43% / 19.3 | +31% / 20.9 |
 
@@ -218,9 +218,9 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *−23% / 46.9* | — |
 | *Cash (engine)* | *−9% / 23.2* | — |
-| Straddle | +1% / 18.6 | −3% / 20.0 |
+| Straddle | +3% / 17.5 | −2% / 19.2 |
 | **PMCC** | **+4% / 17.4** | **−1% / 18.7** |
-| Short-put | −3% / 19.9 | −7% / 21.7 |
+| Short-put | +2% / 16.2 | −1% / 17.1 |
 | Covered stock | +10% / 22.5 | +3% / 25.0 |
 | Put diagonal | +9% / 19.9 | +2% / 22.5 |
 
@@ -229,9 +229,9 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+146% / 55.8* | — |
 | *Cash (engine)* | *+66% / 31.8* | — |
-| Straddle | +127% / 34.9 | +109% / 36.4 |
+| Straddle | +111% / 32.7 | +95% / 35.4 |
 | **PMCC** | +124% / 34.4 | **+106% / 36.1** |
-| Short-put | +95% / 36.8 | +78% / 38.5 |
+| Short-put | +89% / 30.9 | +78% / 31.7 |
 | Covered stock | +147% / 41.1 | +120% / 44.9 |
 | Put diagonal | +149% / 37.2 | +100% / 40.9 |
 
@@ -240,14 +240,14 @@ All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short leg
 |---|---|---|
 | *Buy & hold* | *+128% / 48.2* | — |
 | *Cash (engine)* | *+45% / 29.2* | — |
-| Straddle | +145% / 31.5 | +142% / 30.3 |
+| Straddle | +133% / 31.8 | +128% / 31.3 |
 | **PMCC** | +131% / 26.7 | **+110% / 28.9** |
-| Short-put | +91% / 26.6 | +76% / 27.8 |
+| Short-put | +93% / 20.5 | +83% / 22.7 |
 | Covered stock | +139% / 34.0 | +115% / 34.5 |
 | Put diagonal | +113% / 23.0 | +98% / 24.0 |
 
 **Reading it (return ÷ max-DD).** With the 14-DTE short legs, the overlays now **beat buy-&-hold on return/drawdown in every universe** — they give up some absolute return but at roughly *half* the drawdown:
-- **Broad:** PMCC +29%/18.1 (ratio **1.6**) vs B&H +37%/34.8 (1.1) and Cash +13%/18.7 (0.7). Every overlay except short-put clears B&H on the ratio — a real shift from the old 40-DTE tables, where they trailed it.
+- **Broad:** PMCC +29%/18.1 (ratio **1.6**) vs B&H +37%/34.8 (1.1) and Cash +13%/18.7 (0.7). *Every* overlay now clears B&H on the ratio — a real shift from the old 40-DTE tables, where they trailed it. The **short-put (0.50-cap) is the lowest-drawdown seller** at +22%/15.4 (ratio 1.4).
 - **Decliners:** the standout. Covered stock (+3%) and put diagonal (+2%) stay **positive at mid execution**, PMCC ~flat (−1%), where buy-&-hold loses −23% and even Cash −9%. The short-call/short-put premium plus the long put's cushion turn the down-cohort roughly breakeven.
 - **Violent:** PMCC +106%/36.1 (ratio **2.9**) beats B&H's +146%/55.8 (2.6) — most of the upside at far less drawdown; covered stock captures the most return (+120%).
 - **Basket:** put diagonal +98%/24.0 (**4.1**), PMCC +110%/28.9 (**3.8**), straddle +139%/35.0 (4.0) — all crush B&H's +128%/48.2 (2.7).
