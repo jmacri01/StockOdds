@@ -192,68 +192,70 @@ Instead of holding the underlying at the engine's target exposure, this expresse
 
 | Structure | Long core | Delta steered by |
 |---|---|---|
-| **Straddle LEAP** | long 0.75Δ call + 0.25Δ put (~365 DTE) | short calls / puts |
-| **PMCC** | long 0.75Δ call LEAP | short calls |
+| **Straddle LEAP** | long 0.75Δ call + 0.25Δ put (365 DTE) | short calls / puts |
+| **PMCC** *(recommended)* | long **0.80Δ** call LEAP (365 DTE) | short calls |
 | **Short-put** | *(none)* | one short put at delta = min(target, 0.75) |
 | **Covered stock** | long shares | short calls |
-| **Put diagonal** | long 0.25Δ put LEAP | short puts |
+| **Put diagonal** | long **0.15Δ** put LEAP (365 DTE) | short puts |
 
 When the target hits zero, the core is **held and hedged to 0 delta** (with a ~20-day timeout — see [Tuning the PMCC](#tuning-the-pmcc-delta-dte-and-the-flat-at-0-rule)) rather than closed out to cash — holding won on every universe (it keeps the cheap short-leg premium and the core's gamma for the frequent snap-backs, and avoids churning the wide-spread LEAP in and out).
 
-Same OOS methodology as the tables above, but **pooled across four disjoint random-500 samples (961 names after the ≥ $500M floor)** — so the cohort counts are larger than the single-sample tables. Each cell is **Sharpe / max-DD% / return%**, shown **frictionless** (a ceiling) and at **mid ~1%** (a per-transaction cost of ~1% of premium — patient limit fills near mid). Rows are the recommended *hold-at-0* variant.
+All at the **optimal/default parameters** (365-DTE LEAP core, **14-DTE short legs**, hold-at-0 with a 20-day timeout; PMCC 0.80Δ, put diagonal 0.15Δ), **pooled across four disjoint random-500 samples (961 names after the ≥ $500M floor).** Each cell is **return% / max-DD%** — the metric that matters — shown **frictionless** (a ceiling) and at **mid ~1%** (patient limit fills near mid). *(Sharpe dropped by design — these are read on return vs drawdown.)*
 
 ### Broad (961 names)
-| Strategy | frictionless (Sh / DD / Ret) | mid ~1% (Sh / DD / Ret) |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
 |---|---|---|
-| *Buy & hold* | *0.479 / 34.8 / +37%* | — |
-| *Cash (engine)* | *0.272 / 18.7 / +13%* | — |
-| Straddle | 0.436 / 18.4 / +23% | 0.282 / 19.8 / +16% |
-| PMCC | 0.405 / 16.8 / +22% | 0.252 / 18.2 / +16% |
-| Short-put | 0.470 / 18.5 / +21% | 0.302 / 20.2 / +14% |
-| Covered stock | 0.588 / 22.3 / +27% | 0.366 / 24.7 / +17% |
-| Put diagonal | **0.731 / 19.9 / +30%** | **0.430 / 22.5 / +16%** |
+| *Buy & hold* | *+37% / 34.8* | — |
+| *Cash (engine)* | *+13% / 18.7* | — |
+| Straddle | +34% / 17.9 | +26% / 19.2 |
+| **PMCC** | **+37% / 16.6** | **+29% / 18.1** |
+| Short-put | +26% / 18.7 | +20% / 20.0 |
+| Covered stock | +43% / 22.2 | +34% / 23.9 |
+| Put diagonal | +43% / 19.3 | +31% / 20.9 |
 
 ### Decliners (339 names, negative B&H return)
-| Strategy | frictionless (Sh / DD / Ret) | mid ~1% (Sh / DD / Ret) |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
 |---|---|---|
-| *Buy & hold* | *−0.245 / 46.9 / −23%* | — |
-| *Cash (engine)* | *−0.339 / 23.2 / −9%* | — |
-| Straddle | −0.121 / 21.0 / −6% | −0.287 / 23.2 / −11% |
-| PMCC | −0.281 / 18.7 / −7% | −0.414 / 19.9 / −10% |
-| Short-put | −0.184 / 21.1 / −7% | −0.353 / 23.2 / −11% |
-| Covered stock | +0.051 / 23.8 / −2% | −0.187 / 27.0 / −9% |
-| Put diagonal | **+0.175 / 21.5 / +1%** | −0.172 / 26.0 / −10% |
+| *Buy & hold* | *−23% / 46.9* | — |
+| *Cash (engine)* | *−9% / 23.2* | — |
+| Straddle | +1% / 18.6 | −3% / 20.4 |
+| **PMCC** | **+4% / 17.4** | **−1% / 18.7** |
+| Short-put | −3% / 19.9 | −7% / 21.7 |
+| Covered stock | +10% / 22.5 | +3% / 25.0 |
+| Put diagonal | +9% / 19.9 | +2% / 22.5 |
 
 ### Violent (83 names, +return but ≥ 50% B&H drawdown)
-| Strategy | frictionless (Sh / DD / Ret) | mid ~1% (Sh / DD / Ret) |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
 |---|---|---|
-| *Buy & hold* | *0.963 / 55.8 / +146%* | — |
-| *Cash (engine)* | *0.754 / 31.8 / +66%* | — |
-| Straddle | 0.697 / 38.4 / +95% | 0.471 / 41.7 / +69% |
-| PMCC | 0.725 / 33.8 / +89% | 0.589 / 36.7 / +73% |
-| Short-put | 0.926 / 37.2 / +85% | 0.740 / 40.8 / +62% |
-| Covered stock | 0.912 / 41.4 / +100% | 0.721 / 45.5 / +75% |
-| Put diagonal | **1.086 / 41.3 / +102%** | **0.792 / 48.6 / +63%** |
+| *Buy & hold* | *+146% / 55.8* | — |
+| *Cash (engine)* | *+66% / 31.8* | — |
+| Straddle | +143% / 36.4 | +104% / 39.8 |
+| **PMCC** | +124% / 34.4 | **+106% / 36.1** |
+| Short-put | +95% / 36.8 | +78% / 38.5 |
+| Covered stock | +147% / 41.1 | +120% / 44.9 |
+| Put diagonal | +149% / 37.2 | +100% / 40.9 |
 
 ### Hand-picked high-vol basket (17 names)
-| Strategy | frictionless (Sh / DD / Ret) | mid ~1% (Sh / DD / Ret) |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
 |---|---|---|
-| *Buy & hold* | *0.722 / 48.2 / +128%* | — |
-| *Cash (engine)* | *0.539 / 29.2 / +45%* | — |
-| Straddle | 0.767 / 32.3 / +95% | 0.649 / 34.3 / +89% |
-| PMCC | 0.752 / 30.9 / +92% | 0.598 / 34.2 / +75% |
-| Short-put | 0.736 / 25.9 / +75% | 0.544 / 28.9 / +56% |
-| Covered stock | **0.931 / 26.8 / +112%** | 0.712 / 30.8 / +88% |
-| Put diagonal | 0.994 / 28.5 / +90% | **0.722 / 31.3 / +61%** |
+| *Buy & hold* | *+128% / 48.2* | — |
+| *Cash (engine)* | *+45% / 29.2* | — |
+| Straddle | +141% / 34.6 | +139% / 35.0 |
+| **PMCC** | +131% / 26.7 | **+110% / 28.9** |
+| Short-put | +91% / 26.6 | +76% / 27.8 |
+| Covered stock | +139% / 34.0 | +115% / 34.5 |
+| Put diagonal | +113% / 23.0 | +98% / 24.0 |
 
-**Reading it.**
-- **Broad:** net of realistic (~1%) friction the overlays roughly *match* Cash and *trail* buy-&-hold on Sharpe — at lower drawdown, but no broad edge.
-- **Decliners:** the long-put structures earn their keep. Frictionless, the **put diagonal reaches breakeven (+0.18 Sharpe, +1% return)** and covered stock ~flat, where buy-&-hold loses −23% and even Cash loses −9%. Friction erodes most of it, but the long put is doing exactly what downside insurance should.
-- **Violent:** the overlays' best regime — the **put diagonal edges buy-&-hold frictionless (1.09 vs 0.96)** and covered stock leads at mid execution, all at ~40% drawdown vs B&H's 56%. Convexity harvesting the big moves while capping the pullbacks.
-- **Basket:** put diagonal and covered stock **match buy-&-hold at mid execution (~0.72 Sharpe)** with ~31% vs 48% drawdown.
-- **Cost sensitivity:** covered stock and put diagonal lead the tables but roll the most contracts, so they lose the most between frictionless and mid — the whole picture leans hard on filling near mid.
+**Reading it (return ÷ max-DD).** With the 14-DTE short legs, the overlays now **beat buy-&-hold on return/drawdown in every universe** — they give up some absolute return but at roughly *half* the drawdown:
+- **Broad:** PMCC +29%/18.1 (ratio **1.6**) vs B&H +37%/34.8 (1.1) and Cash +13%/18.7 (0.7). Every overlay except short-put clears B&H on the ratio — a real shift from the old 40-DTE tables, where they trailed it.
+- **Decliners:** the standout. Covered stock (+3%) and put diagonal (+2%) stay **positive at mid execution**, PMCC ~flat (−1%), where buy-&-hold loses −23% and even Cash −9%. The short-call/short-put premium plus the long put's cushion turn the down-cohort roughly breakeven.
+- **Violent:** PMCC +106%/36.1 (ratio **2.9**) beats B&H's +146%/55.8 (2.6) — most of the upside at far less drawdown; covered stock captures the most return (+120%).
+- **Basket:** put diagonal +98%/24.0 (**4.1**), PMCC +110%/28.9 (**3.8**), straddle +139%/35.0 (4.0) — all crush B&H's +128%/48.2 (2.7).
+- **Cost sensitivity:** covered stock and put diagonal roll the most contracts, so they lose the most from frictionless→mid; PMCC is the most cost-stable.
 
-**Why the put diagonal beats a plain short put.** It isn't a hedged short put — it's a *larger* short-put book plus a bought tail hedge. To hit the same net delta it must short more puts (to offset the long put's −0.25 delta), so it collects more premium and theta; the long-dated put is a bought hedge that pays off precisely on falling names (its **+1% vs the short put's −7%** frictionless return on decliners) and caps the drawdown of that bigger short book. More carry in the good tape, less pain in the bad — but it trades the most contracts and leans hardest on the flat-vol (no-skew) assumption.
+> **⚠️ These tables lean on the 14-DTE theta harvest — the most model-optimistic part of the study.** Selling short-dated premium collects the steepest theta, which is why the numbers jumped versus 40-DTE, but front-week short options carry **gamma / gap / pin / assignment** risk that the Black-Scholes, close-to-close, no-real-chain model **cannot see**. The return/drawdown edge over buy-&-hold shown here is real *in the model*; treat the short-DTE-driven portion as a ceiling, not a promise. (This is also why the default short leg is 14 DTE, not 7.)
+
+**Why the put diagonal beats a plain short put.** It isn't a hedged short put — it's a *larger* short-put book plus a bought tail hedge. To hit the same net delta it must short more puts (to offset the long put's negative delta), so it collects more premium and theta; the long-dated put is a bought hedge that pays off precisely on falling names (its **+9% vs the short put's −3%** frictionless return on decliners) and caps the drawdown of that bigger short book. More carry in the good tape, less pain in the bad — but it trades the most contracts and leans hardest on the flat-vol (no-skew) assumption. Keep the base put **shallow** (0.15Δ) — a deeper base just inflates the short book (see [Tuning the put diagonal](#tuning-the-put-diagonal-long-put-leap--short-puts)).
 
 ### Tuning the PMCC (delta, DTE, and the flat-at-0 rule)
 
@@ -261,7 +263,7 @@ Same OOS methodology as the tables above, but **pooled across four disjoint rand
 
 Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC has four knobs:
 
-- **Call-LEAP delta — deeper is better for return; 0.80 is the balanced starter.** A deep-ITM call is more stock-like, with less time premium to bleed and a defined downside. **0.80** is the all-round pick (best return/DD balance on the broad set); push to **0.90** for concentrated high-flyers, where it raises return *and* lowers drawdown — `Δ0.90 / 365 DTE / hold ≈ +88% at 29% DD (ret/DD ≈ 3.0)`, beating buy-&-hold's 2.65 and Cash's 1.54.
+- **Call-LEAP delta — deeper is better for return; 0.80 is the balanced starter.** A deep-ITM call is more stock-like, with less time premium to bleed and a defined downside. **0.80** is the all-round pick (best return/DD balance on the broad set); push to **0.90** for concentrated high-flyers, where it raises return *and* lowers drawdown (the basket's best return/max-DD ratio).
 - **LEAP DTE — 365 is the all-round sweet spot; 540–720 leans defensive.** A longer-dated call bleeds theta more slowly and rolls less often, so it loses the least on decliners (−8 to −9% at 720 vs −10 to −12% at 180); 180-DTE rolls ~3×/yr and pays more roll cost. The effect is modest and a bit noisy — don't over-fit the DTE; **365 is the safe default.**
 - **Short-leg DTE — shorter harvests more theta; ~14 DTE is the sweet spot.** The short calls are theta engines, and theta is steepest near expiry, so shorter-dated short legs collect far more premium per unit time. Return rises monotonically as the short DTE shortens — at 2% spread, broad return roughly *doubles* from 40-DTE to ~7-DTE (PMCC 8% → 30%), and it **turns decliners positive** (−9% → +1%). Crucially this is **friction-robust**: doubling the spread from 1%→2% costs a near-uniform ~8 points at *every* DTE (each weekly roll trades a smaller premium, so annual premium turnover is ~DTE-independent), so shorter isn't punished the way you'd expect — and it's **universal across all seven structures**, not a PMCC quirk. The reason to stop at ~14 rather than 7 is **not friction — it's gamma/gap/pin/assignment** risk, which no spread level captures and which the close-to-close BS model can't see. `ShortDteDays = 14` is the default; go to 7 only if you're comfortable with weekly-gamma tail risk, or 21 to back further off it.
 - **At target 0, hold-and-hedge to 0 delta with a 20-day timeout — don't close out early.** Holding beats closing out in *every* case (closing crystallizes a sell-low/buy-high round trip against the lagging, mean-reverting exit signal). A short timeout is worse, not better: 5- or 10-day "hold then exit" *underperforms* holding at equal-or-worse drawdown — even on decliners — because it fires on most dips and pays that round-trip tax a few days late. The timeout only stops costing at **~20 days** (≈ pure hold on every universe while keeping the position finite — a permanent full hedge is dead capital + ongoing roll cost). **`FlatHoldDays = 20` is the default; 15 is fine on broad/moderate names but a touch short for concentrated flyers (they need ~20–25).**
@@ -277,7 +279,7 @@ If you run the put diagonal instead of the PMCC, the base put LEAP wants to go *
 - **At that shallow/long sweet spot the put diagonal is competitive with the PMCC** — it *beats* PMCC on return/max-DD on the flyer **basket** (~2.5 vs ~2.1) and loses **less on decliners** (−7.5% vs −9.1%), at a slightly higher broad drawdown. It even beats the naked short put on both counts (the tiny long put is a cheap tail while the slightly larger short book collects more premium).
 - **Caveat — it's the most model-flattered structure.** The put diagonal is short-put-heavy, so unmodeled **skew** (richer short puts *and* a pricier long put) and **gap/assignment** risk on the short book would tax it more than the PMCC. Treat its basket edge as model-optimistic; the PMCC is the more robust, model-honest pick.
 
-**Bottom line:** net of honest frictions, no structure reliably beats buy-&-hold on the broad universe; the genuinely interesting pockets are the long-put structures' **downside cushion on decliners** and the **convexity plays on violent / high-flyer names** (where PMCC Δ0.90/360/hold leads on return/max-DD) — all contingent on near-mid execution and the model's flat-vol assumption (skew untested). Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
+**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, hold-20), the overlays beat buy-&-hold on **return ÷ max-drawdown in every universe** — most of the upside at roughly half the drawdown, breakeven on decliners where B&H bleeds −23%. **PMCC (0.80Δ) is the recommended all-rounder**; put diagonal (0.15Δ) and covered stock edge it on the flyer basket. Two things to keep honest: this rests on **near-mid execution** and, more importantly, on the **14-DTE theta harvest whose front-week gamma/gap/assignment risk the model can't see** — so read the edge as a model ceiling, strongest and most-trustworthy in the *drawdown-reduction* it shows (consistent across the whole study) rather than the short-DTE return spike. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
 
