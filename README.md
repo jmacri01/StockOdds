@@ -267,6 +267,15 @@ Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC
 
 **In one line:** *PMCC — 0.80-delta (→0.90 for flyers), 365-DTE call LEAP, short calls to target, hold-and-hedge at 0 with a 20-day timeout.* On the concentrated flyer basket this beats buy-&-hold on return/max-DD; on the broad universe plain buy-&-hold still wins that ratio, so use the overlay there for the drawdown cushion, not for outperformance.
 
+### Tuning the put diagonal (long put LEAP + short puts)
+
+If you run the put diagonal instead of the PMCC, the base put LEAP wants to go **shallow and long-dated**: a **cheap ~0.10–0.15-delta far-OTM put, 360–540 DTE.**
+
+- **Shallower base delta is strictly better** — 0.10–0.15 ≫ 0.25 ≫ 0.35 ≫ 0.50 on return in every universe, with drawdown *rising* as the base put deepens. This is counter-intuitive but mechanical: a deeper base put doesn't protect more, it forces a **bigger short-put book** (the shorts must supply target + base-delta of positive delta), which is more premium but also more contracts (friction) and more tail. A 0.50 base *loses −18% on decliners* vs −7.5% at 0.15 — the larger short book swamps the extra protection. Keep the base a cheap tail.
+- **DTE 360–540 is the sweet spot** (slow theta, few rolls); shorter is a touch more return at higher drawdown. Same shape as the PMCC.
+- **At that shallow/long sweet spot the put diagonal is competitive with the PMCC** — it *beats* PMCC on return/max-DD on the flyer **basket** (~2.5 vs ~2.1) and loses **less on decliners** (−7.5% vs −9.1%), at a slightly higher broad drawdown. It even beats the naked short put on both counts (the tiny long put is a cheap tail while the slightly larger short book collects more premium).
+- **Caveat — it's the most model-flattered structure.** The put diagonal is short-put-heavy, so unmodeled **skew** (richer short puts *and* a pricier long put) and **gap/assignment** risk on the short book would tax it more than the PMCC. Treat its basket edge as model-optimistic; the PMCC is the more robust, model-honest pick.
+
 **Bottom line:** net of honest frictions, no structure reliably beats buy-&-hold on the broad universe; the genuinely interesting pockets are the long-put structures' **downside cushion on decliners** and the **convexity plays on violent / high-flyer names** (where PMCC Δ0.90/360/hold leads on return/max-DD) — all contingent on near-mid execution and the model's flat-vol assumption (skew untested). Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
