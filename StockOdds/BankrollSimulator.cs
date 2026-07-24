@@ -189,6 +189,17 @@ namespace StockOdds
 		// This is the single trim knob after volume/ATR/exposure-shaping conditioning was removed for failing to help
 		// BOTH the curated basket AND the broad OOS sets simultaneously.
 		public static double RsiMultNumerator = 40.0;
+		// HV-conditioned overbought trim (DEFAULT ON). The RSI numerator is scaled DOWN by the candle's live
+		// rolling HV(HvWindow): N_eff = min(RsiMultNumerator, max(HvTrimFloor, HvTrimSlope * rollingHV%)). So the
+		// trim is HARDER on low-vol candles (their overbought spikes mean-revert -> cut them) and relaxes back up
+		// to the RsiMultNumerator CAP as HV rises (reaching the cap around HV = RsiMultNumerator/HvTrimSlope). It
+		// NEVER trims lighter than RsiMultNumerator -- so raising N raises the ceiling everywhere. Validated as a
+		// genuine drawdown-reduction edge: return ~flat, drawdown down, replicated 4/4 on disjoint random-500 OOS
+		// samples (broad + decliners); the "let high-vol run" upside was separated out as beta (return AND drawdown
+		// up on the survivor names, not a real signal, and not rescued by persistence) so it is deliberately capped
+		// out here. HvTrimSlope = 0 disables (fixed N everywhere).
+		public static double HvTrimSlope = 0.6;   // N_eff ramps at this * rolling HV%; caps at RsiMultNumerator
+		public static double HvTrimFloor = 8.0;   // hardest trim (floor on N_eff) for the quietest candles
 		// Final-position EMA smoothing (DEFAULT ON, period 5). Smooths the FINAL traded position -- after clamp,
 		// RSI trim, accurate-sizing, and the out-of-region override -- so the RSI-2 single-bar chatter (spike-down,
 		// snap-back) is averaged out. Unlike lowering the RSI numerator (which cuts drawdown by holding LESS), this
@@ -451,7 +462,9 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
-							double numer = RsiMultNumerator;
+							double numer = HvTrimSlope > 0
+								? Math.Min(RsiMultNumerator, Math.Max(HvTrimFloor, HvTrimSlope * curHvPct))
+								: RsiMultNumerator;
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
