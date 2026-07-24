@@ -122,9 +122,9 @@ class Program
 		BankrollSimulator.RebalanceDriftPercent = 30;
 		BankrollSimulator.AccurateFullSizing    = true;   // size to full when the target saturates (don't lag at 0.7)
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
-		BankrollSimulator.MaxExposurePercent    = 100.0;  // position clamp high
+		BankrollSimulator.MaxExposurePercent    = 150.0;  // position clamp high (1.5x leverage; ceiling 200)
 		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
-		BankrollSimulator.RsiMultNumerator = 50;          // fixed N (single knob; light trim, participation-tilted)
+		BankrollSimulator.RsiMultNumerator = 40;          // fixed N (single knob; sweet spot with the 1.5x cap)
 		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation)
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),

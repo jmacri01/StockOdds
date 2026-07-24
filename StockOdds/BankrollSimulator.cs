@@ -115,7 +115,7 @@ namespace StockOdds
 		public static int    ExposureEmaPeriod     = 5;
 		public static double RebalanceDriftPercent = 30.0;
 		public static double MinExposurePercent    =    0.0;
-		public static double MaxExposurePercent    =  100.0;
+		public static double MaxExposurePercent    =  150.0;  // default 1.5x -- lever the strong-signal candles (UI ceiling 200)
 
 		// Dynamic long bias: a directional skew applied to the EMA before the drift/clamp
 		// stage, driven by how one-sided the recent LT trend has been.
@@ -183,12 +183,12 @@ namespace StockOdds
 		public static int    RsiOverlayPeriod = 2;
 		// Numerator N in the overbought-trim multiplier min(N/RSI, 1): trimming begins when RSI > N and the depth
 		// is N/RSI (at RSI=100, exposure -> N%). This is the ONLY conditioning on the trim -- a single fixed number.
-		// Default 50: a light overbought trim that keeps upside participation while capping the tail. Lower N trims
-		// harder (more defensive, less participation); higher N / RsiOverlayPeriod=0 approaches no trim. Chosen as the
-		// single knob after volume/ATR/exposure-shaping conditioning was removed for failing to help BOTH the curated
-		// basket AND the broad OOS sets simultaneously (basket wants no trim, broad wants a hard trim -- 50 is the
-		// participation-tilted point that is coherent on both without overfitting to survivor names).
-		public static double RsiMultNumerator = 50.0;
+		// Default 40: paired with the 1.5x MaxExposure cap, N=40 is the return/max-drawdown sweet spot on the
+		// momentum/flyer names (the curated-basket ratio peaks here at ~4.9) while keeping strong upside participation.
+		// Lower N trims harder (more defensive, less participation); higher N / RsiOverlayPeriod=0 approaches no trim.
+		// This is the single trim knob after volume/ATR/exposure-shaping conditioning was removed for failing to help
+		// BOTH the curated basket AND the broad OOS sets simultaneously.
+		public static double RsiMultNumerator = 40.0;
 		// Final-position EMA smoothing (DEFAULT ON, period 5). Smooths the FINAL traded position -- after clamp,
 		// RSI trim, accurate-sizing, and the out-of-region override -- so the RSI-2 single-bar chatter (spike-down,
 		// snap-back) is averaged out. Unlike lowering the RSI numerator (which cuts drawdown by holding LESS), this

@@ -55,6 +55,7 @@ namespace StockOdds
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
 		public static double RebalanceEdge     = 0.0;  // on a resize, aim net delta at target + this*DeadbandDelta: 0 = center (position exposure), -1 = lower edge (exposure - drift), +1 = upper edge
+		public static double MaxNetDelta       = 1.0;  // ceiling on the resize target (raise to allow leveraged net delta > 1; only structures that can add — straddle/put-diagonal/covered-stock via short puts — reach it)
 		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
@@ -137,7 +138,7 @@ namespace StockOdds
 					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
-						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(1.0, target + RebalanceEdge * DeadbandDelta)), date);
+						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(MaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
 						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
