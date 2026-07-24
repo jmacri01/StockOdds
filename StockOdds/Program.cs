@@ -124,7 +124,9 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 150.0;  // position clamp high (1.5x leverage; ceiling 200)
 		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
-		BankrollSimulator.RsiMultNumerator = 40;          // fixed N (single knob; sweet spot with the 1.5x cap)
+		BankrollSimulator.RsiMultNumerator = 40;          // N cap (single knob; the trim never lightens past this)
+		BankrollSimulator.HvTrimSlope = 0.6;              // HV-conditioned trim: harder on low-vol candles, caps at N (0 = off)
+		BankrollSimulator.HvTrimFloor = 8;                // floor on the scaled N (hardest trim on the quietest candles)
 		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation)
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),

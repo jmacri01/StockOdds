@@ -104,8 +104,12 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
 grpRsi = "RSI position overlay"
 rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
      tooltip = "Overbought-trim overlay on the final position: position *= min(N / RSI(period), 1), N = numerator below — trims when overbought; does nothing when oversold (capped at 1, never levers up). 0 disables. Short period (2) validated best across four random-500 OOS samples; an ablation showed the trim is the entire edge, so it never levers.")
-rsiMultNumerator = input.float(40, "RSI mult numerator N", minval = 1, group = grpRsi,
-     tooltip = "The single trim knob. N in min(N/RSI, 1): trimming begins when RSI>N; at RSI=100 exposure -> N%. Default 40 = paired with the 1.5x max-exposure cap, the return/drawdown sweet spot on the momentum/flyer names while keeping strong upside participation. Lower N trims harder (more defensive); RSI overlay period 0 = off. This is the ONLY conditioning on the trim -- volume/ATR/exposure-shaping rules were removed for not helping the curated basket and the broad OOS sets simultaneously.")
+rsiMultNumerator = input.float(40, "RSI mult numerator N (cap)", minval = 1, group = grpRsi,
+     tooltip = "The N cap. In min(N/RSI, 1): trimming begins when RSI>N; at RSI=100 exposure -> N%. Default 40, paired with the 1.5x max-exposure cap. With HV-trim on (below), the effective N is scaled DOWN by rolling HV and never exceeds this cap; raise it to lighten the trim everywhere. Lower N trims harder; RSI overlay period 0 = off.")
+hvTrimSlope = input.float(0.6, "HV-trim slope (0 = off)", minval = 0, step = 0.1, group = grpRsi,
+     tooltip = "HV-conditioned trim: effective N = min(N-cap, max(HV-trim floor, slope * rolling HV%)). Trims HARDER on low-vol candles (their overbought spikes mean-revert) and relaxes up to the N cap as HV rises (reaching the cap at HV = N/slope). Validated as a genuine drawdown-reduction edge (return ~flat, drawdown down, 4/4 on disjoint random-500 OOS). 0 = fixed N everywhere.")
+hvTrimFloor = input.float(8, "HV-trim floor N", minval = 1, group = grpRsi,
+     tooltip = "Hardest trim (floor on the HV-scaled N) applied to the quietest candles.")
 posSmoothPeriod = input.int(5, "Final position smoothing (EMA bars, 0 = off)", minval = 0, group = grpRsi,
      tooltip = "EMA-smooth the FINAL traded position (after clamp, RSI trim, and the out-of-region rule) so RSI-2 single-bar chatter is averaged out. Cuts downside/drawdown by holding STEADIER (vs a lower N, which cuts it by holding less) so it preserves upside participation. Improves Sortino over the fixed-N baseline; benefit concentrates in the 50-100 HV band. 0 disables.")
 
@@ -285,7 +289,7 @@ if not na(adjEma) and adjEma >= hiExp
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
 // RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiNumer = rsiMultNumerator
+rsiNumer = hvTrimSlope > 0 ? math.min(rsiMultNumerator, math.max(hvTrimFloor, hvTrimSlope * rollHv)) : rsiMultNumerator
 rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiNumer / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
