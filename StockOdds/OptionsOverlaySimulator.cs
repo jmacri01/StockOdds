@@ -54,6 +54,8 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
+		public static double RebalanceEdge     = 0.0;  // on a resize, aim net delta at target + this*DeadbandDelta: 0 = center (position exposure), -1 = lower edge (exposure - drift), +1 = upper edge
+		public static double MaxNetDelta       = 1.0;  // ceiling on the resize target (raise to allow leveraged net delta > 1; only structures that can add — straddle/put-diagonal/covered-stock via short puts — reach it)
 		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
@@ -67,6 +69,7 @@ namespace StockOdds
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
 		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double ShortPutTargetFrac = 1.0;  // ShortPut: fraction of the engine target to express (put delta = min(frac*target, cap)); 0.5 = run at half exposure
+		public static double ShortPutProtDelta  = 0.0;  // ShortPut: if >0, buy a long put at this delta (same expiry) -> bull put spread; the short put deepens by this so net delta still = the cap
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
 		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
 		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
@@ -135,7 +138,7 @@ namespace StockOdds
 					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
-						ResizeShorts(legs, S, iv, target, date);
+						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(MaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
 						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
@@ -229,8 +232,17 @@ namespace StockOdds
 			}
 			if (Strategy == OverlayStrategy.ShortPut)
 			{
-				double tgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
-				if (tgt > FlatEps) legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				double tgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap); // net delta target (e.g. 0.50 cap)
+				if (tgt > FlatEps)
+				{
+					if (ShortPutProtDelta > 0)
+					{
+						// bull put spread, both legs same (short) expiry: short deeper put + long protective put, net = tgt.
+						legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, tgt + ShortPutProtDelta)), Exp = exp });
+						legs.Add(new Leg { Call = false, Qty = 1,  K = StrikeForDelta(false, S, iv, Ts, ShortPutProtDelta), Exp = exp });
+					}
+					else legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				}
 				return;
 			}
 			if (Strategy == OverlayStrategy.SplitStockPut)
