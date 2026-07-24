@@ -68,6 +68,7 @@ namespace StockOdds
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
 		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double ShortPutTargetFrac = 1.0;  // ShortPut: fraction of the engine target to express (put delta = min(frac*target, cap)); 0.5 = run at half exposure
+		public static double ShortPutProtDelta  = 0.0;  // ShortPut: if >0, buy a long put at this delta (same expiry) -> bull put spread; the short put deepens by this so net delta still = the cap
 		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
 		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
 		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
@@ -230,8 +231,17 @@ namespace StockOdds
 			}
 			if (Strategy == OverlayStrategy.ShortPut)
 			{
-				double tgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
-				if (tgt > FlatEps) legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				double tgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap); // net delta target (e.g. 0.50 cap)
+				if (tgt > FlatEps)
+				{
+					if (ShortPutProtDelta > 0)
+					{
+						// bull put spread, both legs same (short) expiry: short deeper put + long protective put, net = tgt.
+						legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, tgt + ShortPutProtDelta)), Exp = exp });
+						legs.Add(new Leg { Call = false, Qty = 1,  K = StrikeForDelta(false, S, iv, Ts, ShortPutProtDelta), Exp = exp });
+					}
+					else legs.Add(new Leg { Call = false, Qty = -1, K = StrikeForDelta(false, S, iv, Ts, tgt), Exp = exp });
+				}
 				return;
 			}
 			if (Strategy == OverlayStrategy.SplitStockPut)
