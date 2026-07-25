@@ -19,8 +19,10 @@ namespace StockOdds
 	// cash (CloseAtZero = true).
 	public enum OverlayStrategy
 	{
-		Straddle,     // long call LEAP (CallLeapDelta) + long put LEAP (PutLeapDelta) + short calls/puts
 		Pmcc,         // long call LEAP + short calls only (can reduce delta, never add above the LEAP)
+		PmccShortPut, // long call LEAP + short calls (reduce) AND short puts (add) -> reaches >1 via short puts.
+		              // CAPITAL CAVEAT: the >1.0 leg is NAKED short puts (can't be cash-secured with the freed cash);
+		              // an experiment -- the model is delta-only, so it shows the delta exposure, not the margin needed.
 		ShortPut,     // no core; a single short put at delta = min(target, ShortPutCap); flat when target ~ 0
 		CoveredStock, // long shares + short calls
 		PmccStrangle, // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
@@ -182,11 +184,8 @@ namespace StockOdds
 			double T = LeapDteDays / 365.0; var exp = now.AddDays(LeapDteDays);
 			switch (Strategy)
 			{
-				case OverlayStrategy.Straddle:
-					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
-					legs.Add(new Leg { Core = true, Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
-					break;
 				case OverlayStrategy.Pmcc:
+				case OverlayStrategy.PmccShortPut:
 				case OverlayStrategy.PmccStrangle:
 				case OverlayStrategy.PmccPutFloor:
 					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
