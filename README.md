@@ -213,7 +213,7 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | PMCC | +36% / 15.9 | +28% / 17.6 |
 | Short-put | +25% / 13.8 | +22% / 14.4 |
 | Covered stock | +43% / 21.0 | +32% / 22.9 |
-| Put diagonal † | +50% / 16.9 | +35% / 18.4 |
+| Put diagonal † | +51% / 16.8 | +36% / 18.4 |
 
 ### Decliners (339 names, negative B&H return)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
@@ -224,7 +224,7 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | PMCC | +4% / 16.4 | −2% / 18.1 |
 | **Short-put** | +3% / 15.4 | **+0% / 16.1** |
 | Covered stock | +10% / 21.5 | +3% / 23.6 |
-| **Put diagonal †** | +15% / 18.2 | **+7% / 20.0** |
+| **Put diagonal †** | +15% / 17.9 | **+7% / 20.1** |
 
 ### Violent (83 names, +return but ≥ 50% B&H drawdown)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
@@ -235,7 +235,7 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | **PMCC** | +136% / 36.6 | **+117% / 40.1** |
 | Short-put | +90% / 31.7 | +78% / 32.8 |
 | Covered stock | +155% / 44.8 | +123% / 48.3 |
-| Put diagonal † | +178% / 39.7 | +113% / 44.3 |
+| Put diagonal † | +184% / 40.4 | +116% / 46.0 |
 
 ### Hand-picked high-vol basket (17 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
@@ -246,15 +246,15 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | PMCC | +164% / 29.9 | +144% / 32.8 |
 | Short-put | +86% / 21.9 | +76% / 22.9 |
 | Covered stock | +157% / 33.8 | +134% / 38.5 |
-| **Put diagonal †** | +153% / 21.2 | **+125% / 23.4** |
+| **Put diagonal †** | +145% / 21.2 | **+114% / 23.5** |
 
 > **†** The put-diagonal rows run its recommended **trailing-put delta-roll** (roll the 0.15Δ put LEAP back to target whenever its delta drifts ~10Δ *below* — the stock rallied and the put went far-OTM). This is a clean risk-adjusted gain in every universe (see [tuning](#tuning-the-put-diagonal-long-put-leap--short-puts)); all other structures roll their LEAP at expiry only. The roll is **put-diagonal-specific** — the same roll *drags* the straddle, so the straddle keeps its LEAPs static.
 
 **Reading it (return ÷ max-DD).** The overlays **beat buy-&-hold on return/drawdown in every universe**, and the HV-conditioned trim tightens the drawdowns further across the board:
-- **Broad:** **put-diagonal** leads (+35%/18.4, ratio **1.92**), then straddle +31%/17.6 (1.76) and PMCC +28%/17.6 (1.58); the **short-put** is the lowest-drawdown seller (+22%/14.4, 1.51). All clear B&H (+37%/34.8, 1.06) and Cash (+16%/17.6, 0.91).
+- **Broad:** **put-diagonal** leads (+36%/18.4, ratio **1.94**), then straddle +31%/17.6 (1.76) and PMCC +28%/17.6 (1.58); the **short-put** is the lowest-drawdown seller (+22%/14.4, 1.51). All clear B&H (+37%/34.8, 1.06) and Cash (+16%/17.6, 0.91).
 - **Decliners:** the standouts are **put-diagonal (+7%) and covered stock (+3%)** — *positive at mid* where buy-&-hold loses −23% — plus the short-put holding ~flat (+0%/16.1) at the shallowest drawdown. Every structure beats B&H and Cash.
 - **Violent:** the **straddle has the best ratio** (+124%/42.5, **2.93**), PMCC right behind (+117%/40.1, 2.91) — both edge B&H (+146%/55.8, 2.6); covered stock and the straddle capture the most return.
-- **Basket:** the **delta-rolled put-diagonal now leads outright** — +125%/23.4 (**5.35**, the lowest drawdown of the set *and* the top ratio; the trailing put adds +13% of return at the same DD), ahead of the straddle +162%/35.8 (4.53, the highest raw return, running the >1 delta the LEAP-capped PMCC can't) and PMCC +144%/32.8 (4.38). All crush B&H (+128%/48.2, 2.65) and Cash (1.64).
+- **Basket:** the **delta-rolled put-diagonal now leads outright** — +114%/23.5 (**4.86**, the lowest drawdown of the set *and* the top ratio; the trailing put lifts the ratio from 4.61 by adding return at ~flat DD), ahead of the straddle +162%/35.8 (4.53, the highest raw return, running the >1 delta the LEAP-capped PMCC can't) and PMCC +144%/32.8 (4.38). All crush B&H (+128%/48.2, 2.65) and Cash (1.64).
 - **Cost sensitivity:** covered stock and put diagonal roll the most contracts, so they lose the most from frictionless→mid; PMCC and the straddle are the most cost-stable.
 
 > **⚠️ These tables lean on the 14-DTE theta harvest — the most model-optimistic part of the study.** Selling short-dated premium collects the steepest theta, which is why the numbers jumped versus 40-DTE, but front-week short options carry **gamma / gap / pin / assignment** risk that the Black-Scholes, close-to-close, no-real-chain model **cannot see**. The return/drawdown edge over buy-&-hold shown here is real *in the model*; treat the short-DTE-driven portion as a ceiling, not a promise. (This is also why the default short leg is 14 DTE, not 7.)
@@ -280,11 +280,11 @@ If you run the put diagonal instead of the PMCC, the base put LEAP wants to go *
 
 - **Shallower base delta is strictly better** — 0.10–0.15 ≫ 0.25 ≫ 0.35 ≫ 0.50 on return in every universe, with drawdown *rising* as the base put deepens. This is counter-intuitive but mechanical: a deeper base put doesn't protect more, it forces a **bigger short-put book** (the shorts must supply target + base-delta of positive delta), which is more premium but also more contracts (friction) and more tail. A 0.50 base *loses −18% on decliners* vs −7.5% at 0.15 — the larger short book swamps the extra protection. Keep the base a cheap tail.
 - **DTE 360–540 is the sweet spot** (slow theta, few rolls); shorter is a touch more return at higher drawdown. Same shape as the PMCC.
-- **Roll the put LEAP to *defend* (trailing protective put) — the one delta-roll that pays.** Roll the long put back to its **0.15Δ** target whenever its delta drifts **~10Δ below** it — i.e. the stock has *rallied* and the put has gone far-OTM — which keeps the tail hedge current as price rises, so it's in place for the next pullback. Confirmed **efficiency, not beta** (paired on one harness, return ÷ max-DD): Broad 2.83 → **2.93**, Decliners 0.71 → **0.82** (*better on both return and DD* — the tell it isn't beta), Violent 4.44 → **4.47** (DD 41.0 → 39.7 at ~flat return), Basket 6.58 → **7.19** (+13% return at the *same* 21.2 DD). It survives to **~1% round-trip** cost — the far-OTM put crosses the band only on real rallies (~5–7 rolls/name over the whole window). Config: `LeapRollMode = 2` (roll when delta is *below* target−band), `LeapRollDeltaBand = 0.10`, `LeapRollCallLeg = false`. **Direction and structure both matter:** roll to *defend* (below), **not** to take profit (above — that hurts), and this is **put-diagonal-specific** — the identical roll *drags the straddle*, whose put is a minor tail the 0.80Δ call overshadows and whose melt-up basket rejects any LEAP re-centering (tested both legs, all modes/bands: the straddle basket is hurt in every case). So run the roll on the put diagonal and leave the straddle static.
+- **Roll the put LEAP to *defend* (trailing protective put) — the one delta-roll that pays.** Roll the long put back to its **0.15Δ** target whenever its delta drifts **~10Δ below** it — i.e. the stock has *rallied* and the put has gone far-OTM — which keeps the tail hedge current as price rises, so it's in place for the next pullback. Confirmed **efficiency, not beta** (paired on one harness at the 1.5 net-delta cap, return ÷ max-DD): Broad 2.90 → **3.01**, Decliners 0.74 → **0.85** (*better on both return and DD* — the tell it isn't beta), Violent 4.48 → **4.54** (DD 41.9 → 40.4 at ~flat return), Basket 6.35 → **6.83** (+10% return at the *same* 21.2 DD). It survives to **~1% round-trip** cost — the far-OTM put crosses the band only on real rallies (~5–7 rolls/name over the whole window). Config: `LeapRollMode = 2` (roll when delta is *below* target−band), `LeapRollDeltaBand = 0.10`, `LeapRollCallLeg = false`. **Direction and structure both matter:** roll to *defend* (below), **not** to take profit (above — that hurts), and this is **put-diagonal-specific** — the identical roll *drags the straddle*, whose put is a minor tail the 0.80Δ call overshadows and whose melt-up basket rejects any LEAP re-centering (tested both legs, all modes/bands: the straddle basket is hurt in every case). So run the roll on the put diagonal and leave the straddle static.
 - **At that shallow/long sweet spot the put diagonal is competitive with the PMCC** — it *beats* PMCC on return/max-DD on the flyer **basket** (~2.5 vs ~2.1) and loses **less on decliners** (−7.5% vs −9.1%), at a slightly higher broad drawdown. It even beats the naked short put on both counts (the tiny long put is a cheap tail while the slightly larger short book collects more premium).
 - **Caveat — it's the most model-flattered structure.** The put diagonal is short-put-heavy, so unmodeled **skew** (richer short puts *and* a pricier long put) and **gap/assignment** risk on the short book would tax it more than the PMCC. Treat its basket edge as model-optimistic; the PMCC is the more robust, model-honest pick.
 
-**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, hold-20), the overlays beat buy-&-hold on **return ÷ max-drawdown in every universe** — most of the upside at roughly half the drawdown, breakeven on decliners where B&H bleeds −23%. **PMCC (0.80Δ) is the recommended all-rounder**; the **put diagonal (0.15Δ) with the trailing-put delta-roll now leads the flyer basket** on return/max-DD (ratio 5.35 vs the straddle's 4.53), with covered stock also strong there. Two things to keep honest: this rests on **near-mid execution** and, more importantly, on the **14-DTE theta harvest whose front-week gamma/gap/assignment risk the model can't see** — so read the edge as a model ceiling, strongest and most-trustworthy in the *drawdown-reduction* it shows (consistent across the whole study) rather than the short-DTE return spike. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
+**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, hold-20), the overlays beat buy-&-hold on **return ÷ max-drawdown in every universe** — most of the upside at roughly half the drawdown, breakeven on decliners where B&H bleeds −23%. **PMCC (0.80Δ) is the recommended all-rounder**; the **put diagonal (0.15Δ) with the trailing-put delta-roll now leads the flyer basket** on return/max-DD (ratio 4.86 vs the straddle's 4.53), with covered stock also strong there. Two things to keep honest: this rests on **near-mid execution** and, more importantly, on the **14-DTE theta harvest whose front-week gamma/gap/assignment risk the model can't see** — so read the edge as a model ceiling, strongest and most-trustworthy in the *drawdown-reduction* it shows (consistent across the whole study) rather than the short-DTE return spike. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
 
