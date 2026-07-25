@@ -23,7 +23,6 @@ namespace StockOdds
 		Pmcc,         // long call LEAP + short calls only (can reduce delta, never add above the LEAP)
 		ShortPut,     // no core; a single short put at delta = min(target, ShortPutCap); flat when target ~ 0
 		CoveredStock, // long shares + short calls
-		PutDiagonal,  // long put LEAP (PutLeapDelta) + short puts
 		PmccStrangle, // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
 		              // pinned at StrangleMinDelta, the other floats so net delta hits the target
 		SplitStockPut,// regime switch at 0.5: target >= 0.5 -> long stock + covered calls to target;
@@ -62,16 +61,6 @@ namespace StockOdds
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
-		// Roll the long LEAP core back to target delta when its delta drifts beyond LeapRollDeltaBand.
-		// 1 = roll when delta ABOVE target+band (deeper ITM = take profit), 2 = BELOW target-band (defend), 3 = either.
-		// RECOMMENDED for the PUT DIAGONAL: mode 2 (defend) + band 0.10 + put leg = a trailing protective put that
-		// re-centers the 0.15Δ put as the stock rallies. Confirmed efficiency (return up-or-flat, DD down-or-flat, incl.
-		// decliners) in every universe, survives ~1% round-trip (~5-7 rolls/name). Roll to DEFEND (below), not take-profit
-		// (above hurts). Default OFF so the STRADDLE is unaffected — the same put-roll DRAGS the straddle (its put is a
-		// minor tail the 0.80Δ call overshadows; the melt-up basket rejects any LEAP re-centering). Straddle: leave static.
-		public static int    LeapRollMode       = 0;    // 0 = off (LEAP rolls at expiry only); put diagonal -> set 2
-		public static double LeapRollDeltaBand  = 0.10;  // 10 delta
-		public static bool   LeapRollCallLeg    = false; // false = roll the PUT leap (target PutLeapDelta); true = roll the CALL leap (target CallLeapDelta)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double ShortCallCap      = 0.50; // PmccPutFloor: cap on the delta reduction from short calls; remainder via a long put
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
@@ -140,25 +129,6 @@ namespace StockOdds
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
 					}
 
-						// roll the (option) LEAP core back to target delta when its delta drifts beyond the band
-						if (LeapRollMode > 0 && LeapRollDeltaBand > 0)
-						{
-							double leapT = LeapDteDays / 365.0;
-							foreach (var l in legs.Where(l => l.Core && !l.Stock && l.Call == LeapRollCallLeg))
-							{
-								double d = Math.Abs(LegDelta(l, S, iv, date));
-								double tgt = l.Call ? CallLeapDelta : PutLeapDelta;
-								bool above = d > tgt + LeapRollDeltaBand, below = d < tgt - LeapRollDeltaBand;
-								if (!((LeapRollMode == 1 && above) || (LeapRollMode == 2 && below) || (LeapRollMode == 3 && (above || below)))) continue;
-								friction += Cost(l, l.VPrev);
-								l.K = StrikeForDelta(l.Call, S, iv, leapT, tgt);
-								l.Exp = date.AddDays(LeapDteDays);
-								l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev;
-								friction += Cost(l, l.VPrev);
-								res.Rolls++;
-							}
-						}
-
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
@@ -225,9 +195,6 @@ namespace StockOdds
 					break;
 				case OverlayStrategy.CoveredStock:
 					legs.Add(new Leg { Core = true, Stock = true, Qty = 1, Exp = now.AddYears(100) });
-					break;
-				case OverlayStrategy.PutDiagonal:
-					legs.Add(new Leg { Core = true, Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, T, PutLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.CallSpread: {
 					double Tc = ShortDteDays / 365.0; var expc = now.AddDays(ShortDteDays);
