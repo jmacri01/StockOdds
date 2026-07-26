@@ -210,6 +210,20 @@ namespace StockOdds
 		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
 		public static int PositionSmoothPeriod = 5;
 
+		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
+		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
+		// ExtCapCeil%. It only lowers the TOP (a min(): never raises exposure, never forces to cash), so it stops
+		// the engine chasing the vertical tail without selling the trend. The extended tail carries near-zero
+		// forward return but ~2x forward drawdown on the reverting cohort, so capping it is efficiency (return up
+		// + drawdown down), not de-risk; the cut is eased by the final position smoothing. The ST-Bull EXCLUSION
+		// is what makes it safe: the entire give-back lives in the non-ST-Bull states (a bull run's first crack
+		// while extended -- the state machine's BullNeutral); the still-pushing ST-Bull bars are continuation, so
+		// capping them only forfeits genuine-winner upside (a plain all-bars cap hurts the leveraged winners; the
+		// gate erases that cost). A 50-bar MA isolates ACUTE spikes (a slower MA flags sustained trends). 0 = off.
+		public static double ExtCapPct   = 55.0;
+		public static double ExtCapCeil  = 60.0;
+		public static int    ExtMaPeriod = 50;
+
 		// Accurate full sizing (DEFAULT ON): when the TRUE target (pre-clamp adjEma) saturates full exposure, snap
 		// the drift-band follower up to the clamp ceiling -- held = max(maxExp, max(maxExp-drift, adjEma-drift)) --
 		// so the position sizes to 1.0 instead of being left stale-low (e.g. 0.7) by the rebalance deadband. This is
@@ -316,6 +330,10 @@ namespace StockOdds
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
 			double posSmooth = double.NaN;
+
+			// rolling SMA window of the decision close, for the extension cap
+			var extMaWin = new Queue<double>(Math.Max(1, ExtMaPeriod));
+			double extMaSum = 0.0;
 
 
 			// rolling LT-direction window for the dynamic long bias
@@ -449,6 +467,12 @@ namespace StockOdds
 					continue;
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
+
+				// extension % of the decision close above its SMA (no look-ahead: uses prev), for the extension cap
+				extMaWin.Enqueue(prev.Close); extMaSum += prev.Close;
+				while (extMaWin.Count > ExtMaPeriod) extMaSum -= extMaWin.Dequeue();
+				double extSma = extMaWin.Count > 0 ? extMaSum / extMaWin.Count : prev.Close;
+				double extPct = extSma > 0 ? (prev.Close / extSma - 1.0) * 100.0 : 0.0;
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -474,6 +498,11 @@ namespace StockOdds
 				// out-of-region when the raw exposure (ema) is bearish: 1=cash, 2=hold(B&H)
 				if (BearRegimeMode != 0 && ema < 0.0)
 					position = BearRegimeMode == 1 ? 0.0 : 1.0;
+				// extension cap: stop chasing the parabolic top -- lower (never raise) exposure to the ceiling when
+				// price is acutely extended above its SMA AND short-term momentum isn't bullish (ST != Bull).
+				// Applied before smoothing so the cut eases in/out.
+				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
+					position = Math.Min(position, ExtCapCeil / 100.0);
 				if (PositionSmoothPeriod > 0) { double aP = 2.0 / (PositionSmoothPeriod + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
