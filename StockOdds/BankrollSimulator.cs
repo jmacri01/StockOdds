@@ -210,6 +210,17 @@ namespace StockOdds
 		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
 		public static int PositionSmoothPeriod = 5;
 
+		// Corner smoothing (DEFAULT ON): use the heavier SmoothCornerPeriod (50) instead of PositionSmoothPeriod (5)
+		// only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND rolling price efficiency-
+		// ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position chatters and heavy
+		// smoothing is EFFICIENCY (return up + drawdown down: broad OOS 0.94->1.04, VIOLENT 2.38->2.77 with return
+		// RISING 91.8->98.3); everywhere else -- crucially the high-vol TRENDING rip -- stays at the light P5 so
+		// participation is preserved (a flat P50 would crater the rip). A 2D HV x persistence sweep located the
+		// corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15. SmoothHvGate = 0 disables the corner.
+		public static double SmoothHvGate      = 50.0;
+		public static double SmoothErGate      = 0.11;
+		public static int    SmoothCornerPeriod = 50;
+
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
 		// ExtCapCeil%. It only lowers the TOP (a min(): never raises exposure, never forces to cash), so it stops
@@ -334,6 +345,9 @@ namespace StockOdds
 			// rolling SMA window of the decision close, for the extension cap
 			var extMaWin = new Queue<double>(Math.Max(1, ExtMaPeriod));
 			double extMaSum = 0.0;
+			// rolling price efficiency ratio (Kaufman ER over PersistWindow), for corner smoothing
+			var erCloseWin = new Queue<double>(); var erDiffWin = new Queue<double>();
+			double erDiffSum = 0.0, erPrevClose = double.NaN, curEr = 1.0;
 
 
 			// rolling LT-direction window for the dynamic long bias
@@ -473,6 +487,12 @@ namespace StockOdds
 				while (extMaWin.Count > ExtMaPeriod) extMaSum -= extMaWin.Dequeue();
 				double extSma = extMaWin.Count > 0 ? extMaSum / extMaWin.Count : prev.Close;
 				double extPct = extSma > 0 ? (prev.Close / extSma - 1.0) * 100.0 : 0.0;
+
+				// rolling price efficiency ratio (no look-ahead: uses prev)
+				if (!double.IsNaN(erPrevClose)) { double ed = Math.Abs(prev.Close - erPrevClose); erDiffWin.Enqueue(ed); erDiffSum += ed; while (erDiffWin.Count > PersistWindow) erDiffSum -= erDiffWin.Dequeue(); }
+				erPrevClose = prev.Close;
+				erCloseWin.Enqueue(prev.Close); while (erCloseWin.Count > PersistWindow + 1) erCloseWin.Dequeue();
+				curEr = erCloseWin.Count > PersistWindow && erDiffSum > 1e-9 ? Math.Abs(prev.Close - erCloseWin.Peek()) / erDiffSum : 1.0;
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -503,7 +523,9 @@ namespace StockOdds
 				// Applied before smoothing so the cut eases in/out.
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
-				if (PositionSmoothPeriod > 0) { double aP = 2.0 / (PositionSmoothPeriod + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
+				double smoothPer = PositionSmoothPeriod;
+				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate) smoothPer = SmoothCornerPeriod;
+				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------

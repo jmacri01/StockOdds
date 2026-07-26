@@ -98,6 +98,12 @@ hvTrimFloor = input.float(8, "HV-trim floor N", minval = 1, group = grpRsi,
      tooltip = "Hardest trim (floor on the HV-scaled N) applied to the quietest candles.")
 posSmoothPeriod = input.int(5, "Final position smoothing (EMA bars, 0 = off)", minval = 0, group = grpRsi,
      tooltip = "EMA-smooth the FINAL traded position (after clamp, RSI trim, and the out-of-region rule) so RSI-2 single-bar chatter is averaged out. Cuts downside/drawdown by holding STEADIER (vs a lower N, which cuts it by holding less) so it preserves upside participation. Improves Sortino over the fixed-N baseline; benefit concentrates in the 50-100 HV band. 0 disables.")
+smoothHvGate = input.float(50, "Corner smoothing: HV gate (0 = off)", minval = 0, group = grpRsi,
+     tooltip = "In the high-vol + choppy corner -- rolling HV > this AND price efficiency-ratio < the ER gate below -- the position smoothing switches to the heavier 'corner period'. There the position chatters and heavy smoothing is efficiency (return up AND drawdown down); everywhere else, crucially the high-vol trending rip, stays at the light default period so participation is preserved. 0 disables the corner.")
+smoothErGate = input.float(0.11, "Corner smoothing: ER gate", minval = 0, step = 0.01, group = grpRsi,
+     tooltip = "Kaufman price efficiency ratio (over the persistence window) below which a high-vol bar counts as 'choppy'. Tighter (lower) fires on fewer bars and spares recovering pullbacks.")
+smoothCornerPeriod = input.int(50, "Corner smoothing: heavy period", minval = 1, group = grpRsi,
+     tooltip = "The heavier EMA period used only inside the high-vol + choppy corner.")
 
 grpExt = "Blow-off extension cap"
 extCapPct = input.float(55, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
@@ -286,7 +292,10 @@ extPct = not na(extSma) and extSma > 0 ? (close / extSma - 1.0) * 100.0 : 0.0
 rawPos = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stState != 3) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
 // EMA-smooth the final position (matches BankrollSimulator.PositionSmoothPeriod)
 var float posEma = na
-posEma := (posSmoothPeriod > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (posSmoothPeriod + 1)) * rawPos + (1.0 - 2.0 / (posSmoothPeriod + 1)) * posEma) : rawPos
+// corner smoothing: heavier period only in the high-vol + choppy corner (price ER, not the target-exposure er above)
+priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
+smoothPer = (smoothHvGate > 0 and not na(rollHv) and rollHv > smoothHvGate and priceEr < smoothErGate) ? smoothCornerPeriod : posSmoothPeriod
+posEma := (smoothPer > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (smoothPer + 1)) * rawPos + (1.0 - 2.0 / (smoothPer + 1)) * posEma) : rawPos
 position = posEma
 
 // =============================================================================
