@@ -103,7 +103,11 @@ smoothHvGate = input.float(50, "Corner smoothing: HV gate (0 = off)", minval = 0
 smoothErGate = input.float(0.11, "Corner smoothing: ER gate", minval = 0, step = 0.01, group = grpRsi,
      tooltip = "Kaufman price efficiency ratio (over the persistence window) below which a high-vol bar counts as 'choppy'. Tighter (lower) fires on fewer bars and spares recovering pullbacks.")
 smoothCornerPeriod = input.int(50, "Corner smoothing: heavy period", minval = 1, group = grpRsi,
-     tooltip = "The heavier EMA period used only inside the high-vol + choppy corner.")
+     tooltip = "The heavier EMA period used only inside the high-vol + choppy corner (the ceiling of the adaptive taper).")
+smoothCornerAdaptive = input.bool(true, "Corner smoothing: adaptive taper", group = grpRsi,
+     tooltip = "Taper the corner period by HV -- clamp(base - HV, defaultPeriod, cornerPeriod). Full corner period holds up to HV ~70, then eases toward the light default as HV climbs, sparing extreme-HV names (e.g. MSTR) whose swings a slow EMA lags. Off = flat corner period.")
+smoothCornerHvBase = input.float(120, "Corner smoothing: adaptive base", minval = 0, group = grpRsi,
+     tooltip = "The adaptive base: corner period = clamp(this - HV, defaultPeriod, cornerPeriod).")
 
 grpExt = "Blow-off extension cap"
 extCapPct = input.float(55, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
@@ -294,7 +298,8 @@ rawPos = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stSt
 var float posEma = na
 // corner smoothing: heavier period only in the high-vol + choppy corner (price ER, not the target-exposure er above)
 priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
-smoothPer = (smoothHvGate > 0 and not na(rollHv) and rollHv > smoothHvGate and priceEr < smoothErGate) ? smoothCornerPeriod : posSmoothPeriod
+inCorner = smoothHvGate > 0 and not na(rollHv) and rollHv > smoothHvGate and priceEr < smoothErGate
+smoothPer = inCorner ? (smoothCornerAdaptive ? math.max(posSmoothPeriod, math.min(smoothCornerPeriod, smoothCornerHvBase - rollHv)) : smoothCornerPeriod) : posSmoothPeriod
 posEma := (smoothPer > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (smoothPer + 1)) * rawPos + (1.0 - 2.0 / (smoothPer + 1)) * posEma) : rawPos
 position = posEma
 

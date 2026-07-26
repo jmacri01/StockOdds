@@ -210,16 +210,23 @@ namespace StockOdds
 		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
 		public static int PositionSmoothPeriod = 5;
 
-		// Corner smoothing (DEFAULT ON): use the heavier SmoothCornerPeriod (50) instead of PositionSmoothPeriod (5)
-		// only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND rolling price efficiency-
-		// ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position chatters and heavy
-		// smoothing is EFFICIENCY (return up + drawdown down: broad OOS 0.94->1.04, VIOLENT 2.38->2.77 with return
-		// RISING 91.8->98.3); everywhere else -- crucially the high-vol TRENDING rip -- stays at the light P5 so
-		// participation is preserved (a flat P50 would crater the rip). A 2D HV x persistence sweep located the
-		// corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15. SmoothHvGate = 0 disables the corner.
+		// Corner smoothing (DEFAULT ON): use heavy smoothing (up to SmoothCornerPeriod = 50) instead of
+		// PositionSmoothPeriod (5) only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND
+		// rolling price efficiency-ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position
+		// chatters and heavy smoothing is EFFICIENCY (return up + drawdown down); everywhere else -- crucially the
+		// high-vol TRENDING rip -- stays at the light P5 so participation is preserved (a flat P50 would crater it).
+		// A 2D HV x persistence sweep located the corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15.
+		// SmoothHvGate = 0 disables the corner.
 		public static double SmoothHvGate      = 50.0;
 		public static double SmoothErGate      = 0.11;
 		public static int    SmoothCornerPeriod = 50;
+		// ADAPTIVE corner base (DEFAULT ON): rather than a flat SmoothCornerPeriod, taper the heavy smoothing down as
+		// HV rises -- smoothPer = clamp(SmoothCornerHvBase - HV, PositionSmoothPeriod, SmoothCornerPeriod). At HV<=70
+		// it saturates the full P50; as HV climbs past ~70 the period eases toward P5, sparing extreme-HV names (e.g.
+		// MSTR, HV 90) whose large swings a slow EMA lags. Fixes the extreme-HV tail the flat P50 hurt while keeping
+		// the populated 56-75 corner at full smoothing. Set SmoothCornerAdaptive = false to restore the flat P50.
+		public static bool   SmoothCornerAdaptive = true;
+		public static double SmoothCornerHvBase   = 120.0;
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
@@ -524,7 +531,10 @@ namespace StockOdds
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
 				double smoothPer = PositionSmoothPeriod;
-				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate) smoothPer = SmoothCornerPeriod;
+				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate)
+					smoothPer = SmoothCornerAdaptive
+						? Clamp(SmoothCornerHvBase - curHvPct, PositionSmoothPeriod, SmoothCornerPeriod)
+						: SmoothCornerPeriod;
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
