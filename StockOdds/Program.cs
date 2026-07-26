@@ -128,7 +128,7 @@ class Program
 		BankrollSimulator.HvTrimSlope = 0.6;              // HV-conditioned trim: harder on low-vol candles, caps at N (0 = off)
 		BankrollSimulator.HvTrimFloor = 8;                // floor on the scaled N (hardest trim on the quietest candles)
 		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation)
-		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA...
+		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
 

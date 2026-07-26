@@ -101,7 +101,7 @@ posSmoothPeriod = input.int(5, "Final position smoothing (EMA bars, 0 = off)", m
 
 grpExt = "Blow-off extension cap"
 extCapPct = input.float(55, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
-     tooltip = "When the close sits more than this % above its extension MA (an acute parabolic run), cap exposure at the ceiling below. Only lowers the top (never raises, never forces to cash) -- it stops the engine chasing the vertical tail without selling the trend. The extended tail carries near-zero forward return but ~2x forward drawdown on the reverting high-vol cohort, so capping it lifts return AND cuts drawdown. 0 disables.")
+     tooltip = "When the close sits more than this % above its extension MA (an acute parabolic run) AND the candle is not ST-Bull, cap exposure at the ceiling below. Only lowers the top (never raises, never forces to cash) -- it stops the engine chasing the vertical tail without selling the trend. The give-back lives entirely in the non-ST-Bull states (a bull run's first crack while extended); sparing the still-pushing ST-Bull bars protects genuine winners. Capping lifts return AND cuts drawdown. 0 disables.")
 extCapCeil = input.float(60, "Extension cap ceiling (exposure %)", minval = 0, group = grpExt,
      tooltip = "Exposure % the position is pinned to when extended past the trigger. 60 bites (the extended tail averages ~72% exposure); a ceiling near/above 100 is nearly inert. Lower = more aggressive.")
 extMaPeriod = input.int(50, "Extension MA period", minval = 1, group = grpExt,
@@ -279,10 +279,11 @@ regimeMode  = bearRegimeMode == "Cash" ? 1 : bearRegimeMode == "Hold (buy & hold
 inRegion    = na(emaExp) or emaExp >= 0
 outOfRegion = regimeMode != 0 and not na(emaExp) and emaExp < 0
 rawPosPreCap = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : rsiPos)
-// Extension cap: lower (never raise) exposure to the ceiling when the close is acutely extended above its SMA.
+// Extension cap: lower (never raise) exposure to the ceiling when the close is acutely extended above its SMA
+// AND the candle is NOT ST-Bull (stState 3). Sparing ST-Bull continuation bars is what protects genuine winners.
 extSma = ta.sma(close, extMaPeriod)
 extPct = not na(extSma) and extSma > 0 ? (close / extSma - 1.0) * 100.0 : 0.0
-rawPos = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
+rawPos = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stState != 3) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
 // EMA-smooth the final position (matches BankrollSimulator.PositionSmoothPeriod)
 var float posEma = na
 posEma := (posSmoothPeriod > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (posSmoothPeriod + 1)) * rawPos + (1.0 - 2.0 / (posSmoothPeriod + 1)) * posEma) : rawPos

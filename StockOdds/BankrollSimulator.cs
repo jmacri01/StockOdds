@@ -211,12 +211,15 @@ namespace StockOdds
 		public static int PositionSmoothPeriod = 5;
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
-		// ExtMaPeriod-bar SMA -- an acute parabolic extension -- cap exposure at ExtCapCeil%. It only lowers the
-		// TOP (a min(): never raises exposure, never forces to cash), so it stops the engine chasing the vertical
-		// tail without selling the trend. The extended tail carries near-zero forward return but ~2x forward
-		// drawdown on the reverting cohort, so capping it is efficiency (return up + drawdown down), not de-risk;
-		// the cut is eased by the final position smoothing. A 50-bar MA isolates ACUTE spikes (a slower MA flags
-		// sustained trends and caps genuine winners). ExtCapPct = 0 disables.
+		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
+		// ExtCapCeil%. It only lowers the TOP (a min(): never raises exposure, never forces to cash), so it stops
+		// the engine chasing the vertical tail without selling the trend. The extended tail carries near-zero
+		// forward return but ~2x forward drawdown on the reverting cohort, so capping it is efficiency (return up
+		// + drawdown down), not de-risk; the cut is eased by the final position smoothing. The ST-Bull EXCLUSION
+		// is what makes it safe: the entire give-back lives in the non-ST-Bull states (a bull run's first crack
+		// while extended -- the state machine's BullNeutral); the still-pushing ST-Bull bars are continuation, so
+		// capping them only forfeits genuine-winner upside (a plain all-bars cap hurts the leveraged winners; the
+		// gate erases that cost). A 50-bar MA isolates ACUTE spikes (a slower MA flags sustained trends). 0 = off.
 		public static double ExtCapPct   = 55.0;
 		public static double ExtCapCeil  = 60.0;
 		public static int    ExtMaPeriod = 50;
@@ -496,8 +499,9 @@ namespace StockOdds
 				if (BearRegimeMode != 0 && ema < 0.0)
 					position = BearRegimeMode == 1 ? 0.0 : 1.0;
 				// extension cap: stop chasing the parabolic top -- lower (never raise) exposure to the ceiling when
-				// price is acutely extended above its SMA. Applied before smoothing so the cut eases in/out.
-				if (ExtCapPct > 0 && extPct > ExtCapPct)
+				// price is acutely extended above its SMA AND short-term momentum isn't bullish (ST != Bull).
+				// Applied before smoothing so the cut eases in/out.
+				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
 				if (PositionSmoothPeriod > 0) { double aP = 2.0 / (PositionSmoothPeriod + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
