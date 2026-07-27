@@ -232,7 +232,17 @@ namespace StockOdds
 		// (cap>=$500M) it still clears feature-off on every cohort. Set SmoothCornerAdaptive = false for the flat P50.
 		public static bool   SmoothCornerAdaptive = true;
 		public static double SmoothCornerHvBase   = 100.0;   // eh2 taper base (the HV at which the (Base-HV)^2 factor bottoms out)
-		public static double SmoothCornerConst    = 0.5;     // eh2 taper constant
+		public static double SmoothCornerConst    = 0.5;     // eh2 taper const -- the BASE of the duration ramp below
+		// DURATION RAMP (DEFAULT ON): the eh2 const grows the longer the chop has persisted --
+		//   effConst = SmoothCornerConst + DurConstSlope * (curErDur - 1)
+		// where curErDur = consecutive bars with price ER < ErDurThresh (chop persistence). The corner thus smooths
+		// progressively HARDER the longer a chop lasts (the negative-median forward give-back concentrates in SUSTAINED
+		// chop), while a fresh chop (dur 1) uses just the base SmoothCornerConst = the flat eh2. Beats flat eh2 on BROAD +
+		// VIOLENT + the leveraged options book (median ret/DD replicates 4/4 across disjoint OOS samples), at a modest
+		// give-back on the basket's biggest winners (BE, ASST, MSTR). DurConstSlope = 0 recovers flat eh2; keep
+		// ErDurThresh aligned with SmoothErGate.
+		public static double ErDurThresh   = 0.11;
+		public static double DurConstSlope = 0.06;
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
@@ -354,6 +364,7 @@ namespace StockOdds
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
 			double posSmooth = double.NaN;
+			int curErDur = 0;   // consecutive bars price ER under ErDurThresh (chop persistence)
 
 			// rolling SMA window of the decision close, for the extension cap
 			var extMaWin = new Queue<double>(Math.Max(1, ExtMaPeriod));
@@ -506,6 +517,7 @@ namespace StockOdds
 				erPrevClose = prev.Close;
 				erCloseWin.Enqueue(prev.Close); while (erCloseWin.Count > PersistWindow + 1) erCloseWin.Dequeue();
 				curEr = erCloseWin.Count > PersistWindow && erDiffSum > 1e-9 ? Math.Abs(prev.Close - erCloseWin.Peek()) / erDiffSum : 1.0;
+					curErDur = curEr < ErDurThresh ? curErDur + 1 : 0;
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -540,7 +552,8 @@ namespace StockOdds
 				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate)
 				{
 					if (SmoothCornerAdaptive) { double d = SmoothCornerHvBase - curHvPct;
-						smoothPer = Clamp((SmoothErGate / Math.Max(curEr, 1e-4)) / curHvPct * (d * d) * SmoothCornerConst, PositionSmoothPeriod, SmoothCornerPeriod); }
+						double effConst = SmoothCornerConst + DurConstSlope * (curErDur - 1);   // eh2 const ramps with chop duration
+						smoothPer = Clamp((SmoothErGate / Math.Max(curEr, 1e-4)) / curHvPct * (d * d) * effConst, PositionSmoothPeriod, SmoothCornerPeriod); }
 					else smoothPer = SmoothCornerPeriod;
 				}
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
