@@ -133,7 +133,9 @@ class Program
 		BankrollSimulator.SmoothCornerPeriod = 50;        // heavy-smoothing ceiling there (efficiency); light P5 elsewhere. 0 on gate = off
 		BankrollSimulator.SmoothCornerAdaptive = true;    // ER-scaled (eh2) taper: clamp((erGate/ER)/HV*(base-HV)^2*const,5,50) -- deeper chop heavier, extreme HV lighter
 		BankrollSimulator.SmoothCornerHvBase = 100;       // eh2 taper base
-		BankrollSimulator.SmoothCornerConst = 0.5;        // eh2 taper constant
+		BankrollSimulator.SmoothCornerConst = 0.5;        // eh2 taper const -- base of the duration ramp
+		BankrollSimulator.ErDurThresh = 0.11;             // chop-persistence gate (keep aligned with SmoothErGate)
+		BankrollSimulator.DurConstSlope = 0.06;           // eh2 const grows +this per bar of sustained chop (0 = flat eh2)
 		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
