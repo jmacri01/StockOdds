@@ -210,16 +210,29 @@ namespace StockOdds
 		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
 		public static int PositionSmoothPeriod = 5;
 
-		// Corner smoothing (DEFAULT ON): use the heavier SmoothCornerPeriod (50) instead of PositionSmoothPeriod (5)
-		// only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND rolling price efficiency-
-		// ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position chatters and heavy
-		// smoothing is EFFICIENCY (return up + drawdown down: broad OOS 0.94->1.04, VIOLENT 2.38->2.77 with return
-		// RISING 91.8->98.3); everywhere else -- crucially the high-vol TRENDING rip -- stays at the light P5 so
-		// participation is preserved (a flat P50 would crater the rip). A 2D HV x persistence sweep located the
-		// corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15. SmoothHvGate = 0 disables the corner.
+		// Corner smoothing (DEFAULT ON): use heavy smoothing (up to SmoothCornerPeriod = 50) instead of
+		// PositionSmoothPeriod (5) only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND
+		// rolling price efficiency-ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position
+		// chatters and heavy smoothing is EFFICIENCY (return up + drawdown down); everywhere else -- crucially the
+		// high-vol TRENDING rip -- stays at the light P5 so participation is preserved (a flat P50 would crater it).
+		// A 2D HV x persistence sweep located the corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15.
+		// SmoothHvGate = 0 disables the corner.
 		public static double SmoothHvGate      = 50.0;
 		public static double SmoothErGate      = 0.11;
 		public static int    SmoothCornerPeriod = 50;
+		// ADAPTIVE (ER-scaled) corner taper (DEFAULT ON): rather than a flat SmoothCornerPeriod, scale the corner period
+		// by BOTH how choppy (price ER) and how volatile (HV) the bar is:
+		//   smoothPer = clamp( (SmoothErGate / ER) / HV * (SmoothCornerHvBase - HV)^2 * SmoothCornerConst,
+		//                       PositionSmoothPeriod, SmoothCornerPeriod )
+		// The (ErGate/ER) factor is >= 1 inside the gate and grows as ER falls (a deeper chop earns heavier smoothing);
+		// the /HV and (Base - HV)^2 factors taper the period down as HV rises, sparing the extreme-HV / momentum names
+		// whose large swings a slow EMA lags. Chosen (Base = 100, Const = 0.5) over the earlier flat-120 linear taper:
+		// per-name on the basket it recovers the return the flat taper over-gave-up on the chop-precedes-drop names
+		// (MSTR, ATAI, BE, GRPN) at a modest cost on the momentum names (NVDA, TSLA, IREN); on the deploy universe
+		// (cap>=$500M) it still clears feature-off on every cohort. Set SmoothCornerAdaptive = false for the flat P50.
+		public static bool   SmoothCornerAdaptive = true;
+		public static double SmoothCornerHvBase   = 100.0;   // eh2 taper base (the HV at which the (Base-HV)^2 factor bottoms out)
+		public static double SmoothCornerConst    = 0.5;     // eh2 taper constant
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
@@ -524,7 +537,12 @@ namespace StockOdds
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
 				double smoothPer = PositionSmoothPeriod;
-				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate) smoothPer = SmoothCornerPeriod;
+				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate)
+				{
+					if (SmoothCornerAdaptive) { double d = SmoothCornerHvBase - curHvPct;
+						smoothPer = Clamp((SmoothErGate / Math.Max(curEr, 1e-4)) / curHvPct * (d * d) * SmoothCornerConst, PositionSmoothPeriod, SmoothCornerPeriod); }
+					else smoothPer = SmoothCornerPeriod;
+				}
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
