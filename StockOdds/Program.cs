@@ -130,9 +130,10 @@ class Program
 		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation)
 		BankrollSimulator.SmoothHvGate  = 50;             // corner smoothing: in the high-vol + choppy corner...
 		BankrollSimulator.SmoothErGate  = 0.11;           // ...(HV>gate AND price ER<gate) use the heavier period below
-		BankrollSimulator.SmoothCornerPeriod = 50;        // heavy smoothing there (efficiency); light P5 elsewhere. 0 on gate = off
-		BankrollSimulator.SmoothCornerAdaptive = true;    // taper the corner period: clamp(base-HV,5,50) -- eases toward P5 at extreme HV (spares MSTR-like names)
-		BankrollSimulator.SmoothCornerHvBase = 120;       // adaptive base: full P50 up to HV~70, then eases down as HV climbs
+		BankrollSimulator.SmoothCornerPeriod = 50;        // heavy-smoothing ceiling there (efficiency); light P5 elsewhere. 0 on gate = off
+		BankrollSimulator.SmoothCornerAdaptive = true;    // ER-scaled (eh2) taper: clamp((erGate/ER)/HV*(base-HV)^2*const,5,50) -- deeper chop heavier, extreme HV lighter
+		BankrollSimulator.SmoothCornerHvBase = 100;       // eh2 taper base
+		BankrollSimulator.SmoothCornerConst = 0.5;        // eh2 taper constant
 		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against

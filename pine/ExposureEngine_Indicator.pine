@@ -118,10 +118,12 @@ smoothErGate = input.float(0.11, "Corner smoothing: ER gate", minval = 0, step =
      tooltip = "Kaufman price efficiency ratio (over the persistence window) below which a high-vol bar counts as 'choppy'. Tighter (lower) fires on fewer bars and spares recovering pullbacks.")
 smoothCornerPeriod = input.int(50, "Corner smoothing: heavy period", minval = 1, group = grpRsi,
      tooltip = "The heavier EMA period used only inside the high-vol + choppy corner (the ceiling of the adaptive taper).")
-smoothCornerAdaptive = input.bool(true, "Corner smoothing: adaptive taper", group = grpRsi,
-     tooltip = "Taper the corner period by HV -- clamp(base - HV, defaultPeriod, cornerPeriod). Full corner period holds up to HV ~70, then eases toward the light default as HV climbs, sparing extreme-HV names (e.g. MSTR) whose swings a slow EMA lags. Off = flat corner period.")
-smoothCornerHvBase = input.float(120, "Corner smoothing: adaptive base", minval = 0, group = grpRsi,
-     tooltip = "The adaptive base: corner period = clamp(this - HV, defaultPeriod, cornerPeriod).")
+smoothCornerAdaptive = input.bool(true, "Corner smoothing: ER-scaled (eh2) taper", group = grpRsi,
+     tooltip = "Scale the corner period by chop AND vol -- clamp((erGate/ER)/HV * (base - HV)^2 * const, defaultPeriod, cornerPeriod). Deeper chop (lower ER) earns heavier smoothing; the /HV and (base-HV)^2 factors taper it down as HV rises, sparing extreme-HV / momentum names (NVDA, TSLA, IREN) whose swings a slow EMA lags, while recovering return on the chop-precedes-drop names (MSTR, ATAI, BE). Off = flat corner period.")
+smoothCornerHvBase = input.float(100, "Corner smoothing: eh2 base", minval = 0, group = grpRsi,
+     tooltip = "The eh2 taper base: the HV at which the (base - HV)^2 factor bottoms out (lightest smoothing).")
+smoothCornerConst = input.float(0.5, "Corner smoothing: eh2 const", minval = 0, step = 0.1, group = grpRsi,
+     tooltip = "The eh2 taper constant multiplier: corner period = clamp((erGate/ER)/HV * (base - HV)^2 * this, defaultPeriod, cornerPeriod).")
 
 grpExt = "Blow-off extension cap"
 extCapPct = input.float(55, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
@@ -327,7 +329,8 @@ var float posEma = na
 // corner smoothing: heavier period only in the high-vol + choppy corner (price ER, not the target-exposure er above)
 priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
 inCorner = smoothHvGate > 0 and not na(rollHv) and rollHv > smoothHvGate and priceEr < smoothErGate
-smoothPer = inCorner ? (smoothCornerAdaptive ? math.max(posSmoothPeriod, math.min(smoothCornerPeriod, smoothCornerHvBase - rollHv)) : smoothCornerPeriod) : posSmoothPeriod
+cornerAdaptivePer = math.max(posSmoothPeriod, math.min(smoothCornerPeriod, (smoothErGate / math.max(priceEr, 0.0001)) / rollHv * math.pow(smoothCornerHvBase - rollHv, 2) * smoothCornerConst))
+smoothPer = inCorner ? (smoothCornerAdaptive ? cornerAdaptivePer : smoothCornerPeriod) : posSmoothPeriod
 posEma := (smoothPer > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (smoothPer + 1)) * rawPos + (1.0 - 2.0 / (smoothPer + 1)) * posEma) : rawPos
 position = posEma
 

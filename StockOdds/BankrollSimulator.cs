@@ -220,13 +220,19 @@ namespace StockOdds
 		public static double SmoothHvGate      = 50.0;
 		public static double SmoothErGate      = 0.11;
 		public static int    SmoothCornerPeriod = 50;
-		// ADAPTIVE corner base (DEFAULT ON): rather than a flat SmoothCornerPeriod, taper the heavy smoothing down as
-		// HV rises -- smoothPer = clamp(SmoothCornerHvBase - HV, PositionSmoothPeriod, SmoothCornerPeriod). At HV<=70
-		// it saturates the full P50; as HV climbs past ~70 the period eases toward P5, sparing extreme-HV names (e.g.
-		// MSTR, HV 90) whose large swings a slow EMA lags. Fixes the extreme-HV tail the flat P50 hurt while keeping
-		// the populated 56-75 corner at full smoothing. Set SmoothCornerAdaptive = false to restore the flat P50.
+		// ADAPTIVE (ER-scaled) corner taper (DEFAULT ON): rather than a flat SmoothCornerPeriod, scale the corner period
+		// by BOTH how choppy (price ER) and how volatile (HV) the bar is:
+		//   smoothPer = clamp( (SmoothErGate / ER) / HV * (SmoothCornerHvBase - HV)^2 * SmoothCornerConst,
+		//                       PositionSmoothPeriod, SmoothCornerPeriod )
+		// The (ErGate/ER) factor is >= 1 inside the gate and grows as ER falls (a deeper chop earns heavier smoothing);
+		// the /HV and (Base - HV)^2 factors taper the period down as HV rises, sparing the extreme-HV / momentum names
+		// whose large swings a slow EMA lags. Chosen (Base = 100, Const = 0.5) over the earlier flat-120 linear taper:
+		// per-name on the basket it recovers the return the flat taper over-gave-up on the chop-precedes-drop names
+		// (MSTR, ATAI, BE, GRPN) at a modest cost on the momentum names (NVDA, TSLA, IREN); on the deploy universe
+		// (cap>=$500M) it still clears feature-off on every cohort. Set SmoothCornerAdaptive = false for the flat P50.
 		public static bool   SmoothCornerAdaptive = true;
-		public static double SmoothCornerHvBase   = 120.0;
+		public static double SmoothCornerHvBase   = 100.0;   // eh2 taper base (the HV at which the (Base-HV)^2 factor bottoms out)
+		public static double SmoothCornerConst    = 0.5;     // eh2 taper constant
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
@@ -532,9 +538,11 @@ namespace StockOdds
 					position = Math.Min(position, ExtCapCeil / 100.0);
 				double smoothPer = PositionSmoothPeriod;
 				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate)
-					smoothPer = SmoothCornerAdaptive
-						? Clamp(SmoothCornerHvBase - curHvPct, PositionSmoothPeriod, SmoothCornerPeriod)
-						: SmoothCornerPeriod;
+				{
+					if (SmoothCornerAdaptive) { double d = SmoothCornerHvBase - curHvPct;
+						smoothPer = Clamp((SmoothErGate / Math.Max(curEr, 1e-4)) / curHvPct * (d * d) * SmoothCornerConst, PositionSmoothPeriod, SmoothCornerPeriod); }
+					else smoothPer = SmoothCornerPeriod;
+				}
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
