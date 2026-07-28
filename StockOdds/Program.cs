@@ -127,15 +127,10 @@ class Program
 		BankrollSimulator.RsiMultNumerator = 40;          // N cap (single knob; the trim never lightens past this)
 		BankrollSimulator.HvTrimSlope = 0.6;              // HV-conditioned trim: harder on low-vol candles, caps at N (0 = off)
 		BankrollSimulator.HvTrimFloor = 8;                // floor on the scaled N (hardest trim on the quietest candles)
-		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation)
-		BankrollSimulator.SmoothHvGate  = 50;             // corner smoothing: in the high-vol + choppy corner...
-		BankrollSimulator.SmoothErGate  = 0.11;           // ...(HV>gate AND price ER<gate) use the heavier period below
-		BankrollSimulator.SmoothCornerPeriod = 50;        // heavy-smoothing ceiling there (efficiency); light P5 elsewhere. 0 on gate = off
-		BankrollSimulator.SmoothCornerAdaptive = true;    // ER-scaled (eh2) taper: clamp((erGate/ER)/HV*(base-HV)^2*const,5,50) -- deeper chop heavier, extreme HV lighter
-		BankrollSimulator.SmoothCornerHvBase = 100;       // eh2 taper base
-		BankrollSimulator.SmoothCornerConst = 0.5;        // eh2 taper const -- base of the duration ramp
-		BankrollSimulator.ErDurThresh = 0.11;             // chop-persistence gate (keep aligned with SmoothErGate)
-		BankrollSimulator.DurConstSlope = 0.06;           // eh2 const grows +this per bar of sustained chop (0 = flat eh2)
+		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation) -- the P5 floor
+		BankrollSimulator.KamaSmooth = true;              // KAMA-distance smoothing: smooth HARDER the further price is below its KAMA, light P5 at/above it
+		BankrollSimulator.KamaSmoothSlope = 4.0;          // ramp: smoothPer = clamp(P5 + slope*below*maxPer, P5, maxPer), below = max(0,(kama-close)/kama)
+		BankrollSimulator.KamaSmoothMaxPeriod = 50;       // smoothing-period ceiling (floor = PositionSmoothPeriod). KamaSmooth=false = flat P5
 		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
