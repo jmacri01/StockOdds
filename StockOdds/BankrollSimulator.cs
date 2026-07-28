@@ -210,39 +210,24 @@ namespace StockOdds
 		// and on the most extreme (HV>100) names smoothing slightly lags the biggest bursts. 0 = off (raw position).
 		public static int PositionSmoothPeriod = 5;
 
-		// Corner smoothing (DEFAULT ON): use heavy smoothing (up to SmoothCornerPeriod = 50) instead of
-		// PositionSmoothPeriod (5) only for bars in the high-vol + choppy corner -- rolling HV > SmoothHvGate AND
-		// rolling price efficiency-ratio (Kaufman ER over PersistWindow) < SmoothErGate. In that corner the position
-		// chatters and heavy smoothing is EFFICIENCY (return up + drawdown down); everywhere else -- crucially the
-		// high-vol TRENDING rip -- stays at the light P5 so participation is preserved (a flat P50 would crater it).
-		// A 2D HV x persistence sweep located the corner; the efficiency is robust across HV 45-55 / ER 0.11-0.15.
-		// SmoothHvGate = 0 disables the corner.
-		public static double SmoothHvGate      = 50.0;
-		public static double SmoothErGate      = 0.11;
-		public static int    SmoothCornerPeriod = 50;
-		// ADAPTIVE (ER-scaled) corner taper (DEFAULT ON): rather than a flat SmoothCornerPeriod, scale the corner period
-		// by BOTH how choppy (price ER) and how volatile (HV) the bar is:
-		//   smoothPer = clamp( (SmoothErGate / ER) / HV * (SmoothCornerHvBase - HV)^2 * SmoothCornerConst,
-		//                       PositionSmoothPeriod, SmoothCornerPeriod )
-		// The (ErGate/ER) factor is >= 1 inside the gate and grows as ER falls (a deeper chop earns heavier smoothing);
-		// the /HV and (Base - HV)^2 factors taper the period down as HV rises, sparing the extreme-HV / momentum names
-		// whose large swings a slow EMA lags. Chosen (Base = 100, Const = 0.5) over the earlier flat-120 linear taper:
-		// per-name on the basket it recovers the return the flat taper over-gave-up on the chop-precedes-drop names
-		// (MSTR, ATAI, BE, GRPN) at a modest cost on the momentum names (NVDA, TSLA, IREN); on the deploy universe
-		// (cap>=$500M) it still clears feature-off on every cohort. Set SmoothCornerAdaptive = false for the flat P50.
-		public static bool   SmoothCornerAdaptive = true;
-		public static double SmoothCornerHvBase   = 100.0;   // eh2 taper base (the HV at which the (Base-HV)^2 factor bottoms out)
-		public static double SmoothCornerConst    = 0.5;     // eh2 taper const -- the BASE of the duration ramp below
-		// DURATION RAMP (DEFAULT ON): the eh2 const grows the longer the chop has persisted --
-		//   effConst = SmoothCornerConst + DurConstSlope * (curErDur - 1)
-		// where curErDur = consecutive bars with price ER < ErDurThresh (chop persistence). The corner thus smooths
-		// progressively HARDER the longer a chop lasts (the negative-median forward give-back concentrates in SUSTAINED
-		// chop), while a fresh chop (dur 1) uses just the base SmoothCornerConst = the flat eh2. Beats flat eh2 on BROAD +
-		// VIOLENT + the leveraged options book (median ret/DD replicates 4/4 across disjoint OOS samples), at a modest
-		// give-back on the basket's biggest winners (BE, ASST, MSTR). DurConstSlope = 0 recovers flat eh2; keep
-		// ErDurThresh aligned with SmoothErGate.
-		public static double ErDurThresh   = 0.11;
-		public static double DurConstSlope = 0.06;
+		// KAMA-distance smoothing (DEFAULT ON): smooth the traded position progressively HARDER the further the decision
+		// close sits BELOW its Kaufman adaptive MA (KAMA), and stay at the light PositionSmoothPeriod (5) at or above it.
+		// The EMA smoothing period ramps continuously from the P5 floor up to KamaSmoothMaxPeriod (50):
+		//   below     = max(0, (kama - close) / kama)                                    // 0 when at/above the KAMA
+		//   smoothPer = clamp( PositionSmoothPeriod + KamaSmoothSlope * below * KamaSmoothMaxPeriod,
+		//                      PositionSmoothPeriod, KamaSmoothMaxPeriod )
+		// The KAMA adapts by the engine's rolling price efficiency-ratio (curEr, over PersistWindow) as its smoothing
+		// constant (fast 2 / slow 30). Rationale: a name pulling back below its KAMA chatters and heavy smoothing is
+		// EFFICIENCY (return up + drawdown down); a name at/above its KAMA is trending, so it stays responsive at P5 and
+		// participation is preserved. This REPLACES the earlier HV+ER "corner" smoother -- one continuous rule, no gate.
+		// It matches the corner on broad OOS (4-sample median ret/DD 0.31 vs 0.29), beats it on the violent cohort, cuts
+		// drawdown, and wins 14/18 basket names over full history; the one cost is giving back some explosive V-recovery
+		// upside on the wildest names (ASST, IREN). A distance cap and an ER gate were both tried as guards on that cost
+		// and BOTH degraded broad OOS without fixing it (the benefit and the cost share the trigger), so neither shipped.
+		// KamaSmooth = false disables it (position stays at the flat PositionSmoothPeriod EMA).
+		public static bool   KamaSmooth          = true;
+		public static double KamaSmoothSlope     = 4.0;
+		public static double KamaSmoothMaxPeriod = 50.0;   // ceiling on the smoothing EMA period (floor = PositionSmoothPeriod)
 
 		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
 		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
@@ -364,7 +349,7 @@ namespace StockOdds
 			double position = 0.0;       // clamped signed exposure actually applied
 			double rsiAvgGain = 0.0, rsiAvgLoss = 0.0, rsiPrevClose = double.NaN, rsiMult = 1.0; int rsiCount = 0;
 			double posSmooth = double.NaN;
-			int curErDur = 0;   // consecutive bars price ER under ErDurThresh (chop persistence)
+			double kama = double.NaN;   // Kaufman adaptive MA of the decision close (uses curEr as the ER)
 
 			// rolling SMA window of the decision close, for the extension cap
 			var extMaWin = new Queue<double>(Math.Max(1, ExtMaPeriod));
@@ -517,7 +502,8 @@ namespace StockOdds
 				erPrevClose = prev.Close;
 				erCloseWin.Enqueue(prev.Close); while (erCloseWin.Count > PersistWindow + 1) erCloseWin.Dequeue();
 				curEr = erCloseWin.Count > PersistWindow && erDiffSum > 1e-9 ? Math.Abs(prev.Close - erCloseWin.Peek()) / erDiffSum : 1.0;
-					curErDur = curEr < ErDurThresh ? curErDur + 1 : 0;
+					// Kaufman adaptive MA of the decision close (fast 2 / slow 30), used by the KAMA-distance smoother
+					{ double sc = Math.Pow(curEr * (2.0/3.0 - 2.0/31.0) + 2.0/31.0, 2); kama = double.IsNaN(kama) ? prev.Close : kama + sc * (prev.Close - kama); }
 				if (RsiOverlayPeriod > 0)   // Wilder RSI of the decision close -> rsiMult = min(RsiMultNumerator/RSI, 1)
 				{
 					if (!double.IsNaN(rsiPrevClose))
@@ -548,14 +534,11 @@ namespace StockOdds
 				// Applied before smoothing so the cut eases in/out.
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
+				// KAMA-distance smoothing: heavier the further price sits below its KAMA, light (P5) at/above it.
 				double smoothPer = PositionSmoothPeriod;
-				if (SmoothHvGate > 0 && curHvPct > SmoothHvGate && curEr < SmoothErGate)
-				{
-					if (SmoothCornerAdaptive) { double d = SmoothCornerHvBase - curHvPct;
-						double effConst = SmoothCornerConst + DurConstSlope * (curErDur - 1);   // eh2 const ramps with chop duration
-						smoothPer = Clamp((SmoothErGate / Math.Max(curEr, 1e-4)) / curHvPct * (d * d) * effConst, PositionSmoothPeriod, SmoothCornerPeriod); }
-					else smoothPer = SmoothCornerPeriod;
-				}
+				if (KamaSmooth && !double.IsNaN(kama) && kama > 0)
+				{ double below = Math.Max(0.0, (kama - prev.Close) / kama);
+					smoothPer = Clamp(PositionSmoothPeriod + KamaSmoothSlope * below * KamaSmoothMaxPeriod, PositionSmoothPeriod, KamaSmoothMaxPeriod); }
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
