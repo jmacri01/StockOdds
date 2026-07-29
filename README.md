@@ -209,47 +209,47 @@ Because the engine now clamps to **150%** exposure (see [defaults](#5-from-targe
 
 When the target hits zero, the core is **held and hedged to 0 delta** (with a ~20-day timeout — see [Tuning the PMCC](#tuning-the-pmcc-delta-dte-and-the-flat-at-0-rule)) rather than closed out to cash — holding won on every universe (it keeps the cheap short-leg premium and the core's gamma for the frequent snap-backs, and avoids churning the wide-spread LEAP in and out).
 
-All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim, N cap 40) at the **optimal/default overlay parameters** (365-DTE LEAP core, **14-DTE short legs**, hold-at-0 with a 20-day timeout; PMCC 0.80Δ), **pooled across four disjoint random-500 samples (961 names after the ≥ $500M floor).** Each cell is **return% / max-DD%** — the metric that matters — shown **frictionless** (a ceiling) and at **mid ~1%** (patient limit fills near mid). *(Sharpe dropped by design — these are read on return vs drawdown.)*
+All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim, N cap 40) at the **optimal/default overlay parameters** (365-DTE LEAP core, **14-DTE short legs**, hold-at-0 with a 20-day timeout; PMCC 0.80Δ), **pooled across four disjoint random-500 samples (961 names after the ≥ $500M floor).** Each cell is **return% / max-DD%** — the metric that matters — shown **frictionless** (a ceiling) and at **mid ~1%** (patient limit fills near mid). *(Sharpe dropped by design — these are read on return vs drawdown.)* The last column is the **opportunity-cost lens**: **In-trade %** (share of OOS bars the position actually holds market exposure, |net delta| > 0.05) and **avg exp** (mean |net delta| across all bars — capital at work per dollar). Buy-&-hold is 100% / 1.00 by definition; every overlay sits well below on both, and that gap is the price paid for the drawdown reduction.
 
 ### Broad (961 names)
-| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
-|---|---|---|
-| *Buy & hold* | *+37% / 34.8* | — |
-| *Cash (engine)* | *+16% / 16.7* | — |
-| PMCC + short puts | +29% / 15.7 | +22% / 17.0 |
-| PMCC | +25% / 15.6 | +19% / 17.0 |
-| **Short-put** | +24% / 14.1 | **+21% / 14.7** |
-| Covered stock | +28% / 18.0 | +20% / 19.6 |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+37% / 34.8* | — | 100% / 1.00 |
+| *Cash (engine)* | *+16% / 16.7* | — | 84% / 0.37 |
+| PMCC + short puts | +29% / 15.7 | +22% / 17.0 | 85% / 0.38 |
+| PMCC | +25% / 15.6 | +19% / 17.0 | 85% / 0.36 |
+| **Short-put** | +24% / 14.1 | **+21% / 14.7** | 75% / 0.26 |
+| Covered stock | +28% / 18.0 | +20% / 19.6 | 77% / 0.36 |
 
 ### Decliners (339 names, negative B&H return)
-| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
-|---|---|---|
-| *Buy & hold* | *−23% / 46.9* | — |
-| *Cash (engine)* | *−8% / 21.2* | — |
-| PMCC + short puts | −1% / 17.0 | −6% / 18.3 |
-| PMCC | −4% / 16.9 | −7% / 18.0 |
-| **Short-put** | +3% / 16.0 | **+1% / 16.8** |
-| Covered stock | −3% / 20.3 | −9% / 22.4 |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *−23% / 46.9* | — | 100% / 1.00 |
+| *Cash (engine)* | *−8% / 21.2* | — | 82% / 0.34 |
+| PMCC + short puts | −1% / 17.0 | −6% / 18.3 | 85% / 0.36 |
+| PMCC | −4% / 16.9 | −7% / 18.0 | 84% / 0.33 |
+| **Short-put** | +3% / 16.0 | **+1% / 16.8** | 73% / 0.26 |
+| Covered stock | −3% / 20.3 | −9% / 22.4 | 75% / 0.33 |
 
 ### Violent (83 names, +return but ≥ 50% B&H drawdown)
-| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
-|---|---|---|
-| *Buy & hold* | *+146% / 55.8* | — |
-| *Cash (engine)* | *+87% / 36.9* | — |
-| PMCC + short puts | +110% / 38.9 | +95% / 40.7 |
-| PMCC | +92% / 41.2 | +79% / 42.3 |
-| **Short-put** | +86% / 29.4 | **+73% / 30.5** |
-| Covered stock | +120% / 41.1 | +103% / 43.7 |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+146% / 55.8* | — | 100% / 1.00 |
+| *Cash (engine)* | *+87% / 36.9* | — | 89% / 0.50 |
+| PMCC + short puts | +110% / 38.9 | +95% / 40.7 | 91% / 0.52 |
+| PMCC | +92% / 41.2 | +79% / 42.3 | 91% / 0.48 |
+| **Short-put** | +86% / 29.4 | **+73% / 30.5** | 84% / 0.31 |
+| Covered stock | +120% / 41.1 | +103% / 43.7 | 85% / 0.50 |
 
 ### Hand-picked high-vol basket (18 names, incl IREN)
-| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) |
-|---|---|---|
-| *Buy & hold* | *+140% / 50.4* | — |
-| *Cash (engine)* | *+85% / 37.7* | — |
-| PMCC + short puts | +131% / 29.8 | +114% / 31.9 |
-| **PMCC** | +128% / 25.7 | **+112% / 27.7** |
-| Short-put | +86% / 21.1 | +66% / 22.3 |
-| Covered stock | +127% / 29.2 | +109% / 30.6 |
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+140% / 50.4* | — | 100% / 1.00 |
+| *Cash (engine)* | *+85% / 37.7* | — | 89% / 0.43 |
+| PMCC + short puts | +131% / 29.8 | +114% / 31.9 | 89% / 0.44 |
+| **PMCC** | +128% / 25.7 | **+112% / 27.7** | 84% / 0.40 |
+| Short-put | +86% / 21.1 | +66% / 22.3 | 82% / 0.28 |
+| Covered stock | +127% / 29.2 | +109% / 30.6 | 83% / 0.42 |
 
 
 **Reading it (return ÷ max-DD).** Two model-honesty rules shape this: short calls are covered 1:1 (no naked calls) and the single short-put is **cash-secured** (its size is capped so the strike collateral never exceeds the account — see below). The short-put leads the broad and decliner cohorts and carries the shallowest drawdowns, but on the high-flyer basket the cash-secured cap keeps it from keeping pace and **plain PMCC reclaims the top spot** there:
@@ -258,6 +258,7 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 - **Violent:** **B&H reclaims the ratio here** (+146%/55.8, **2.61**) — no overlay beats it once naked calls and put leverage are gone. The short-put comes closest (+73%/30.5, **2.39**) and at the shallowest drawdown, then covered stock (+103%/43.7, 2.36) and PMCC + short puts (+95%/40.7, 2.33). On this cohort the overlays' value is drawdown reduction, not return.
 - **Basket (18, incl IREN):** **plain PMCC now posts the top ratio** (+112%/27.7, **4.04**), then PMCC + short puts (+114%/31.9, 3.57) and covered stock (+109%/30.6, 3.55). The cash-secured **short-put drops to +66%/22.3 (2.97, above B&H's 2.78)** — its old table-topping basket number was largely *leverage*: on these high-flyers the strike collateral outgrows the premium-fed account ~2×, so a genuinely cash-secured put can only carry ~half the exposure. PMCC's delta comes from an *owned, fully-paid* LEAP, so it isn't capped and wins here. All still beat Cash (+85%/37.7, 2.25).
 - **Cost sensitivity:** covered stock rolls the most contracts, so it loses the most from frictionless→mid; the single-leg **short-put is now the most cost-stable** (only ~3–4 points), ahead of the PMCC structures (~6 points).
+- **Opportunity cost (last column):** every overlay runs at **~0.26–0.52 mean exposure** — roughly a third to a half of capital at work vs buy-&-hold's 1.00 — which is precisely *why* they roughly halve the drawdown. The **short-put is the least-deployed** of all (in-trade only ~73–84% of bars, avg exposure ~0.26–0.31, both the lowest), because its delta is capped at 0.50 and then further trimmed by the cash-secured cap. That under-deployment is its opportunity cost: it wins broad/decliners on *risk-adjusted* terms but leaves the most upside on the table, and is why it can't keep pace with the owned-LEAP PMCC on the high-flyer basket. PMCC and PMCC + short puts are the most-deployed overlays (~0.36–0.52), the reason they capture more of the flyer runs.
 
 > **⚠️ These tables lean on the 14-DTE theta harvest — the most model-optimistic part of the study.** Selling short-dated premium collects the steepest theta, which is why the numbers jumped versus 40-DTE, but front-week short options carry **gamma / gap / pin / assignment** risk that the Black-Scholes, close-to-close, no-real-chain model **cannot see**. The return/drawdown edge over buy-&-hold shown here is real *in the model*; treat the short-DTE-driven portion as a ceiling, not a promise. (This is also why the default short leg is 14 DTE, not 7.)
 

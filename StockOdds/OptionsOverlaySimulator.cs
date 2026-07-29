@@ -46,6 +46,8 @@ namespace StockOdds
 		public double TotalReturnPct { get; set; }
 		public int Rolls { get; set; }                   // count of short-leg resizes / liquidations
 		public double MaxShortPutCollateralRatio { get; set; } // max at sale of (sum of short-put strikes)/bankroll; the pre-cap leverage a cash-secured account could not fund
+		public double TimeInTradePct { get; set; }       // % of measured bars the structure holds market exposure (|net delta| > 0.05); the rest is idle capital (opportunity cost)
+		public double MeanExposure { get; set; }         // average |net delta| across measured bars (0..>1); capital-at-work per dollar
 	}
 
 	public static class OptionsOverlaySimulator
@@ -104,6 +106,7 @@ namespace StockOdds
 			var hvByDate = TrailingHv(bars);
 
 			double bankroll = 0; bool started = false; var legs = new List<Leg>(); int flatCount = 0;
+			int nBars = 0, nInTrade = 0; double sumExp = 0;   // time-in-trade / mean-exposure accounting (opportunity cost)
 			for (int k = 0; k < engine.Positions.Count && k < engine.ReturnDates.Count; k++)
 			{
 				DateTime date = engine.ReturnDates[k];
@@ -169,11 +172,16 @@ namespace StockOdds
 				double netPnl = pnl - friction;
 				double dr = netPnl / bankroll; if (double.IsNaN(dr) || double.IsInfinity(dr)) dr = 0;
 				bankroll += netPnl; res.Returns.Add(dr); res.Dates.Add(date);
+					// time-in-trade / mean-exposure: |net delta| of the position held into the next bar
+					double curNet = Math.Abs(legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)));
+					nBars++; if (curNet > 0.05) nInTrade++; sumExp += curNet;
 			}
 
 			res.SharpeRatio = Sharpe(res.Returns);
 			res.MaxDrawdownPct = MaxDrawdown(res.Returns);
 			res.TotalReturnPct = TotalReturn(res.Returns);
+			res.TimeInTradePct = nBars > 0 ? 100.0 * nInTrade / nBars : 0;
+			res.MeanExposure = nBars > 0 ? sumExp / nBars : 0;
 			return res;
 		}
 
