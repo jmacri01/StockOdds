@@ -65,6 +65,11 @@ namespace StockOdds
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double ShortCallCap      = 0.50; // PmccPutFloor: cap on the delta reduction from short calls; remainder via a long put
+		// CoveredStock COLLAR: reduce the stock's delta via a collar (1 long put + 1 short call) instead of piling on
+		// short calls. Long put delta = min(reduction, CoveredPutDelta); short call delta = remainder. At target 0 the
+		// two sum to 1.0 (full hedge). CoveredCollar=false keeps the legacy multi-short-call reduction.
+		public static bool   CoveredCollar   = false;
+		public static double CoveredPutDelta = 0.50;
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
 		public static double PutLeapDelta       = 0.15;  // shallow far-OTM base put (straddle put leg / put-diagonal base)
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
@@ -206,6 +211,16 @@ namespace StockOdds
 			}
 		}
 
+		// NO NAKED CALLS: reduce delta by `reduce` (>0) using at most ONE short call (covered 1:1 by the long core),
+		// routing any remainder beyond one call's ~0.95 delta into a LONG PUT instead of a second (naked) short call.
+		private static void AddCoveredShortCall(List<Leg> legs, double reduce, double S, double iv, double Ts, DateTime exp)
+		{
+			if (reduce <= 1e-4) return;
+			double cd = Math.Min(reduce, 0.95);
+			legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, cd), Exp = exp });
+			double rem = reduce - cd;
+			if (rem > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, rem)), Exp = exp });
+		}
 		private static void ResizeShorts(List<Leg> legs, double S, double iv, double target, DateTime now)
 		{
 			legs.RemoveAll(l => !l.Core); // drop all trim legs (short calls/puts + any remainder long put); keep the core
@@ -220,7 +235,7 @@ namespace StockOdds
 				double reduction = coreD - target;            // >0 when we must cut delta down to target
 				if (reduction <= 1e-4) return;                // target >= core delta: hold the call alone (capped)
 				double scRed = Math.Min(reduction, ShortCallCap);
-				legs.Add(new Leg { Call = true, Qty = -scRed / ShortLegDelta, K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta), Exp = exp }); // short calls (capped)
+				legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, Math.Min(0.95, scRed)), Exp = exp }); // ONE covered short call (delta=scRed)
 				double putRed = reduction - scRed;            // remainder handled by a long put
 				if (putRed > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.90, putRed)), Exp = exp });
 				return;
@@ -247,7 +262,7 @@ namespace StockOdds
 				{
 					legs.Add(new Leg { Stock = true, Qty = 1, Exp = now.AddYears(100), VPrev = S });
 					double need2 = target - 1.0; // stock delta 1 -> short calls to trim down to target
-					if (need2 < -1e-4) { double K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta); legs.Add(new Leg { Call = true, Qty = need2 / ShortLegDelta, K = K, Exp = exp, VPrev = Price(true, S, K, iv, Ts) }); }
+					if (need2 < -1e-4) AddCoveredShortCall(legs, -need2, S, iv, Ts, exp); // covered short call -- no naked
 				}
 				else if (target > FlatEps)
 				{
@@ -291,8 +306,18 @@ namespace StockOdds
 			}
 			double coreDelta = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * LegDelta(l, S, iv, now));
 			double needed = target - coreDelta;
+			if (Strategy == OverlayStrategy.CoveredStock && CoveredCollar && needed < -1e-4)
+			{
+				// collar: 1 long put + 1 short call, deltas summing to the reduction R (= 1 - target at core delta 1).
+				double R = -needed;
+				double pd = Math.Min(R, CoveredPutDelta);
+				double cd = R - pd;
+				if (pd > 1e-3) legs.Add(new Leg { Call = false, Qty = 1,  K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, pd)), Exp = exp }); // long put
+				if (cd > 1e-3) legs.Add(new Leg { Call = true,  Qty = -1, K = StrikeForDelta(true,  S, iv, Ts, Math.Min(0.95, cd)), Exp = exp }); // short call
+				return;
+			}
 			if (needed < -1e-4)
-				legs.Add(new Leg { Call = true, Qty = needed / ShortLegDelta, K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta), Exp = exp }); // short calls
+				AddCoveredShortCall(legs, -needed, S, iv, Ts, exp); // covered short call (+ long-put remainder) -- no naked
 			else if (needed > 1e-4 && Strategy != OverlayStrategy.Pmcc)
 				legs.Add(new Leg { Call = false, Qty = -(needed / ShortLegDelta), K = StrikeForDelta(false, S, iv, Ts, ShortLegDelta), Exp = exp }); // short puts
 		}
