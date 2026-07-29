@@ -59,6 +59,7 @@ namespace StockOdds
 		public static double MaxNetDelta       = 1.0;  // ceiling on the resize target (raise to allow leveraged net delta > 1; only structures that can add — straddle/put-diagonal/covered-stock via short puts — reach it)
 		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
+		public static double ShortDeltaFloor    = 0.10; // roll a short put once its |delta| decays below this floor while the target still wants more (0 = off). Re-arms a spent OTM put whose theta is nearly exhausted; 0.10 is the swept optimum (beats no-floor and the 50%-profit rule on the ShortPut structure). Gated on tnet > floor to avoid churn when the target itself is <= floor.
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
@@ -141,7 +142,11 @@ namespace StockOdds
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
 					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
 						bool profitHit = ShortProfitTarget > 0 && legs.Any(l => l.Qty < 0 && l.VOpen > 1e-9 && l.VPrev <= ShortProfitTarget * l.VOpen);
-					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || NeedsRebuild(legs, target))
+						// Delta-floor roll: re-arm a spent OTM short put whose theta is nearly exhausted while the target
+						// still wants delta. Gated to the ShortPut structure -- for PMCC/covered-stock the short put is only a
+						// >1.0 ADD leg on top of a core that already supplies delta, so re-arming a decayed add-put just churns.
+						bool deltaFloorHit = ShortDeltaFloor > 0 && Strategy == OverlayStrategy.ShortPut && tnet > ShortDeltaFloor && legs.Any(l => !l.Core && l.Qty < 0 && !l.Call && Math.Abs(LegDelta(l, S, iv, date)) < ShortDeltaFloor);
+					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || deltaFloorHit || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(MaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
