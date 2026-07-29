@@ -198,7 +198,7 @@ Instead of holding the underlying at the engine's target exposure, this expresse
 |---|---|---|---|
 | **PMCC** *(the capped, cleanest structure — no naked puts)* | long **0.80Δ** call LEAP (365 DTE) | short calls only | 0 → ~0.80 (pinned at the LEAP delta) |
 | **PMCC + short puts** *(the >1.0 lean — capital caveat below)* | long **0.80Δ** call LEAP (365 DTE) | short calls (reduce) / short puts (add) | **0 → 1.5** |
-| **Short-put** *(fully clean — no naked legs; cash-securable)* | *(none)* | one short put at delta = min(target, **0.50**) — ATM, peak theta | 0 → 0.50 |
+| **Short-put** *(fully clean — no naked legs; cash-secured)* | *(none)* | one short put at delta = min(target, **0.50**), size capped so strike collateral ≤ account — ATM, peak theta | 0 → 0.50 |
 | **Covered stock** | long shares | short calls / short puts | 0 → 1.5 |
 
 Because the engine now clamps to **150%** exposure (see [defaults](#5-from-target-to-position-the-overlay)), the strong-signal candles ask for a target above 1.0. Only the structures that **add** delta with short puts (**PMCC + short puts**, covered stock) can express that; the **plain PMCC self-caps at its LEAP delta (~0.80)** and the short-put at 0.50. Adding short puts on top of the PMCC's call LEAP runs the leverage the engine wants and lifts the out-of-sample ratios — **with a capital caveat: the delta above ~1.0 comes from *naked* short puts (they can't be cash-secured with the freed capital), so this is a delta-only picture of what that extra exposure would earn, not a cash-secured structure.** The plain PMCC is the clean, no-naked-puts alternative.
