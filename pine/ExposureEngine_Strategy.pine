@@ -73,8 +73,6 @@ dynMin   = input.float(0.0,  "LongBias min", step = 0.5, group = grpDyn)
 dynMax   = input.float(150.0, "LongBias max", step = 0.5, group = grpDyn)
 dynSmooth = input.int(10, "Bias smoothing (EMA bars)", minval = 1, group = grpDyn,
      tooltip = "EMA-smooth the per-candle LongBias so it does not whipsaw. 1 = off.")
-biasSplit    = input.bool(true, "Split bias across LT dirs", group = grpDyn,
-     tooltip = "Rolling sum: a Bull candle contributes 1 + bias/2 and a Bear candle -1 + bias/2 (instead of 1+bias / -1). The bias becomes a long tilt on BOTH sides, so a high-bias choppy name keeps conviction elevated through its LT-Bear stretches (a cleaner hold-through-chop). Broad-validated: Sharpe up in every HV bucket, edges buy&hold, ~flat drawdown. On by default.")
 hvWindow      = input.int(60, "HV window (bars)", minval = 2, group = grpDyn)
 persistWindow = input.int(63, "Persistence window (bars)", minval = 2, group = grpDyn)
 hvRefMean   = input.float(57.0,   "HV ref mean",          group = grpDyn)
@@ -242,7 +240,7 @@ effLongBias = math.max(dynLbEma, dynMin)
 // Dynamic long bias: rolling LT-direction sum over biasPeriod / biasPeriod.
 // A Bull candle contributes (effLongBias + 1), a Bear candle -1; effLongBias skews
 // the Bull weight (0 -> +1, -0.5 -> +0.5, +1 -> +2).
-biasSig = biasSplit ? (ltState == 1 ? (1 + effLongBias / 2) : ltState == 0 ? (-1 + effLongBias / 2) : 0) : (ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0)
+biasSig = ltState == 1 ? (effLongBias + 1) : ltState == 0 ? -1 : 0
 // C#-faithful sliding sum: add the current signal, drop the one leaving the window,
 // divide by biasPeriod ALWAYS (partial early) — valid from bar 1, mirroring the C# Queue.
 var float biasSum = 0.0
