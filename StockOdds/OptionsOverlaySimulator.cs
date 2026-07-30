@@ -14,9 +14,10 @@ namespace StockOdds
 	// fill is ~0, crossing the full spread is ~0.03. Treat outputs as a directional research estimate.
 	//
 	// Each bar the structure's net delta is steered toward the engine's target exposure (0..1): short
-	// calls reduce delta, short puts add it. When the target is ~0 the structure is either held and
-	// hedged to 0 delta (CloseAtZero = false, generally better on risk-adjusted terms) or liquidated to
-	// cash (CloseAtZero = true).
+	// calls reduce delta, short puts add it. A target below FlatEps (0.20) is treated as "flat" -- too weak
+	// a signal to express: a coreless structure (short-put) simply holds cash, while a core structure (PMCC,
+	// covered stock) HOLDS its small position and closes to cash only after FlatHoldDays consecutive flat bars
+	// -- it is never flattened to 0 on the first weak bar (that churns the wide LEAP and misses the snap-backs).
 	public enum OverlayStrategy
 	{
 		Pmcc,         // long call LEAP + short calls only (can reduce delta, never add above the LEAP)
