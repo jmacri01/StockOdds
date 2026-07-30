@@ -80,10 +80,16 @@ namespace StockOdds
 		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double ShortPutTargetFrac = 1.0;  // ShortPut: fraction of the engine target to express (put delta = min(frac*target, cap)); 0.5 = run at half exposure
 		public static double ShortPutProtDelta  = 0.0;  // ShortPut: if >0, buy a long put at this delta (same expiry) -> bull put spread; the short put deepens by this so net delta still = the cap
-		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
-		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
-		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
-		// to cash if it still hasn't budged off flat (captures quick recoveries, cuts the tail of a real decline).
+		public static double FlatEps            = 0.20; // target <= this is treated as "flat" -- don't express weak signals.
+		// 0.20 (swept optimum) beats 0.05: a sub-0.20 target isn't worth expressing. For the SHORT-PUT this is a pure
+		// EXPRESSION FLOOR (it simply won't sell a put below a 0.20 target -- holds cash; the timer below is moot since
+		// it carries no core). For the LEAP/stock structures it means HOLD the small position while flat, then close
+		// after FlatHoldDays -- do NOT flatten a core to cash on the first weak bar (that churns the wide LEAP and
+		// misses the post-dip bounces: PMCC broad ratio collapses 1.09 -> 0.57 at hold0). 0.30 overshoots (over-cuts
+		// participation). Net across structures: short-put +all cohorts, PMCC basket up, covered-stock mild +,
+		// PMCC+short-puts slightly worse on broad/decliners (the participation structure dislikes the trim).
+		// Behaviour at "flat". FlatHoldDays: -1 = hold indefinitely (hold/hedge, never close); 0 = close to cash on the
+		// first flat bar (harmful for core structures -- see above); N = hold for N consecutive flat bars, then close.
 		// 20 is the sweet spot: ≈ pure hold on every universe while keeping the position finite.
 		public static int    FlatHoldDays       = 20;
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
