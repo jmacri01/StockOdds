@@ -45,6 +45,9 @@ namespace StockOdds
 		public double MaxDrawdownPct { get; set; }
 		public double TotalReturnPct { get; set; }
 		public int Rolls { get; set; }                   // count of short-leg resizes / liquidations
+		public double MaxShortPutCollateralRatio { get; set; } // max at sale of (sum of short-put strikes)/bankroll; the pre-cap leverage a cash-secured account could not fund
+		public double TimeInTradePct { get; set; }       // % of measured bars the structure holds market exposure (|net delta| > 0.05); the rest is idle capital (opportunity cost)
+		public double MeanExposure { get; set; }         // average |net delta| across measured bars (0..>1); capital-at-work per dollar
 	}
 
 	public static class OptionsOverlaySimulator
@@ -59,22 +62,34 @@ namespace StockOdds
 		public static double MaxNetDelta       = 1.0;  // ceiling on the resize target (raise to allow leveraged net delta > 1; only structures that can add — straddle/put-diagonal/covered-stock via short puts — reach it)
 		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
+		public static bool   CashSecuredPut     = true; // ShortPut structure: at each sale cap the short-put size so its collateral (strike) never exceeds the bankroll -- a genuinely cash-secured put, no margin. Once the underlying has run far past the (premium-grown) account a full ATM put can't be funded, so the position is scaled down. false = the delta-only picture (implicitly leveraged for winners).
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double ShortCallCap      = 0.50; // PmccPutFloor: cap on the delta reduction from short calls; remainder via a long put
+		// CoveredStock COLLAR: reduce the stock's delta via a collar (1 long put + 1 short call) instead of piling on
+		// short calls. Long put delta = min(reduction, CoveredPutDelta); short call delta = remainder. At target 0 the
+		// two sum to 1.0 (full hedge). CoveredCollar=false keeps the legacy multi-short-call reduction.
+		public static bool   CoveredCollar   = false;
+		public static double CoveredPutDelta = 0.50;
 		public static double CallLeapDelta      = 0.80;  // recommended PMCC starter: 0.80-delta, 365-DTE call
 		public static double PutLeapDelta       = 0.15;  // shallow far-OTM base put (straddle put leg / put-diagonal base)
 		public static double StrangleMinDelta   = 0.25;  // PmccStrangle: the always-on nearer leg's delta floor
 		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double ShortPutTargetFrac = 1.0;  // ShortPut: fraction of the engine target to express (put delta = min(frac*target, cap)); 0.5 = run at half exposure
 		public static double ShortPutProtDelta  = 0.0;  // ShortPut: if >0, buy a long put at this delta (same expiry) -> bull put spread; the short put deepens by this so net delta still = the cap
-		public static double FlatEps            = 0.05; // target <= this is treated as "flat"
-		// Behaviour at target ~ 0 ("flat"). FlatHoldDays: -1 = hold indefinitely (hedge to 0 delta, never close);
-		// 0 = close out to cash on the first flat bar; N = hold-and-hedge for N consecutive flat bars, then close
-		// to cash if it still hasn't budged off flat (captures quick recoveries, cuts the tail of a real decline).
+		public static double FlatEps            = 0.20; // target <= this is treated as "flat" -- don't express weak signals.
+		// 0.20 (swept optimum) beats 0.05: a sub-0.20 target isn't worth expressing. For the SHORT-PUT this is a pure
+		// EXPRESSION FLOOR (it simply won't sell a put below a 0.20 target -- holds cash; the timer below is moot since
+		// it carries no core). For the LEAP/stock structures it means HOLD the small position while flat, then close
+		// after FlatHoldDays -- do NOT flatten a core to cash on the first weak bar (that churns the wide LEAP and
+		// misses the post-dip bounces: PMCC broad ratio collapses 1.09 -> 0.57 at hold0). 0.30 overshoots (over-cuts
+		// participation). Net across structures: short-put +all cohorts, PMCC basket up, covered-stock mild +,
+		// PMCC+short-puts slightly worse on broad/decliners (the participation structure dislikes the trim).
+		// Behaviour at "flat". FlatHoldDays: -1 = hold indefinitely (hold/hedge, never close); 0 = close to cash on the
+		// first flat bar (harmful for core structures -- see above); N = hold for N consecutive flat bars, then close.
 		// 20 is the sweet spot: ≈ pure hold on every universe while keeping the position finite.
 		public static int    FlatHoldDays       = 20;
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
@@ -97,6 +112,7 @@ namespace StockOdds
 			var hvByDate = TrailingHv(bars);
 
 			double bankroll = 0; bool started = false; var legs = new List<Leg>(); int flatCount = 0;
+			int nBars = 0, nInTrade = 0; double sumExp = 0;   // time-in-trade / mean-exposure accounting (opportunity cost)
 			for (int k = 0; k < engine.Positions.Count && k < engine.ReturnDates.Count; k++)
 			{
 				DateTime date = engine.ReturnDates[k];
@@ -136,10 +152,23 @@ namespace StockOdds
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
 					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
 						bool profitHit = ShortProfitTarget > 0 && legs.Any(l => l.Qty < 0 && l.VOpen > 1e-9 && l.VPrev <= ShortProfitTarget * l.VOpen);
-					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit || NeedsRebuild(legs, target))
+					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit  || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(MaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
+						// CASH-SECURED: cap the just-sold short put(s) so collateral (sum of strikes) <= bankroll.
+						// A cash-secured put posts K per contract; once the underlying has run far past the
+						// (premium-grown) account a full ATM put can't be funded, so scale down instead of using margin.
+						if (Strategy == OverlayStrategy.ShortPut && bankroll > 1e-9)
+						{
+							var sp = legs.Where(l => !l.Core && l.Qty < 0 && !l.Call).ToList();
+							double coll = sp.Sum(l => -l.Qty * l.K);
+							if (coll > 1e-9)
+							{
+								double r2 = coll / bankroll; if (r2 > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = r2;
+								if (CashSecuredPut && coll > bankroll) { double f = bankroll / coll; foreach (var l in sp) l.Qty *= f; }
+							}
+						}
 						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
@@ -149,11 +178,16 @@ namespace StockOdds
 				double netPnl = pnl - friction;
 				double dr = netPnl / bankroll; if (double.IsNaN(dr) || double.IsInfinity(dr)) dr = 0;
 				bankroll += netPnl; res.Returns.Add(dr); res.Dates.Add(date);
+					// time-in-trade / mean-exposure: |net delta| of the position held into the next bar
+					double curNet = Math.Abs(legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)));
+					nBars++; if (curNet > 0.05) nInTrade++; sumExp += curNet;
 			}
 
 			res.SharpeRatio = Sharpe(res.Returns);
 			res.MaxDrawdownPct = MaxDrawdown(res.Returns);
 			res.TotalReturnPct = TotalReturn(res.Returns);
+			res.TimeInTradePct = nBars > 0 ? 100.0 * nInTrade / nBars : 0;
+			res.MeanExposure = nBars > 0 ? sumExp / nBars : 0;
 			return res;
 		}
 
@@ -206,6 +240,16 @@ namespace StockOdds
 			}
 		}
 
+		// NO NAKED CALLS: reduce delta by `reduce` (>0) using at most ONE short call (covered 1:1 by the long core),
+		// routing any remainder beyond one call's ~0.95 delta into a LONG PUT instead of a second (naked) short call.
+		private static void AddCoveredShortCall(List<Leg> legs, double reduce, double S, double iv, double Ts, DateTime exp)
+		{
+			if (reduce <= 1e-4) return;
+			double cd = Math.Min(reduce, 0.95);
+			legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, cd), Exp = exp });
+			double rem = reduce - cd;
+			if (rem > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, rem)), Exp = exp });
+		}
 		private static void ResizeShorts(List<Leg> legs, double S, double iv, double target, DateTime now)
 		{
 			legs.RemoveAll(l => !l.Core); // drop all trim legs (short calls/puts + any remainder long put); keep the core
@@ -220,7 +264,7 @@ namespace StockOdds
 				double reduction = coreD - target;            // >0 when we must cut delta down to target
 				if (reduction <= 1e-4) return;                // target >= core delta: hold the call alone (capped)
 				double scRed = Math.Min(reduction, ShortCallCap);
-				legs.Add(new Leg { Call = true, Qty = -scRed / ShortLegDelta, K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta), Exp = exp }); // short calls (capped)
+				legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, Math.Min(0.95, scRed)), Exp = exp }); // ONE covered short call (delta=scRed)
 				double putRed = reduction - scRed;            // remainder handled by a long put
 				if (putRed > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.90, putRed)), Exp = exp });
 				return;
@@ -247,7 +291,7 @@ namespace StockOdds
 				{
 					legs.Add(new Leg { Stock = true, Qty = 1, Exp = now.AddYears(100), VPrev = S });
 					double need2 = target - 1.0; // stock delta 1 -> short calls to trim down to target
-					if (need2 < -1e-4) { double K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta); legs.Add(new Leg { Call = true, Qty = need2 / ShortLegDelta, K = K, Exp = exp, VPrev = Price(true, S, K, iv, Ts) }); }
+					if (need2 < -1e-4) AddCoveredShortCall(legs, -need2, S, iv, Ts, exp); // covered short call -- no naked
 				}
 				else if (target > FlatEps)
 				{
@@ -291,8 +335,18 @@ namespace StockOdds
 			}
 			double coreDelta = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * LegDelta(l, S, iv, now));
 			double needed = target - coreDelta;
+			if (Strategy == OverlayStrategy.CoveredStock && CoveredCollar && needed < -1e-4)
+			{
+				// collar: 1 long put + 1 short call, deltas summing to the reduction R (= 1 - target at core delta 1).
+				double R = -needed;
+				double pd = Math.Min(R, CoveredPutDelta);
+				double cd = R - pd;
+				if (pd > 1e-3) legs.Add(new Leg { Call = false, Qty = 1,  K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, pd)), Exp = exp }); // long put
+				if (cd > 1e-3) legs.Add(new Leg { Call = true,  Qty = -1, K = StrikeForDelta(true,  S, iv, Ts, Math.Min(0.95, cd)), Exp = exp }); // short call
+				return;
+			}
 			if (needed < -1e-4)
-				legs.Add(new Leg { Call = true, Qty = needed / ShortLegDelta, K = StrikeForDelta(true, S, iv, Ts, ShortLegDelta), Exp = exp }); // short calls
+				AddCoveredShortCall(legs, -needed, S, iv, Ts, exp); // covered short call (+ long-put remainder) -- no naked
 			else if (needed > 1e-4 && Strategy != OverlayStrategy.Pmcc)
 				legs.Add(new Leg { Call = false, Qty = -(needed / ShortLegDelta), K = StrikeForDelta(false, S, iv, Ts, ShortLegDelta), Exp = exp }); // short puts
 		}
