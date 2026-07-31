@@ -67,7 +67,24 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
-		public static double RebalanceEdge     = 0.0;  // on a resize, aim net delta at target + this*DeadbandDelta: 0 = center (position exposure), -1 = lower edge (exposure - drift), +1 = upper edge
+		// On a resize, aim net delta at target + this*DeadbandDelta: 0 = centre (the engine's exposure), -1 = the
+		// lower edge of the tolerance band, +1 = the upper edge.
+		// SWEPT AND REJECTED 2026-07-31 -- keep at 0. Aiming high (+0.25 to +0.5) attacks a real defect: the overlay
+		// sits BELOW target on 37% of bars, costing ~4 bp/bar on high-move names, and the deadband cannot fix it
+		// (tightening the band leaves the tracking term unchanged even frictionless -- the residual is the FlatEps
+		// floor and the delta cap, not quantisation). It measured well: broad OOS Sharpe 4/4 on PMCC 0.395 -> 0.419,
+		// PMCC+SP 0.460 -> 0.483, covered 0.401 -> 0.433, and it BEAT the matched-exposure flat-boost control, which
+		// was strictly worse than doing nothing (0.342 at k1.20 vs 0.419). Walk-forward picked the same region on the
+		// first 70% of history. Rejected anyway, for reasons that outrank the Sharpe:
+		//   * the gain is a PARTICIPATION TILT concentrated in the steady cohort (0.718 -> 0.786), while the
+		//     DECLINERS cohort gets worse (-0.178 -> -0.223, return -7.0 -> -8.5, drawdown 22.7 -> 24.7). Surviving
+		//     falling names is this strategy's whole protective case.
+		//   * per-name basket drawdown degrades at +0.5 (only 4-5 of 19 shallower) and mean exposure rises 16%.
+		//   * its entire mechanism is ADDING delta, which the cash-secured-put invariant now constrains, so the
+		//     measurement above predates that rule and would have to be redone before it meant anything.
+		// The tracking defect it targeted is real and still open; a fix that does not lever into downtrends would be
+		// the thing to look for. Do not re-sweep this knob expecting a different answer.
+		public static double RebalanceEdge     = 0.0;
 		// CEILING ON NET DELTA. By default this is TIED to the engine's exposure ceiling
 		// (MaxExposurePercent / 100) so the overlay can always express what the engine asks for and neither knob
 		// silently clips the other. Leaving them as two independent literals is what hid a real bug: the engine was
