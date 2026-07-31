@@ -220,6 +220,22 @@ The dynamic bias is mirrored in the Pine scripts: the per-candle bias (orange `D
 
 ## Expressing the exposure through options (research)
 
+> **⚠️ THE STRUCTURE RANKING IS DRIVEN BY THE VOL-RISK-PREMIUM ASSUMPTION, AND IT INVERTS.** Every option here is
+> priced at `IV = trailing HV × VolRiskPremium` with **VolRiskPremium = 1.10, i.e. options are 10% rich by
+> construction** — so net-short-premium structures earn a guaranteed edge and net-long ones pay a guaranteed tax.
+> Swept across 0.85 → 1.20 on 2,289 names (last 30% OOS), the broad Sharpe of the single short put runs
+> **−0.103 / +0.066 / 0.233 / 0.400 / 0.564 / 0.723 / 1.035**, and **the ordering of the five structures inverts
+> between VRP 0.90 and 0.95**: below ~0.93 every premium seller is *negative* and a pure long-option structure
+> ranks first. So **"the single short put is the standout structure" is largely a restatement of the pricing
+> assumption, not a market finding.** At fair value (1.00) premium-selling still leads, so the conclusion is
+> *conditional* rather than wrong — but the condition is unvalidated, and it is weakest exactly where this study
+> aims: `VolRiskPremium` is a single constant applied to a 17-HV index and a 199-HV microcap alike, while real
+> variance risk premium is persistent on indices and thin-to-negative on the highest-vol single names — the curated
+> basket. Read the *drawdown* reductions, which are far less VRP-sensitive, ahead of any cross-structure ranking.
+> The one structure whose result barely moves across the whole range is a quantity-scaled LEAP with no offsetting
+> legs (basket Sharpe range **0.08** versus **1.06** for the short put), because its edge does not come from
+> premium capture at all.
+
 > **Model-only — read the caveats first.** This is a separate research simulator (`OptionsOverlaySimulator.cs`), **not part of the production engine**, and it changes no defaults. There is **no real options chain** in the pipeline: every option is priced and marked with Black-Scholes (r = 0) at an implied vol of **trailing-60-day realized HV × 1.10** (a vol-risk-premium). It ignores **volatility skew, term structure, early assignment, and liquidity**, and the results are **highly sensitive to execution cost**. Treat this as a directional estimate, not a tradeable backtest.
 
 Instead of holding the underlying at the engine's target exposure, this expresses that **same per-bar target as the net delta of an options structure** — rolling short-dated options (**~14 DTE** by default — see [Tuning the PMCC](#tuning-the-pmcc-delta-dte-and-the-flat-rule)) to steer net delta onto the target (short calls reduce delta, short puts add it), using the delta rebalance-drift band (30%) as the roll trigger and rolling any long-dated leg at expiry. Four structures:
@@ -227,13 +243,20 @@ Instead of holding the underlying at the engine's target exposure, this expresse
 | Structure | Long core | Delta steered by | Net-delta range |
 |---|---|---|---|
 | **PMCC** *(the capped, cleanest structure — no naked puts)* | long **0.80Δ** call LEAP (365 DTE) | short calls only | 0 → ~0.80 (pinned at the LEAP delta) |
-| **PMCC + short puts** *(the >1.0 lean — capital caveat below)* | long **0.80Δ** call LEAP (365 DTE) | short calls (reduce) / short puts (add) | **0 → 1.5** |
-| **Short-put** *(fully clean — no naked legs; cash-secured)* | *(none)* | one short put at delta = min(target, **0.50**), size capped so strike collateral ≤ account — ATM, peak theta | 0 → 0.50 |
-| **Covered stock** | long shares | short calls / short puts | 0 → 1.5 |
+| **PMCC + short puts** | long **0.80Δ** call LEAP (365 DTE) | short calls (reduce) / **cash-secured** short puts (add) | 0 → **~1.0–1.1** (whatever the cash left after the LEAP can secure) |
+| **Short-put** | *(none)* | one short put at delta = min(target, **0.50**), size capped so strike collateral ≤ account — ATM, peak theta | 0 → 0.50 |
+| **Covered stock** | long shares | short calls (the shares consume the account, so **no puts are fundable**) | 0 → 1.0 |
 
-Because the engine now clamps to **150%** exposure (see [defaults](#5-from-target-to-position-the-overlay)), the strong-signal candles ask for a target above 1.0. Only the structures that **add** delta with short puts (**PMCC + short puts**, covered stock) can express that; the **plain PMCC self-caps at its LEAP delta (~0.80)** and the short-put at 0.50. Adding short puts on top of the PMCC's call LEAP runs the leverage the engine wants and lifts the out-of-sample ratios — **with a capital caveat: the delta above ~1.0 comes from *naked* short puts (they can't be cash-secured with the freed capital), so this is a delta-only picture of what that extra exposure would earn, not a cash-secured structure.** The plain PMCC is the clean, no-naked-puts alternative.
+Because the engine clamps to **150%** exposure (see [defaults](#5-from-target-to-position-the-overlay)), the strong-signal candles ask for a target above 1.0. The **net-delta ceiling is tied to that engine ceiling** (`TieNetDeltaToEngine = true`, so `MaxNetDelta = MaxExposurePercent / 100`) rather than being a second independent literal — leaving them uncoupled hid a real bug, where the engine was swept to 300% while the overlay silently discarded every target above 1.0 and the extra exposure showed up as pure drawdown.
 
-**No naked short calls anywhere.** When a structure needs to *reduce* delta below its long core (PMCC, covered stock, and the reduce side of PMCC + short puts), it is capped at **one short call covered 1:1 by the long core** (a single LEAP or stock unit); any reduction beyond that one call's delta is expressed with a **long put** instead of a second, uncovered call. This closed a model artifact — the old code stacked multiple out-of-the-money short calls (2–3 contracts against one core), harvesting ~25–30% of extra theta that a naked position would collect but that the Black-Scholes model can't charge tail risk for. Removing it is why PMCC and covered-stock returns come down here versus earlier drafts (the short-put, which sells no calls, is unchanged). The one structure with fully no naked legs of any kind is the **single short-put** (one put at delta ≤ 0.50).
+**But the tie is not licence to lever, because collateral is now enforced everywhere (see the two invariants below).** Only structures that **add** delta with short puts can exceed their core's delta, and every such put must be cash-secured out of the capital *not already committed to the long core*. In practice that means **PMCC + short puts tops out near 1.0–1.1**, not 1.5: the 0.80Δ LEAP consumes part of the account and the remaining cash secures only a fraction of a contract. **Covered stock cannot sell puts at all** — the shares consume the whole account — so it is capped at delta 1.0. An earlier draft of this README documented PMCC + short puts as reaching **1.5**; that was true only because its puts were *naked and unfunded*, and it is the single biggest correction in this section. Under the honest rule, every measured configuration says the same thing: **more leverage buys return at proportionally more drawdown and a lower Sharpe.**
+
+**Two hard invariants, enforced for every structure.** These are clamps in the simulator, not properties of how each branch happens to be written, so a future edit cannot quietly reintroduce phantom leverage:
+
+1. **Every short put is cash-secured.** Collateral is the **strike** (netted to the spread width where a long put at a lower strike offsets it), funded only from **bankroll minus capital already committed to long legs** — money spent on a call LEAP or on shares cannot also secure a put. If the requirement exceeds available cash, every put leg in that expiry is scaled down pro rata, short and long together, so a spread keeps its shape. Previously this was applied *only* to the standalone short-put structure, which is how PMCC + short puts and covered stock reached delta > 1 on unfunded naked puts. Cost of fixing it, measured on 2,289 names (last 30% OOS, mid ~1%): **PMCC + short puts loses ~0.009 Sharpe and 1.5 points of return** (0.460 → 0.451); PMCC and the standalone short-put are unchanged, and covered stock is unchanged below delta 1.0 because it never needed puts there. At the tied 1.5 ceiling the structure was asking for **1.32×** the account in collateral — a third of that delta was never fundable. *(Accounting note: the overlay is a P&L/delta model, not a settlement ledger, so "capital committed" is long legs at market value. That is the right first-order test of whether a put could be secured; it is not a margin engine.)*
+2. **No naked short calls.** Short calls may never exceed the long core covering them 1:1. Every branch already satisfied this, and the regression check confirms the clamp changes nothing (PMCC is byte-identical with it on or off) — it exists so that stays true.
+
+**How the no-naked-call rule works.** When a structure needs to *reduce* delta below its long core (PMCC, covered stock, and the reduce side of PMCC + short puts), it is capped at **one short call covered 1:1 by the long core** (a single LEAP or stock unit); any reduction beyond that one call's delta is expressed with a **long put** instead of a second, uncovered call. This closed a model artifact — the old code stacked multiple out-of-the-money short calls (2–3 contracts against one core), harvesting ~25–30% of extra theta that a naked position would collect but that the Black-Scholes model can't charge tail risk for. Removing it is why PMCC and covered-stock returns come down here versus earlier drafts (the short-put, which sells no calls, is unchanged). The one structure with fully no naked legs of any kind is the **single short-put** (one put at delta ≤ 0.50).
 
 **The short-put is cash-secured (no put margin either).** A short put's real collateral is the **strike** — the cash you must hold to buy the shares if assigned — not `delta × spot`. The model now caps the put's size at each sale so its strike collateral never exceeds the account (`CashSecuredPut = true`). This matters because the overlay's account grows only through the (delta-capped, defensive) option P&L, while the strike tracks the *underlying*: on a name that has run up several-fold, a full ATM put's strike is far larger than the account, so a genuinely cash-secured seller can only carry a *fraction* of a contract. Measured across the 961-name broad set the un-capped version was implicitly running **~1.3× leverage on average (≈2× on the high-flyer basket, up to ~18× on extreme winners)** — that "leverage" was the bulk of the short-put's old table-topping basket return. With the cap on, the short-put's basket ratio falls from ~4.4 to ~3.4 while broad (1.46) and decliners barely move, because those cohorts never appreciated enough to trigger the cap. It is now a true cash-secured put — and the reason PMCC beats it on the flyers is precisely that PMCC's delta rides an *owned, fully-paid* LEAP, which is not margin and so is never capped.
 
@@ -246,10 +269,10 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 |---|---|---|---|
 | *Buy & hold* | *+71% / 58.6* | — | 100% / 1.00 |
 | *Cash (engine)* | *+34% / 34.9* | — | 81% / 0.35 |
-| PMCC + short puts | +64% / 28.9 | **+39% / 33.2** | 79% / 0.35 |
+| PMCC + short puts | +60% / 28.9 | **+38% / 33.3** | 79% / 0.35 |
 | PMCC | +55% / 29.0 | **+34% / 33.5** | 79% / 0.34 |
 | **Short-put** | +51% / 21.8 | **+40% / 23.0** | 59% / 0.22 |
-| Covered stock | +57% / 31.4 | **+38% / 35.5** | 59% / 0.31 |
+| Covered stock | +57% / 31.4 | **+38% / 35.6** | 59% / 0.31 |
 
 ### Decliners (906 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
@@ -259,27 +282,27 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | PMCC + short puts | +7% / 27.6 | **−5% / 31.6** | 79% / 0.36 |
 | PMCC | +3% / 27.9 | **−8% / 32.0** | 78% / 0.34 |
 | **Short-put** | +14% / 21.2 | **+9% / 22.6** | 58% / 0.24 |
-| Covered stock | +3% / 29.2 | **−7% / 32.9** | 58% / 0.31 |
+| Covered stock | +4% / 29.3 | **−6% / 32.9** | 58% / 0.32 |
 
 ### Violent (595 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+182% / 66.6* | — | 100% / 1.00 |
 | *Cash (engine)* | *+93% / 41.5* | — | 83% / 0.40 |
-| PMCC + short puts | +142% / 41.7 | **+91% / 47.2** | 82% / 0.40 |
+| PMCC + short puts | +125% / 41.9 | **+89% / 47.6** | 82% / 0.40 |
 | PMCC | +117% / 42.0 | **+83% / 47.8** | 81% / 0.39 |
 | **Short-put** | +106% / 29.4 | **+83% / 30.9** | 64% / 0.24 |
-| Covered stock | +132% / 45.0 | **+100% / 50.1** | 64% / 0.37 |
+| Covered stock | +133% / 45.0 | **+101% / 50.1** | 64% / 0.37 |
 
 ### Hand-picked high-vol basket (19 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+138% / 71.3* | — | 100% / 1.00 |
 | *Cash (engine)* | *+267% / 42.4* | — | 83% / 0.38 |
-| PMCC + short puts | +164% / 32.4 | **+130% / 36.6** | 79% / 0.38 |
+| PMCC + short puts | +171% / 32.4 | **+137% / 36.5** | 79% / 0.38 |
 | PMCC | +165% / 32.8 | **+133% / 37.0** | 78% / 0.36 |
 | **Short-put** | +126% / 24.4 | **+112% / 25.5** | 60% / 0.24 |
-| Covered stock | +160% / 32.9 | **+133% / 36.0** | 61% / 0.34 |
+| Covered stock | +163% / 33.1 | **+135% / 36.1** | 61% / 0.35 |
 
 <details>
 <summary><b>The same four tables scored out-of-sample (last 30% of each name's history)</b> — the honest expectation, on data the parameters never saw</summary>
@@ -289,7 +312,7 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 |---|---|---|---|
 | *Buy & hold* | *+37% / 38.9* | — | 100% / 1.00 |
 | *Cash (engine)* | *+19% / 21.6* | — | 85% / 0.39 |
-| PMCC + short puts | +31% / 20.9 | **+24% / 22.5** | 84% / 0.40 |
+| PMCC + short puts | +30% / 20.9 | **+23% / 22.5** | 84% / 0.39 |
 | PMCC | +28% / 20.8 | **+21% / 22.4** | 84% / 0.38 |
 | **Short-put** | +24% / 16.2 | **+20% / 16.9** | 65% / 0.25 |
 | Covered stock | +28% / 22.4 | **+22% / 23.9** | 65% / 0.35 |
@@ -299,30 +322,30 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 |---|---|---|---|
 | *Buy & hold* | *−26% / 48.4* | — | 100% / 1.00 |
 | *Cash (engine)* | *−8% / 26.0* | — | 84% / 0.36 |
-| PMCC + short puts | −1% / 21.2 | **−5% / 23.0** | 83% / 0.38 |
+| PMCC + short puts | −1% / 21.3 | **−5% / 23.0** | 83% / 0.38 |
 | PMCC | −3% / 21.0 | **−7% / 22.7** | 82% / 0.36 |
 | **Short-put** | +3% / 17.4 | **+1% / 18.2** | 62% / 0.25 |
-| Covered stock | −3% / 22.9 | **−7% / 24.6** | 62% / 0.33 |
+| Covered stock | −2% / 23.0 | **−6% / 24.6** | 62% / 0.33 |
 
 ### Violent (208 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+143% / 60.1* | — | 100% / 1.00 |
 | *Cash (engine)* | *+90% / 38.9* | — | 88% / 0.50 |
-| PMCC + short puts | +120% / 44.9 | **+103% / 47.5** | 88% / 0.51 |
+| PMCC + short puts | +109% / 44.3 | **+91% / 47.0** | 88% / 0.50 |
 | PMCC | +104% / 44.6 | **+87% / 47.2** | 88% / 0.48 |
 | **Short-put** | +76% / 28.6 | **+63% / 29.6** | 73% / 0.28 |
-| Covered stock | +117% / 44.8 | **+104% / 47.0** | 73% / 0.48 |
+| Covered stock | +117% / 44.8 | **+103% / 46.9** | 73% / 0.48 |
 
 ### Hand-picked high-vol basket (19 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+138% / 71.3* | — | 100% / 1.00 |
 | *Cash (engine)* | *+267% / 42.4* | — | 83% / 0.38 |
-| PMCC + short puts | +164% / 32.4 | **+130% / 36.6** | 79% / 0.38 |
+| PMCC + short puts | +171% / 32.4 | **+137% / 36.5** | 79% / 0.38 |
 | PMCC | +165% / 32.8 | **+133% / 37.0** | 78% / 0.36 |
 | **Short-put** | +126% / 24.4 | **+112% / 25.5** | 60% / 0.24 |
-| Covered stock | +160% / 32.9 | **+133% / 36.0** | 61% / 0.34 |
+| Covered stock | +163% / 33.1 | **+135% / 36.1** | 61% / 0.35 |
 
 </details>
 
@@ -354,7 +377,7 @@ Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC
 
 **In one line:** *a single cash-secured short put — one put at delta ≤ 0.50, ~14 DTE, rolled at expiry, never sold below a 0.20 target.* It leads the broad set (1.77 vs buy-&-hold's 1.21), the decliners, and — at under half the drawdown — edges even the violent cohort (2.75 vs 2.73), while carrying the shallowest drawdown of anything on the page in all four universes. On the concentrated high-flyer basket, though, no overlay beats simply running the engine on the underlying (Cash 5.85 vs the short-put's 4.58).
 
-**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, flat below a 0.20 target — hold-20 for option cores, close-immediately for stock) and with two model-honesty rules enforced — **all short calls covered 1:1 (no naked calls)** and the **short-put genuinely cash-secured (no put margin)** — the overlays beat buy-&-hold on return-per-drawdown in **three of the four universes**, losing only the violent cohort, where buy-&-hold's mean is carried by a handful of enormous winners no delta-capped structure can follow. The **single cash-secured short-put is the standout**: broad 1.63, decliners 0.46 (positive where the underlying loses 43%), violent 2.44, basket 4.42, always at the shallowest drawdown, and the most cost-stable because it trades one leg. It is also the **least-deployed** (~0.17–0.19 average exposure, in trade under half the bars) — most of the cushion comes from simply holding less, which is the honest way to read it. The **PMCC structures earn their keep on the broad set** (1.24 / 1.16, both ahead of buy-&-hold) but trail the plain engine on the basket — their delta caps bite hardest exactly where the underlying compounds fastest. Two things to keep honest: this rests on **near-mid execution**, and more importantly on the **14-DTE theta harvest whose front-week gamma / gap / assignment risk the close-to-close Black-Scholes model cannot see** — read the edge as a model ceiling, most trustworthy in the *drawdown reduction* it shows (consistent across every cohort and both windows) rather than in the return figures. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
+**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, flat below a 0.20 target — hold-20 for option cores, close-immediately for stock) and with two model-honesty rules enforced — **all short calls covered 1:1 (no naked calls)** and the **short-put genuinely cash-secured (no put margin)** — the overlays beat buy-&-hold on return-per-drawdown in **three of the four universes**, losing only the violent cohort, where buy-&-hold's mean is carried by a handful of enormous winners no delta-capped structure can follow. The **single cash-secured short-put is the standout** *(subject to the vol-risk-premium caveat at the top of this section — this ranking inverts if options are not systematically rich)*: broad 1.63, decliners 0.46 (positive where the underlying loses 43%), violent 2.44, basket 4.42, always at the shallowest drawdown, and the most cost-stable because it trades one leg. It is also the **least-deployed** (~0.17–0.19 average exposure, in trade under half the bars) — most of the cushion comes from simply holding less, which is the honest way to read it. The **PMCC structures earn their keep on the broad set** (1.24 / 1.16, both ahead of buy-&-hold) but trail the plain engine on the basket — their delta caps bite hardest exactly where the underlying compounds fastest. Two things to keep honest: this rests on **near-mid execution**, and more importantly on the **14-DTE theta harvest whose front-week gamma / gap / assignment risk the close-to-close Black-Scholes model cannot see** — read the edge as a model ceiling, most trustworthy in the *drawdown reduction* it shows (consistent across every cohort and both windows) rather than in the return figures. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
 

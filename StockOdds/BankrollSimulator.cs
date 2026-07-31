@@ -83,6 +83,9 @@ namespace StockOdds
 		public List<double>   Positions { get; set; } = new();
 		// RESEARCH diagnostic: was the decision close at/above its KAMA on that bar?
 		public List<bool>     KamaAbove { get; set; } = new();
+		// RESEARCH diagnostic: SIGNED distance of the decision close from its KAMA, in % ((close-kama)/kama*100).
+		// Exported rather than recomputed in a harness so a study cannot drift from the engine's own KAMA.
+		public List<double>   KamaDist { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -129,6 +132,7 @@ namespace StockOdds
 		// all-Bull window gives dynBias (effLongBias + 1) and all-Bear gives -1. dynBias is
 		// then EMA-smoothed before skewing. Unclamped. effLongBias is the per-candle dynamic
 		// bias computed below. Applies to the smoothed exposure, not the per-candle target.
+		public static bool   BiasEnabled  = true;   // RESEARCH: false drops the LT-direction skew (see StepExposure)
 		public static int    BiasPeriod    = 15;
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 150;
@@ -194,6 +198,19 @@ namespace StockOdds
 		// out here. HvTrimSlope = 0 disables (fixed N everywhere).
 		public static double HvTrimSlope = 0.6;   // N_eff ramps at this * rolling HV%; caps at RsiMultNumerator
 		public static double HvTrimFloor = 8.0;   // hardest trim (floor on N_eff) for the quietest candles
+		// RESEARCH ONLY (default off): ER-BANDED numerator cap. When RsiErBandN > 0, bars whose Kaufman efficiency
+		// ratio (curEr, over PersistWindow = 63) falls in [RsiErBandLo, RsiErBandHi) use RsiErBandN as the cap
+		// instead of RsiMultNumerator -- i.e. those bars can be selectively "uncapped" (N = 100 leaves the cap
+		// inert below HV 167, so the trim becomes purely slope-driven there). Note the cap only BINDS at all when
+		// 0.6 * HV exceeds the cap, so a band populated by low-HV bars is a no-op no matter what N is set to.
+		public static double RsiErBandN  = 0.0;
+		public static double RsiErBandLo = 0.0;
+		public static double RsiErBandHi = 1.0;
+		// RESEARCH ONLY (default off): the same idea banded by SIGNED KAMA DISTANCE, (close-kama)/kama*100.
+		// Applied after the ER band, so if both are set the KAMA band wins on overlapping bars.
+		public static double RsiKamaBandN  = 0.0;
+		public static double RsiKamaBandLo = -1e9;
+		public static double RsiKamaBandHi =  1e9;
 		// Final-position EMA smoothing (DEFAULT ON, period 5). Smooths the FINAL traded position -- after clamp,
 		// RSI trim, accurate-sizing, and the out-of-region override -- so the RSI-2 single-bar chatter (spike-down,
 		// snap-back) is averaged out. Unlike lowering the RSI numerator (which cuts drawdown by holding LESS), this
@@ -446,6 +463,7 @@ namespace StockOdds
 			// over the exact same bars so the two ratios are comparable.
 			var positions = new List<double>();
 			var kamaAbove = new List<bool>();
+			var kamaDist = new List<double>();
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
@@ -580,7 +598,9 @@ namespace StockOdds
 				double dynBias = biasSum / BiasPeriod;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
-				double adjEma = Math.Abs(ema) * biasEma + ema;
+				// RESEARCH: BiasEnabled = false removes the LT-direction skew entirely, so a layer-by-layer
+				// ablation can start from the bare (LT,ST) map. Default true = shipped.
+				double adjEma = BiasEnabled ? Math.Abs(ema) * biasEma + ema : ema;
 				// Normal drift-band rebalance.
 				if (double.IsNaN(held) || Math.Abs(held - adjEma) > driftBand)
 					held = adjEma;
@@ -651,9 +671,16 @@ namespace StockOdds
 						{
 							double rs = rsiAvgLoss > 1e-9 ? rsiAvgGain / rsiAvgLoss : 100.0;
 							double rsi = 100.0 - 100.0 / (1.0 + rs);
+							double nCap = (RsiErBandN > 0 && curEr >= RsiErBandLo && curEr < RsiErBandHi)
+								? RsiErBandN : RsiMultNumerator;
+							if (RsiKamaBandN > 0 && !double.IsNaN(kama) && kama > 0)
+							{
+								double kdPct = (prev.Close - kama) / kama * 100.0;
+								if (kdPct >= RsiKamaBandLo && kdPct < RsiKamaBandHi) nCap = RsiKamaBandN;
+							}
 							double numer = HvTrimSlope > 0
-								? Math.Min(RsiMultNumerator, Math.Max(HvTrimFloor, HvTrimSlope * curHvPct))
-								: RsiMultNumerator;
+								? Math.Min(nCap, Math.Max(HvTrimFloor, HvTrimSlope * curHvPct))
+								: nCap;
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
@@ -717,6 +744,7 @@ namespace StockOdds
 				returnDates.Add(bar.Date);
 				positions.Add(position);
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
+				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -751,6 +779,7 @@ namespace StockOdds
 			result.ReturnDates = returnDates;
 			result.Positions = positions;
 			result.KamaAbove = kamaAbove;
+			result.KamaDist = kamaDist;
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
 			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
 			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);
