@@ -282,7 +282,19 @@ namespace StockOdds
 		// which lands in the same place once K is tuned. DdRatioMode = 0 turns the scaler off.
 		public static int    DdWindow      = 60;   // long drawdown window (bars)
 		public static int    DdShortWindow = 30;   // short drawdown window (bars)
-		public static int    DdRatioMode = 1;      // 1 = ratio form (shipped), 2 = recovered-fraction form, 0 = off
+		// DEFAULT OFF (0). The ratio form is DEPTH-BLIND and was disabled on 2026-07-31 after a live-chart
+		// report. dd30 == dd60 whenever the 60-bar peak falls inside the last 30 bars -- the normal state in any
+		// uptrend -- and then the ratio is exactly 1 and the multiplier pins to K, the HARDEST de-lever, no
+		// matter how shallow the pullback. Worked example: IREN 2025-09-08 had run 16.58 -> 26.19 (+58%) over
+		// the window and sat 10% below its peak; it was cut to 0.50x, identically to a name 40% down and still
+		// falling. Measured over 208k scored bars, 54% of all bars have the peak inside the last 30 bars, ~41%
+		// of ALL bars take the maximum cut, and 26.5% of all bars are UPTREND bars (close > 50-bar SMA) being
+		// halved at a median depth of just 6.3%. The "de-levers while still making new short-window lows"
+		// rationale was never true of this expression -- dd60/dd30 encodes PEAK AGE, and being scale-free it
+		// discards depth entirely, which is the one thing that should govern how hard to de-lever.
+		// Set to 1 to restore the old behaviour, or 2 for the recovered-fraction form. A depth-aware
+		// replacement is the open work item; see the README.
+		public static int    DdRatioMode = 0;      // 0 = off (default), 1 = ratio form, 2 = recovered-fraction form
 		public static double DdRatioK    = 0.5;
 		public static double DdRatioMin  = 0.5;    // hardest de-lever (still making new short-window lows)
 		public static double DdRatioMax  = 1.5;    // ceiling on the multiplier (recovered off an older low)
