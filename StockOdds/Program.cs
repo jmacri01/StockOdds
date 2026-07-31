@@ -139,7 +139,9 @@ class Program
 		// 0.5x at K=0.5), large once it has climbed off an older low (up to the 1.5x cap).
 		BankrollSimulator.DdWindow      = 60;             // long drawdown window
 		BankrollSimulator.DdShortWindow = 30;             // short drawdown window
-		BankrollSimulator.DdRatioMode = 1;                // 1 = ratio form (shipped); 2 = recovered-fraction form; 0 = off
+		BankrollSimulator.DdRatioMode = 0;                // OFF by default: the ratio is depth-blind (dd30 == dd60 whenever
+		                                                  // the peak is within 30 bars, i.e. all uptrends), so it cut shallow
+		                                                  // pullbacks as hard as collapses. 1 restores it, 2 = recovered-fraction
 		BankrollSimulator.DdRatioK    = 0.5;              // participation dial: 0.4 more defensive, 0.75 keeps more upside
 		BankrollSimulator.DdRatioMin  = 0.5;              // hardest de-lever (the workhorse half)
 		BankrollSimulator.DdRatioMax  = 1.5;              // multiplier ceiling (barely matters; 1.5 ~ 2.0)

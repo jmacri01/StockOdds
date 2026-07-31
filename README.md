@@ -4,7 +4,7 @@
 
 > Companion write-up (the origin of the trend model): [Three-Level Trend Following](https://josephmacri2.substack.com/p/three-level-trend-following-options)
 
-This is **not an alpha engine** and doesn't pretend to be. It's an exposure-control overlay driven by a light, deliberately simple trim (an HV-conditioned overbought trim, a drawdown-recovery scaler, and final-position smoothing): across 2,289 US names **Deploy/Hold edge buy-&-hold on risk-adjusted return (Sharpe 0.58 / 0.55 vs 0.46) at roughly two-thirds the drawdown** (25% / 27% vs 39%), and the default **Cash** mode trades return for the shallowest drawdown of the three (**17% vs 39%**). On the stocks that hurt most — falling, or ripping higher with gut-wrenching pullbacks — it takes far less pain than buy-&-hold. No shorting: a bearish signal means *cash*, never short.
+This is **not an alpha engine** and doesn't pretend to be. It's an exposure-control overlay driven by a light, deliberately simple trim (an HV-conditioned overbought trim plus final-position smoothing): across 2,289 US names **Deploy/Hold match buy-&-hold's return (+36% vs +37%) at a better Sharpe (0.57 / 0.53 vs 0.46) and a lower drawdown** (33% / 35% vs 39%), and the default **Cash** mode trades return for the shallowest drawdown of the three (**21% vs 39%**). On the stocks that hurt most — falling, or ripping higher with gut-wrenching pullbacks — it takes far less pain than buy-&-hold. No shorting: a bearish signal means *cash*, never short.
 
 ---
 
@@ -14,30 +14,30 @@ The proof is out-of-sample. Every table below is scored on the **last 30% of eac
 >
 > **Span convention:** the strategy can't trade until its state machine has warmed up (2-12 bars), so buy-&-hold is measured over the **identical bar span** as the strategy rather than from the very first bar — an apples-to-apples comparison. The console app's own `BuyHoldReturnPct` starts one bar in, so for names with a longer warmup its buy-&-hold figure differs slightly from these tables (materially only on the wildest names: GRPN −23% vs −1%, BE +871% vs +797%).
 
-> **Regenerated 2026-07-31** on the shipped config: extension cap, **KAMA-distance smoothing**, the flat long-bias bear, and the **drawdown-recovery scaler** — exposure multiplied by `clamp(0.5 × dd60/dd30, 0.5, 1.5)` whenever *both* the 30- and 60-bar drawdowns exceed 1%, so it de-levers a name still printing new short-window lows and levers one that has climbed off an older low (see [step 8](#5-from-target-to-position-the-overlay)). All tables are **means across names** (see above). On this basis **Deploy essentially matches buy-&-hold's return-per-drawdown (0.97 vs 0.95) at a much better Sharpe (0.58 vs 0.46) and 37% less drawdown**, and the picture on the *falling* cohort is the clearest win of all: **−5% at a 21% drawdown against −26% at 48%**. The violent cohort is where buy-&-hold is hardest to beat on means — its +143% mean return reflects a few enormous winners — so there the engine is a drawdown tool (Cash 30% vs 60%) rather than a return improvement.
+> **Regenerated 2026-07-31.** Shipped config: extension cap, **KAMA-distance smoothing**, and the flat long-bias bear. The **drawdown-recovery scaler is now DEFAULT OFF** (`DdRatioMode = 0`) — it was shipped on 2026-07-30 and disabled a day later when a live chart showed it halving exposure in clean uptrends. Its `dd60/dd30` ratio is **depth-blind**: dd30 equals dd60 whenever the 60-bar peak falls inside the last 30 bars, which is the normal state in *any* uptrend, so a 10% pullback was cut exactly as hard as a 40% collapse (worked example and measurements in [step 8](#5-from-target-to-position-the-overlay)). Every table below is on the shipped, scaler-off config, and reports **means across names** — see the note above on why, and on why a mean of per-name drawdowns is not a portfolio drawdown.
 
 ### The whole universe (2289 names)
 | Mode | OOS Sharpe | OOS Max DD | OOS Return |
 |---|---:|---:|---:|
-| **Deploy** | 0.58 | 24.7% | +24% |
-| **Cash** *(default)* | 0.37 | **16.7%** | +13% |
-| **Hold** | 0.55 | 27.0% | +25% |
+| **Deploy** | 0.57 | 33.2% | +36% |
+| **Cash** *(default)* | 0.36 | **21.2%** | +18% |
+| **Hold** | 0.53 | 34.7% | +36% |
 | *Buy & hold* | *0.46* | *38.9%* | *+37%* |
 
 ### When the stock is falling (834 names)
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Deploy** | −9% | 31.7% | -0.08 |
-| **Cash** *(default)* | −5% | **20.7%** | -0.21 |
-| **Hold** | −11% | 34.9% | -0.11 |
+| **Deploy** | −16% | 40.9% | -0.12 |
+| **Cash** *(default)* | −8% | **25.2%** | -0.27 |
+| **Hold** | −19% | 43.0% | -0.17 |
 | *Buy & hold* | *−26%* | *48.4%* | *-0.27* |
 
 ### When the stock rips — but violently (208 names)
 | Mode | OOS Return | OOS Max DD | OOS Sharpe |
 |---|---:|---:|---:|
-| **Deploy** | +97% | 43.2% | 0.94 |
-| **Cash** *(default)* | +66% | **29.6%** | 0.87 |
-| **Hold** | +108% | 44.3% | 0.96 |
+| **Deploy** | +128% | 57.7% | 0.90 |
+| **Cash** *(default)* | +86% | **38.8%** | 0.85 |
+| **Hold** | +140% | 57.5% | 0.92 |
 | *Buy & hold* | *+143%* | *60.1%* | *0.93* |
 
 <details>
@@ -47,25 +47,23 @@ The tables above are the honest out-of-sample proof. These cover the **whole win
 
 | Mode | Sharpe | Max DD | Return |
 |---|---:|---:|---:|
-| **Cash** *(default)* | 0.24 | **27.9%** | +25% |
-| **Hold** | 0.39 | 42.2% | +54% |
+| **Cash** *(default)* | 0.21 | **34.2%** | +32% |
+| **Hold** | 0.37 | 52.1% | +73% |
 | *Buy & hold* | *0.33* | *58.6%* | *+71%* |
 
-*Whole universe, 2,289 names. Cash is shallower than buy-&-hold on 2,286 of them.*
+*Whole universe, 2,289 names.*
 
 | Falling (906 names) | Return | Max DD | Sharpe |
 |---|---:|---:|---:|
-| **Cash** *(default)* | +5% | **35.4%** | -0.00 |
-| **Hold** | −6% | 53.6% | 0.07 |
+| **Cash** *(default)* | −1% | **42.7%** | -0.05 |
+| **Hold** | −26% | 64.7% | 0.03 |
 | *Buy & hold* | *−43%* | *71.6%* | *-0.04* |
 
 | Violent (595 names) | Return | Max DD | Sharpe |
 |---|---:|---:|---:|
-| **Cash** *(default)* | +63% | **33.3%** | 0.43 |
-| **Hold** | +128% | 49.2% | 0.55 |
+| **Cash** *(default)* | +89% | **40.8%** | 0.43 |
+| **Hold** | +180% | 60.5% | 0.56 |
 | *Buy & hold* | *+182%* | *66.6%* | *0.55* |
-
-*Cash is shallower than buy-&-hold on 906/906 falling names and 593/595 violent ones.*
 
 </details>
 
@@ -84,32 +82,32 @@ The single-name backtest **understates Cash** — it sits in cash instead of red
 ### On a hand-picked high-vol basket
 | Symbol | HV | Cash Max DD | B&H Max DD | Cash Return | B&H Return |
 |---|---:|---:|---:|---:|---:|
-| KO | 17 | **4%** | 21% | +6% | +58% |
-| ^GSPC | 17 | **6%** | 25% | +21% | +68% |
-| AAPL | 28 | **9%** | 33% | +33% | +124% |
-| MSFT | 28 | **13%** | 38% | +32% | +56% |
-| NOK | 38 | **26%** | 53% | +35% | +49% |
-| NVDA | 51 | **30%** | 66% | +146% | +862% |
-| AMD | 56 | **35%** | 65% | +136% | +331% |
-| TSLA | 60 | **21%** | 74% | +152% | +39% |
-| ATAI | 85 | **51%** | 94% | +18% | −51% |
-| COIN | 85 | **55%** | 91% | +16% | −36% |
-| BE | 86 | **33%** | 76% | +651% | +797% |
-| FIG | 89 | **41%** | 81% | −30% | −70% |
-| MSTR | 90 | **46%** | 84% | +290% | +46% |
-| GRPN | 90 | **47%** | 90% | +66% | −1% |
-| SMR | 99 | **47%** | 87% | +287% | −15% |
-| ASTS | 104 | **35%** | 86% | +528% | +457% |
-| OPEN | 109 | **52%** | 98% | +102% | −74% |
-| IREN | 116 | **57%** | 95% | +723% | +82% |
-| ASST | 199 | **79%** | 97% | +650% | −95% |
+| KO | 17 | **5%** | 21% | +6% | +58% |
+| ^GSPC | 17 | **6%** | 25% | +26% | +68% |
+| AAPL | 28 | **12%** | 33% | +38% | +124% |
+| MSFT | 28 | **17%** | 38% | +39% | +56% |
+| NOK | 38 | **29%** | 53% | +60% | +49% |
+| NVDA | 51 | **38%** | 66% | +296% | +862% |
+| AMD | 56 | **39%** | 65% | +202% | +331% |
+| TSLA | 60 | **28%** | 74% | +69% | +39% |
+| ATAI | 85 | **58%** | 94% | +47% | −51% |
+| COIN | 85 | **66%** | 91% | −6% | −36% |
+| BE | 86 | **48%** | 76% | +1110% | +797% |
+| FIG | 89 | **33%** | 81% | −18% | −70% |
+| MSTR | 90 | **52%** | 84% | +273% | +46% |
+| GRPN | 90 | **49%** | 90% | +73% | −1% |
+| SMR | 99 | **49%** | 87% | +390% | −15% |
+| ASTS | 104 | **46%** | 86% | +694% | +457% |
+| OPEN | 109 | **70%** | 98% | +103% | −74% |
+| IREN | 116 | **51%** | 95% | +1050% | +82% |
+| ASST | 199 | **87%** | 97% | +126% | −95% |
 
-Cash cuts the drawdown on **all 19 names** — often by more than half (^GSPC 25%→6%, KO 21%→4%, TSLA 74%→22%, ASTS 86%→35%, BE 76%→33%) — at a **mean drawdown of 36% against buy-&-hold's 71%**, while **out-returning it on mean return (+203% vs +138%)**. The showcases are the names buy-&-hold ruins: **ASST +739% where B&H lost 95%**, OPEN +141% vs −74%, SMR +247% vs −15%, MSTR +260% vs +46%, IREN +715% vs +82%. The bill comes due on clean, relentless trends, where every layer of trimming costs participation — **NVDA +133% against B&H's +862%**, AMD +142% vs +331%, AAPL +31% vs +124%. This is the one place the engine beats buy-&-hold on *return* as well as drawdown, and it is also the **most in-sample** part of the study (survivor-heavy, hand-picked, and it includes the 2022 bear the strategy dodges) — the broad tables above are the honest expectation.
+Cash cuts the drawdown on **all 19 names** — often by more than half — at a **mean drawdown of 41% against buy-&-hold's 71%**, while **out-returning it on mean return (+241% vs +138%)**. The showcases are the names buy-&-hold ruins (ASST, OPEN, SMR, MSTR all far ahead); the bill comes due on clean, relentless trends, where every layer of trimming costs participation. This is the one place the engine beats buy-&-hold on *return* as well as drawdown, and it is also the **most in-sample** part of the study (survivor-heavy, hand-picked, and it includes the 2022 bear the strategy dodges) — the broad tables above are the honest expectation.
 
 ### The trade-off, honestly
 
-- **It is a risk overlay, not alpha.** Deploy gives up return (+24% vs buy-&-hold's +37%) but cuts drawdown far more (25% vs 39%), landing at the same return-per-drawdown (0.97 vs 0.95) with a clearly better Sharpe (0.58 vs 0.46); the default Cash mode trades much more return for the shallowest drawdown of all (17%). **On means the return outperformance disappears** — what survives is the drawdown reduction and the screening. The parts that **generalize out-of-sample are drawdown reduction and screening** — real return outperformance is modest and should not be relied on.
-- **The drawdown cut is the durable edge.** The **HV-conditioned trim** (with the extension cap, KAMA-distance smoothing and the drawdown-recovery scaler) cuts drawdown in *every* mode (Deploy 25% / Cash 17% / Hold 27% vs B&H 39%). Cash is the low-drawdown dial — 17%, and shallower than buy-&-hold on **2,283 of 2,289 names (99.7%)**; Deploy/Hold are the return/Sharpe dial. Raising the numerator cap lightens the trim; lowering it (or `RsiOverlayPeriod`) tightens it.
+- **It is a risk overlay, not alpha.** Deploy matches buy-&-hold's return (+36% vs +37%) at a lower drawdown (33% vs 39%) and a clearly better Sharpe (0.57 vs 0.46); the default Cash mode trades much more return for the shallowest drawdown of all (21%). **On means there is no meaningful return outperformance** — what survives is the drawdown reduction and the screening. The parts that **generalize out-of-sample are drawdown reduction and screening** — real return outperformance is modest and should not be relied on.
+- **The drawdown cut is the durable edge.** The **HV-conditioned trim** (with the extension cap and KAMA-distance smoothing) cuts drawdown in *every* mode (Deploy 33% / Cash 21% / Hold 35% vs B&H 39%). Cash is the low-drawdown dial — 21%, and shallower than buy-&-hold on **2,245 of 2,289 names (98%)**; Deploy/Hold are the return/Sharpe dial. Raising the numerator cap lightens the trim; lowering it (or `RsiOverlayPeriod`) tightens it.
 - **A regime caveat.** The overbought trim is a short-horizon mean-reversion tool tuned on the 2023–26 (mean-reverting) window. The HV-conditioning concentrates it on the low-vol candles (where the mean-reversion is real) and caps it on the volatile ones, so it leans on that regime less than a hard global trim would — the main drivers of returns are still the core trend signal, the 1.5× lean, and cash-out-of-region.
 
 ---
@@ -175,7 +173,7 @@ That raw target is then:
 5. scaled by an **HV-conditioned RSI overbought-trim overlay** (position × min(N_eff / RSI(2), 1) — trims exposure when overbought, never levers. A short **RSI-2** (Connors-style) is best. The effective numerator is scaled *down* by the candle's live rolling HV: **N_eff = min(N, max(floor, slope × HV))** with N=40 (cap), slope=0.6, floor=8 — so the trim is **harder on low-vol candles** (their overbought spikes reliably mean-revert → cut them) and **relaxes up to the N cap as HV rises** (letting volatile trends run). This was the one conditioning that survived: it cuts drawdown in every mode with return ~flat, replicated 4/4 across disjoint random-500 OOS samples. A "let high-vol run" upside also showed up but was separated out as **beta** (return *and* drawdown rose together on the survivor names, not a real signal, and not rescued by trend-persistence) — so N_eff is deliberately *capped* at N, never lightened past it. `HvTrimSlope = 0` reverts to a fixed N; `RsiOverlayPeriod = 0` turns the trim off. Raising N raises the ceiling everywhere),
 6. overridden, if the **raw exposure signal turns bearish** (out of region), per the chosen **[mode](#the-three-modes)** — cash by default,
 7. **capped when acutely extended *and* short-term momentum has cracked** — if the close sits more than **55%** above its **50-bar SMA** (a parabolic blow-off) **and the candle is not ST-Bull**, exposure is pinned to a **60%** ceiling. This is a `min()`: it only lowers the *top*, never raises exposure and never forces a sell — it stops the engine *chasing the vertical tail* while staying in the trend. The extended tail carries near-zero forward return but ~2× the forward drawdown on the *reverting* high-vol cohort, so capping it is **efficiency** (return up *and* drawdown down — validated 4/4 in Deploy across disjoint random-500 OOS samples and strongest on the violent-rip cohort), not a de-risk. The **ST-Bull exclusion** is what makes it safe: a per-state decomposition showed the entire give-back lives in the *non*-ST-Bull states — a bull run's first crack while extended (the state machine's `BullNeutral`) — while the still-pushing ST-Bull bars are genuine continuation, so capping them only forfeits winner upside (an all-bars cap measurably hurts the leveraged winners; the gate erases that cost). A 50-bar MA isolates *acute* spikes; a slower MA flags sustained trends and caps genuine winners. `ExtCapPct = 0` turns it off.
-8. **scaled by where in a drawdown price sits** — two trailing drawdowns are measured against the close's own rolling highs: `dd60` from the 60-bar high and `dd30` from the 30-bar high. A 60-bar high is always at least a 30-bar high, so **`dd60 >= dd30` always** and their ratio is a pure *position-in-the-drawdown* reading rather than a depth reading. Exposure is multiplied by `clamp(K x dd60/dd30, 0.5, 1.5)` with **K = 0.5**, so a name still printing new 30-bar lows (`dd30 ~ dd60`) scales toward **0.5x** while one that has climbed well off an older low (`dd30 << dd60`) scales up to the **1.5x** ceiling. **It stays neutral unless BOTH drawdowns exceed 1%** (`DdRatioMinDd`) — a necessary guard, because with no drawdown `dd60 → 0` drives the raw ratio to 0, which the clamp floors at the *minimum*: without it the **hardest de-lever fired at a fresh high**, cutting 11% of all bars where there was nothing to protect against (19.5% of bars sit within 2% of the 60-bar high and 57.7% of those were being cut). Adding the guard is free-to-positive — broad ret/DD 0.380 → 0.376 and Sharpe 0.40 unchanged, while max drawdown improves 14.1 → 13.9, the violent cohort 1.64 → 1.67, basket Sharpe 0.73 → 0.78 with 13 of 19 basket names better, and the in-sample head is matched. Do **not** raise it far: requiring a *substantial* drawdown walks the feature back to a plain haircut (at 3% broad Sharpe falls to 0.36, below a flat-haircut control's 0.37; by 10% it is indistinguishable from flat ×0.9). **Read honestly, this layer is a graded haircut with a recovery tilt on top, not a pure recovery signal: 73% of bars are de-levered, 19% levered, 8% untouched.** The tilt is nonetheless real — at matched mean exposure (~0.28) it beats a flat haircut on Sharpe, 0.40 vs 0.37. A joint (dd30 x dd60) map over 2.6M bar-observations is what motivates it: forward return tracks **recovery, not depth** — at `dd30` 0-2% mean fwd-20 runs +0.42% -> +14.4% as `dd60` deepens, while at `dd60` 30-45% it *falls* +5.1% -> +1.3% as `dd30` deepens. The still-falling diagonal holds the only negative median forward return in the whole map (30-40%: −1.21%, up-rate 47.0%), and the shallow at-the-highs corner — ~30% of all bars — is the single weakest cell (median fwd-20 −0.04%, up-rate 49.4%). *(The validation figures in this paragraph are medians across names, as measured in the parameter sweeps — only the results tables above were switched to means.)* **Two controls establish it is a signal and not merely a smaller position:** a *flat* multiplier that ignores both drawdowns raises return-per-drawdown monotonically (to 0.398 at ×0.4) while leaving Sharpe pinned at exactly 0.38 — so return/drawdown cannot be compared across configs with different exposure, and at matched exposure (~0.27) the flat control scores 0.38 against this scaler's 0.40-0.43; and **inverting** the tilt (levering the still-falling bars) fails on all four samples (Sharpe 0.29-0.32) at unchanged exposure. It also survives a walk-forward — chosen on the first 70% of history it selects the same region and still beats the baseline 4/4 on the untouched tail — and it is **additive to both the RSI trim and the KAMA smoother** (ablating either leaves it still adding value). `K` is the participation dial (0.4 defensive, 0.75 keeps more upside — a flat plateau, so a preference rather than a fit); the **lower clamp is the workhorse** and the upper barely matters (1.5 ~ 2.0). `DdRatioGate` would restrict it to a minimum `dd60`, but gating it measurably **hurt** — de-levering near the highs is a large part of the edge. Windows **30/60** ship because they are best on the concentrated high-vol basket; 15/45 and 20/60 score slightly higher broad but weaker there, and every long pair (45/90, 45/120, 60/120) fails outright. `DdRatioMode = 0` turns it off.
+8. *(available but **DEFAULT OFF** — `DdRatioMode = 0`)* **a drawdown-recovery scaler**: two trailing drawdowns of the close, `dd60` from the 60-bar high and `dd30` from the 30-bar high, with exposure multiplied by `clamp(K × dd60/dd30, 0.5, 1.5)`. It shipped on 2026-07-30 and was **disabled the next day**, because the ratio is **depth-blind**. The algebra: `dd30 == dd60` exactly when `hi30 == hi60`, i.e. **whenever the 60-bar peak falls inside the last 30 bars** — the normal state in *any* uptrend — and then the ratio is 1 and the multiplier pins to `K`, the hardest de-lever, *regardless of how shallow the pullback is*. Worked example: **IREN 2025-09-08** had run 16.58 → 26.19 (**+58%**) across the window and sat 10% below its peak; it was cut to **0.50×**, identically to a name 40% down and still falling. Measured across 208,000 scored bars: **54% of all bars** have the peak inside the last 30 bars, **~41% of all bars** take the maximum cut, and **26.5% of all bars are uptrend bars** (close above the 50-bar SMA) being halved at a median depth of just **6.3%**. The original rationale — "de-levers while still making new short-window lows" — was never what the expression computed: `dd60/dd30` encodes **peak age**, and being scale-free it discards depth, which is the one thing that should govern how hard to de-lever. The joint (dd30 × dd60) map that motivated it still stands as a *measurement* (forward return tracks recovery off an older low, not depth), but the ratio was the wrong encoder of it. **Open work item:** a depth-aware replacement that de-levers on how far price is down *now* and levers on the recovered gap in points, re-derived from a corrected trailing-drawdown map. `DdRatioMode = 1` restores the old behaviour.
 9. and finally **EMA-smoothed** as a *final position* — averaging out the RSI-2 single-bar chatter. Unlike a harder trim (which cuts drawdown by holding *less*), this cuts it by holding *steadier*, so it preserves upside participation. The base period is **P5**, but the smoothing gets **heavier the further price sits *below* its Kaufman adaptive MA (KAMA)** and stays light at/above it. A name pulling back below its KAMA chatters and heavy smoothing is *efficiency* (return up **and** drawdown down); a name at/above its KAMA is *trending*, so it stays responsive at P5 and participation is preserved (a flat P50 would crater the rip). The period is one continuous ramp — `below = max(0, (kama − close) / kama)`, then `smoothPer = clamp(5 + KamaSmoothSlope · below · 50, 5, 50)` with **slope 4** — so it sits at the P5 floor at/above the KAMA and rises smoothly toward the 50-bar ceiling the deeper the pullback (saturating around ~22% below). The KAMA itself adapts by the same rolling price efficiency-ratio the engine already computes (fast 2 / slow 30). This **replaced** the older HV+ER "corner" smoother (a gated, chop-duration-ramped taper): one continuous rule, no gate, it **matches the corner on the broad OOS universe** (4-sample median return-per-drawdown 0.31 vs 0.29), **beats it on the violent-rip cohort**, **cuts drawdown**, and **wins 14 of 18 basket names over full history** — at the cost of giving back some explosive V-recovery upside on the wildest names (IREN, ASST). A distance *cap* and an *ER gate* were both tried as guards on that give-back and **both degraded the broad OOS without fixing it** — the benefit and the cost share the same trigger (the deep-below-KAMA smoothing that rescues a recovering pullback is the same behavior that over-holds one that keeps falling), so neither shipped. `PositionSmoothPeriod = 0` turns smoothing off; `KamaSmooth = false` reverts to the flat P5 EMA; `KamaSmoothSlope` / `KamaSmoothMaxPeriod` set the ramp rate and ceiling.
 
 **Default parameters** (`Program.cs`): Exposure EMA `5`, Bias period `15`, Bias EMA `150`, Rebalance drift `30%`, exposure clamp `0–150%` (ceiling `200%`), RSI overlay period `2` / numerator cap `40` / HV-trim slope `0.6` / floor `8`, extension cap `55%` trigger / `60%` ceiling / `50`-bar MA, final-position smoothing `5` (KAMA-distance smoothing on: period ramps toward `50` the further price is below its KAMA — `clamp(5 + 4·max(0,(kama−close)/kama)·50, 5, 50)`, KAMA fast `2` / slow `30`). The long bias is dynamic by default. Smoothing knobs were validated as near-optimal and robust — see [Notes on tuning](#notes-on-tuning).
@@ -237,41 +235,41 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+71% / 58.6* | — | 100% / 1.00 |
-| *Cash (engine)* | *+25% / 27.9* | — | 77% / 0.26 |
-| PMCC + short puts | +58% / 23.2 | **+34% / 27.5** | 73% / 0.26 |
-| PMCC | +56% / 23.2 | **+32% / 27.6** | 72% / 0.25 |
-| **Short-put** | +41% / 19.3 | **+33% / 20.3** | 49% / 0.17 |
-| Covered stock | +51% / 25.3 | **+31% / 29.1** | 49% / 0.21 |
+| *Cash (engine)* | *+32% / 34.2* | — | 81% / 0.34 |
+| PMCC + short puts | +60% / 28.3 | **+39% / 32.6** | 79% / 0.34 |
+| PMCC | +55% / 28.5 | **+34% / 33.0** | 78% / 0.33 |
+| **Short-put** | +51% / 21.4 | **+40% / 22.6** | 58% / 0.22 |
+| Covered stock | +57% / 30.6 | **+37% / 34.9** | 58% / 0.30 |
 
 ### Decliners (906 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *−43% / 71.6* | — | 100% / 1.00 |
-| *Cash (engine)* | *+5% / 35.4* | — | 76% / 0.26 |
-| PMCC + short puts | +14% / 21.4 | **+1% / 25.0** | 72% / 0.27 |
-| PMCC | +12% / 21.3 | **−1% / 25.1** | 72% / 0.26 |
-| **Short-put** | +13% / 18.6 | **+9% / 19.7** | 48% / 0.18 |
-| Covered stock | +10% / 22.7 | **−1% / 25.7** | 48% / 0.22 |
+| *Cash (engine)* | *−1% / 42.7* | — | 80% / 0.34 |
+| PMCC + short puts | +5% / 27.1 | **−6% / 31.1** | 78% / 0.34 |
+| PMCC | +3% / 27.3 | **−9% / 31.5** | 77% / 0.33 |
+| **Short-put** | +14% / 20.8 | **+9% / 22.1** | 57% / 0.23 |
+| Covered stock | +3% / 28.4 | **−7% / 32.2** | 57% / 0.30 |
 
 ### Violent (595 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+182% / 66.6* | — | 100% / 1.00 |
-| *Cash (engine)* | *+63% / 33.3* | — | 79% / 0.29 |
-| PMCC + short puts | +117% / 35.0 | **+76% / 40.7** | 76% / 0.29 |
-| PMCC | +112% / 35.2 | **+72% / 41.1** | 75% / 0.29 |
-| **Short-put** | +85% / 26.5 | **+68% / 27.9** | 54% / 0.19 |
-| Covered stock | +115% / 37.6 | **+81% / 42.4** | 54% / 0.25 |
+| *Cash (engine)* | *+89% / 40.8* | — | 83% / 0.39 |
+| PMCC + short puts | +128% / 40.7 | **+96% / 46.1** | 82% / 0.39 |
+| PMCC | +117% / 41.4 | **+84% / 47.0** | 81% / 0.38 |
+| **Short-put** | +108% / 29.1 | **+84% / 30.5** | 63% / 0.24 |
+| Covered stock | +134% / 44.1 | **+101% / 49.2** | 63% / 0.36 |
 
 ### Hand-picked high-vol basket (19 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+138% / 71.3* | — | 100% / 1.00 |
-| *Cash (engine)* | *+203% / 36.1* | — | 79% / 0.29 |
-| PMCC + short puts | +159% / 29.3 | **+122% / 33.1** | 74% / 0.29 |
-| PMCC | +161% / 29.0 | **+125% / 33.0** | 73% / 0.28 |
-| **Short-put** | +113% / 21.4 | **+99% / 22.4** | 51% / 0.19 |
-| Covered stock | +142% / 29.8 | **+113% / 33.0** | 51% / 0.24 |
+| *Cash (engine)* | *+241% / 41.2* | — | 83% / 0.37 |
+| PMCC + short puts | +157% / 32.9 | **+123% / 36.9** | 79% / 0.37 |
+| PMCC | +161% / 32.7 | **+128% / 36.9** | 78% / 0.35 |
+| **Short-put** | +135% / 23.9 | **+115% / 25.1** | 59% / 0.23 |
+| Covered stock | +157% / 32.4 | **+131% / 35.4** | 59% / 0.33 |
 
 <details>
 <summary><b>The same four tables scored out-of-sample (last 30% of each name's history)</b> — the honest expectation, on data the parameters never saw</summary>
@@ -280,49 +278,49 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+37% / 38.9* | — | 100% / 1.00 |
-| *Cash (engine)* | *+13% / 16.7* | — | 81% / 0.28 |
-| PMCC + short puts | +28% / 16.8 | **+20% / 18.6** | 78% / 0.29 |
-| PMCC | +27% / 16.8 | **+19% / 18.5** | 78% / 0.28 |
-| **Short-put** | +19% / 14.0 | **+17% / 14.5** | 54% / 0.19 |
-| Covered stock | +23% / 17.8 | **+16% / 19.3** | 54% / 0.24 |
+| *Cash (engine)* | *+18% / 21.2* | — | 85% / 0.38 |
+| PMCC + short puts | +30% / 20.7 | **+23% / 22.3** | 83% / 0.38 |
+| PMCC | +27% / 20.6 | **+20% / 22.2** | 83% / 0.37 |
+| **Short-put** | +23% / 16.1 | **+20% / 16.7** | 64% / 0.25 |
+| Covered stock | +28% / 22.1 | **+21% / 23.6** | 64% / 0.34 |
 
 ### Decliners (834 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *−26% / 48.4* | — | 100% / 1.00 |
-| *Cash (engine)* | *−5% / 20.7* | — | 80% / 0.28 |
-| PMCC + short puts | +3% / 16.5 | **−2% / 18.2** | 77% / 0.29 |
-| PMCC | +2% / 16.5 | **−3% / 18.3** | 77% / 0.28 |
-| **Short-put** | +3% / 14.9 | **+2% / 15.5** | 52% / 0.19 |
-| Covered stock | +1% / 17.8 | **−3% / 19.3** | 52% / 0.23 |
+| *Cash (engine)* | *−8% / 25.2* | — | 83% / 0.35 |
+| PMCC + short puts | −2% / 20.8 | **−6% / 22.5** | 82% / 0.36 |
+| PMCC | −3% / 20.7 | **−7% / 22.4** | 82% / 0.34 |
+| **Short-put** | +3% / 17.1 | **+1% / 17.9** | 60% / 0.24 |
+| Covered stock | −2% / 22.2 | **−6% / 23.9** | 60% / 0.31 |
 
 ### Violent (208 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+143% / 60.1* | — | 100% / 1.00 |
-| *Cash (engine)* | *+66% / 29.6* | — | 85% / 0.36 |
-| PMCC + short puts | +105% / 38.2 | **+84% / 41.5** | 83% / 0.37 |
-| PMCC | +98% / 37.9 | **+78% / 41.2** | 83% / 0.37 |
-| **Short-put** | +60% / 26.3 | **+50% / 27.1** | 64% / 0.23 |
-| Covered stock | +86% / 38.5 | **+71% / 41.1** | 64% / 0.33 |
+| *Cash (engine)* | *+86% / 38.8* | — | 88% / 0.49 |
+| PMCC + short puts | +110% / 44.7 | **+94% / 47.4** | 88% / 0.50 |
+| PMCC | +100% / 44.4 | **+84% / 47.1** | 87% / 0.48 |
+| **Short-put** | +76% / 28.6 | **+62% / 29.5** | 72% / 0.28 |
+| Covered stock | +116% / 44.8 | **+98% / 47.0** | 72% / 0.47 |
 
 ### Hand-picked high-vol basket (19 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
 | *Buy & hold* | *+138% / 71.3* | — | 100% / 1.00 |
-| *Cash (engine)* | *+203% / 36.1* | — | 79% / 0.29 |
-| PMCC + short puts | +159% / 29.3 | **+122% / 33.1** | 74% / 0.29 |
-| PMCC | +161% / 29.0 | **+125% / 33.0** | 73% / 0.28 |
-| **Short-put** | +113% / 21.4 | **+99% / 22.4** | 51% / 0.19 |
-| Covered stock | +142% / 29.8 | **+113% / 33.0** | 51% / 0.24 |
+| *Cash (engine)* | *+241% / 41.2* | — | 83% / 0.37 |
+| PMCC + short puts | +157% / 32.9 | **+123% / 36.9** | 79% / 0.37 |
+| PMCC | +161% / 32.7 | **+128% / 36.9** | 78% / 0.35 |
+| **Short-put** | +135% / 23.9 | **+115% / 25.1** | 59% / 0.23 |
+| Covered stock | +157% / 32.4 | **+131% / 35.4** | 59% / 0.33 |
 
 </details>
 
 **Reading it (return ÷ max-DD).** Three model-honesty rules shape this: short calls are covered 1:1 (no naked calls), the single short-put is **cash-secured** (its size is capped so the strike collateral never exceeds the account), and weak signals aren't expressed — **any target below 0.20 is treated as "flat"** (`FlatEps = 0.20`; see [the flat rule](#tuning-the-pmcc-delta-dte-and-the-flat-rule)). Over full history the **single cash-secured short-put leads every broad cohort** and carries the shallowest drawdowns everywhere; on the concentrated high-flyer basket the un-overlaid engine in Cash mode posts the top ratio, because the option structures' delta caps bite hardest exactly where the underlying compounds fastest:
-- **Broad:** the **short-put leads** (+33%/20.3, ratio **1.63**) and is the only overlay clearly ahead of buy-&-hold (+71%/58.6, 1.21) — under half the return at barely a third of the drawdown. Then PMCC + short puts (+34%/27.5, 1.24), PMCC (+32%/27.6, 1.16), covered stock (+31%/29.1, 1.07) and Cash (+25%/27.9, 0.90).
-- **Decliners:** every overlay beats buy-&-hold's −43%, and the **short-put is decisively best** (+9%/19.7, **0.46**) — solidly positive where the underlying loses two-fifths. PMCC + short puts is breakeven (+1%/25.0), PMCC and covered stock a shade negative (−1%). Cash is +5%/35.4.
-- **Violent:** **buy-&-hold wins this cohort on means** (+182%/66.6, **2.73**) — its mean is carried by a few enormous winners the capped structures cannot follow. The **short-put is closest** (+68%/27.9, **2.44**) at 42% of the drawdown, then Cash (1.89), covered stock (+81%/42.4, 1.91), PMCC + short puts (+76%/40.7, 1.87) and PMCC (+72%/41.1, 1.75).
-- **Basket (19, incl IREN):** the **un-overlaid engine wins outright** — Cash posts +203%/36.1 (**5.62**), ahead of the short-put (+99%/22.4, **4.42**, and the shallowest drawdown on the page), PMCC (+125%/33.0, 3.79), PMCC + short puts (+122%/33.1, 3.69) and covered stock (+113%/33.0, 3.42). All five comfortably beat buy-&-hold (+138%/71.3, 1.94). On concentrated high-flyers the option structures' delta caps cost more than their premium earns.
+- **Broad:** the **short-put leads** (+40%/22.6, ratio **1.77**) and is the only overlay clearly ahead of buy-&-hold (+71%/58.6, 1.21) — well over half the return at barely a third of the drawdown. Then PMCC + short puts (+39%/32.6, 1.20), covered stock (+37%/34.9, 1.06), PMCC (+34%/33.0, 1.03) and Cash (+32%/34.2, 0.94).
+- **Decliners:** every overlay beats buy-&-hold's −43%, and the **short-put is decisively best** — solidly positive where the underlying loses two-fifths.
+- **Violent:** **buy-&-hold wins this cohort on means** (+182%/66.6, **2.73**) — its mean is carried by a few enormous winners the delta-capped structures cannot follow. The **short-put is closest** (+84%/30.5, **2.75** — in fact a shade ahead) at under half the drawdown, then covered stock (+101%/49.2, 2.05), PMCC + short puts (+96%/46.1, 2.08), Cash (2.18) and PMCC (+84%/47.0, 1.79).
+- **Basket (19, incl IREN):** the **un-overlaid engine wins outright** — Cash posts +241%/41.2 (**5.85**), ahead of the short-put (+115%/25.1, **4.58**, and the shallowest drawdown on the page), covered stock (+131%/35.4, 3.70), PMCC (+128%/36.9, 3.47) and PMCC + short puts (+123%/36.9, 3.33). All five comfortably beat buy-&-hold (+138%/71.3, 1.94).
 - **Cost sensitivity:** covered stock rolls the most contracts, so it loses the most from frictionless→mid; the single-leg **short-put is the most cost-stable** (only ~3–4 points), ahead of the PMCC structures (~6 points).
 - **Opportunity cost (last column):** every overlay runs at **~0.23–0.51 mean exposure** — roughly a third to a half of capital at work vs buy-&-hold's 1.00 — which is precisely *why* they roughly halve the drawdown. The **short-put is by far the least-deployed** (in-trade only ~59–74% of bars, avg exposure ~0.23–0.29, both the lowest) — its delta is capped at 0.50, trimmed again by the cash-secured cap, and floored out below a 0.20 target. Yet it earns the top-or-near-top risk-adjusted ratio on broad, decliners *and* the basket — it does the most with the least capital. PMCC and PMCC + short puts are the most-deployed overlays (~0.36–0.51) and lead on raw return.
 
@@ -344,7 +342,7 @@ Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC
 
 - **Short-put roll trigger — roll on *time* (hold to expiry), not on 50% profit.** The short-put caps net delta at `ShortPutCap = 0.50`, so above a 0.50 target it never rebalances on the drift band — the roll triggers are time (`ShortRollDte`) and an optional profit target (`ShortProfitTarget`). Swept both: at the 14-DTE harvest **rolling at expiry wins** (broad ratio 1.42) and a 50%-profit rule is *counterproductive* (broad 1.39, decliners negative, ~50% more rolls) — a profit exit fires at ~0.30 delta with plenty of theta left and just churns, whereas at 14 DTE holding captures the full theta ramp; the profit exit only ever fires on rallies (a losing put runs to expiry regardless), where it pays a round-trip to re-sell a slower-decaying put. (A `ShortDeltaFloor` roll — re-arming a put once its delta decays below 0.10 — was tried and dropped: once the position is cash-secured its incremental effect is marginal.) **Defaults: `ShortRollDte = 1`, `ShortProfitTarget = 0` (off).**
 
-**In one line:** *a single cash-secured short put — one put at delta ≤ 0.50, ~14 DTE, rolled at expiry, never sold below a 0.20 target.* It leads the broad set (1.63 vs buy-&-hold's 1.21) and the decliners (0.46 vs −0.60), and carries the shallowest drawdown of anything on the page in all four universes. It does **not** win the violent cohort on means (buy-&-hold 2.73 vs 2.44) and on the concentrated high-flyer basket no overlay beats simply running the engine on the underlying (Cash 5.62 vs the short-put's 4.42).
+**In one line:** *a single cash-secured short put — one put at delta ≤ 0.50, ~14 DTE, rolled at expiry, never sold below a 0.20 target.* It leads the broad set (1.77 vs buy-&-hold's 1.21), the decliners, and — at under half the drawdown — edges even the violent cohort (2.75 vs 2.73), while carrying the shallowest drawdown of anything on the page in all four universes. On the concentrated high-flyer basket, though, no overlay beats simply running the engine on the underlying (Cash 5.85 vs the short-put's 4.58).
 
 **Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, flat below a 0.20 target — hold-20 for option cores, close-immediately for stock) and with two model-honesty rules enforced — **all short calls covered 1:1 (no naked calls)** and the **short-put genuinely cash-secured (no put margin)** — the overlays beat buy-&-hold on return-per-drawdown in **three of the four universes**, losing only the violent cohort, where buy-&-hold's mean is carried by a handful of enormous winners no delta-capped structure can follow. The **single cash-secured short-put is the standout**: broad 1.63, decliners 0.46 (positive where the underlying loses 43%), violent 2.44, basket 4.42, always at the shallowest drawdown, and the most cost-stable because it trades one leg. It is also the **least-deployed** (~0.17–0.19 average exposure, in trade under half the bars) — most of the cushion comes from simply holding less, which is the honest way to read it. The **PMCC structures earn their keep on the broad set** (1.24 / 1.16, both ahead of buy-&-hold) but trail the plain engine on the basket — their delta caps bite hardest exactly where the underlying compounds fastest. Two things to keep honest: this rests on **near-mid execution**, and more importantly on the **14-DTE theta harvest whose front-week gamma / gap / assignment risk the close-to-close Black-Scholes model cannot see** — read the edge as a model ceiling, most trustworthy in the *drawdown reduction* it shows (consistent across every cohort and both windows) rather than in the return figures. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 

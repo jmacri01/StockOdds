@@ -112,8 +112,8 @@ extMaPeriod = input.int(50, "Extension MA period", minval = 1, group = grpExt,
      tooltip = "SMA lookback the extension is measured against. 50 isolates ACUTE spikes; a slower MA (100) flags sustained trends and caps genuine winners.")
 
 grpDd = "Drawdown-recovery scaler"
-ddRatioMode = input.string("Ratio (K * dd60/dd30)", "Scaler form", options = ["Ratio (K * dd60/dd30)", "Recovered fraction", "Off"], group = grpDd,
-     tooltip = "Multiplies the position by where price sits in its drawdown. dd60/dd30 are the drawdowns from the rolling 60- and 30-bar highs of the close; a 60-bar high is always >= a 30-bar high, so the ratio reads POSITION in the drawdown, not depth: ~1 while still making new 30-bar lows, large once recovered off an older low. 'Recovered fraction' is the equivalent bounded form 1 + K*(2*rec - 1), rec = (dd60 - dd30)/dd60.")
+ddRatioMode = input.string("Off", "Scaler form", options = ["Ratio (K * dd60/dd30)", "Recovered fraction", "Off"], group = grpDd,
+     tooltip = "DEFAULT OFF: the ratio is depth-blind -- dd30 equals dd60 whenever the 60-bar peak is inside the last 30 bars (every uptrend), so it cut a 10% pullback exactly as hard as a 40% collapse. Multiplies the position by where price sits in its drawdown. dd60/dd30 are the drawdowns from the rolling 60- and 30-bar highs of the close; a 60-bar high is always >= a 30-bar high, so the ratio reads POSITION in the drawdown, not depth: ~1 while still making new 30-bar lows, large once recovered off an older low. 'Recovered fraction' is the equivalent bounded form 1 + K*(2*rec - 1), rec = (dd60 - dd30)/dd60.")
 ddWindow = input.int(60, "Long drawdown window (bars)", minval = 2, group = grpDd)
 ddShortWindow = input.int(30, "Short drawdown window (bars)", minval = 2, group = grpDd,
      tooltip = "30/60 is the shipped pair (best on the concentrated high-vol basket). 15/45 and 20/60 score slightly better on a broad universe; long pairs (45/90, 60/120) fail.")
