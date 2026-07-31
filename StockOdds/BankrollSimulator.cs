@@ -235,6 +235,77 @@ namespace StockOdds
 		public static double ExtCapCeil  = 60.0;
 		public static int    ExtMaPeriod = 50;
 
+		// ============ Drawdown-recovery exposure scaler (DEFAULT ON) ============
+		// Two trailing drawdowns of the decision close are measured against its own rolling highs:
+		//   dd60 = (max close over DdWindow bars      - close) / that max * 100
+		//   dd30 = (max close over DdShortWindow bars - close) / that max * 100
+		// A 60-bar high is always at least a 30-bar high, so dd60 >= dd30 ALWAYS and their relationship is a
+		// pure "where in the drawdown are we" reading: dd30 ~ dd60 means the low is inside the last 30 bars
+		// (price is still printing new short-window lows), while dd30 << dd60 means it has already climbed
+		// well off an older low. The position is then multiplied by
+		//   mult = clamp( DdRatioK * dd60 / max(dd30, DdRatioEps), DdRatioMin, DdRatioMax )
+		// so at K = 0.5 the still-falling case scales toward 0.5x and a recovered one toward the 1.5x cap.
+		// Applied before the position smoother (so the change eases in/out) and re-clamped to the exposure
+		// band afterwards, so it can never breach MaxExposurePercent.
+		//
+		// WHY: a joint (dd30 x dd60) map of 2.6M bar-observations shows forward return tracks RECOVERY, not
+		// depth. Holding dd30 at 0-2% and deepening dd60, mean fwd-20 runs 0.42 -> 14.4%; holding dd60 at
+		// 30-45% and deepening dd30 (still falling) it runs 5.1 -> 1.3%. The still-falling diagonal is the
+		// only region with a negative median forward return (30-40%: -1.21%, up-rate 47.0%), and the
+		// shallow "at/near a 60-bar high" corner -- ~30% of all bars -- is the WEAKEST cell in the map
+		// (median fwd-20 -0.04%, up-rate 49.4%) despite the engine previously holding 0.40 exposure there.
+		// Scaling down both of those and up in the recovery cells cuts drawdown hard for a small return cost.
+		//
+		// VALIDATION: swept ~340 configs over 2,289 names (full >=$500M universe, 4 disjoint samples), scored
+		// on the last 30% of each name's history. Broad median max-drawdown 17.9 -> 14.1 with Sharpe 0.38 ->
+		// 0.40 at 26% less capital deployed; every one of 2,283/2,289 names ends shallower than buy-&-hold.
+		// Two controls make the case that this is a signal and not just a smaller position:
+		//   * a FLAT multiplier ignoring both drawdowns raises return/drawdown monotonically (to 0.398 at
+		//     x0.4) but leaves Sharpe pinned at exactly 0.38 -- so return/drawdown is NOT comparable across
+		//     configs with different exposure, and Sharpe at matched exposure is the honest metric. At
+		//     matched exposure (~0.27) the flat control gets 0.38 and this scaler gets 0.40-0.43.
+		//   * INVERTING the tilt (lever the still-falling bars) fails on all four samples (Sharpe 0.29-0.32)
+		//     at unchanged exposure, so the direction carries real information.
+		// The parameter choice also survives a walk-forward: chosen on the first 70% of history it picks the
+		// same region (no gate, K 0.4-0.75) and still beats the baseline 4/4 on the untouched tail.
+		// Complementary to the RSI-2 trim and the KAMA smoother -- ablating either leaves the scaler adding
+		// value on top of what remains, and neither substitutes for it.
+		//
+		// KNOBS. DdRatioK is the participation dial: 0.4 is more defensive, 0.75 keeps more upside (0.4-0.75
+		// is a flat plateau, so it is a preference, not a fit). DdRatioMin is the workhorse -- the de-lever
+		// half does most of the work -- and DdRatioMax barely matters (1.5 ~ 2.0). DdRatioGate would apply
+		// the scaler only past a minimum dd60; it is 0 (off) because gating it measurably HURT (de-levering
+		// near the highs is a large part of the edge). WINDOWS: 30/60 is the shipped pair -- it is the best
+		// on the concentrated high-vol basket; 15/45 and 20/60 score slightly higher on the broad universe
+		// but weaker on the basket, while every long pair (45/90, 45/120, 60/120) fails outright.
+		// DdRatioMode 2 is an equivalent bounded form, mult = 1 + K*(2*rec - 1) with rec = (dd60-dd30)/dd60,
+		// which lands in the same place once K is tuned. DdRatioMode = 0 turns the scaler off.
+		public static int    DdWindow      = 60;   // long drawdown window (bars)
+		public static int    DdShortWindow = 30;   // short drawdown window (bars)
+		public static int    DdRatioMode = 1;      // 1 = ratio form (shipped), 2 = recovered-fraction form, 0 = off
+		public static double DdRatioK    = 0.5;
+		public static double DdRatioMin  = 0.5;    // hardest de-lever (still making new short-window lows)
+		public static double DdRatioMax  = 1.5;    // ceiling on the multiplier (recovered off an older low)
+		public static double DdRatioGate = 0.0;    // require dd60 > this % before scaling (0 = always on)
+		public static double DdRatioEps  = 1.0;    // floor on dd30 in mode 1 (keeps the ratio finite at a fresh high)
+		public static bool   DdRatioPostSmooth = false;   // apply after the position smoother instead of before
+
+		// The scaler as a pure function of the two drawdowns, so a harness or the Pine port can reproduce it.
+		public static double DdRatioMult(double dd60Pct, double dd30Pct)
+		{
+			if (DdRatioMode == 0) return 1.0;
+			if (dd60Pct <= DdRatioGate) return 1.0;
+			double raw;
+			if (DdRatioMode == 1)
+				raw = DdRatioK * dd60Pct / Math.Max(dd30Pct, DdRatioEps);
+			else
+			{
+				double rec = dd60Pct > 1e-9 ? (dd60Pct - dd30Pct) / dd60Pct : 0.0;
+				raw = 1.0 + DdRatioK * (2.0 * rec - 1.0);
+			}
+			return Clamp(raw, DdRatioMin, DdRatioMax);
+		}
+
 		// Accurate full sizing (DEFAULT ON): when the TRUE target (pre-clamp adjEma) saturates full exposure, snap
 		// the drift-band follower up to the clamp ceiling -- held = max(maxExp, max(maxExp-drift, adjEma-drift)) --
 		// so the position sizes to 1.0 instead of being left stale-low (e.g. 0.7) by the rebalance deadband. This is
@@ -349,6 +420,11 @@ namespace StockOdds
 			// rolling price efficiency ratio (Kaufman ER over PersistWindow), for corner smoothing
 			var erCloseWin = new Queue<double>(); var erDiffWin = new Queue<double>();
 			double erDiffSum = 0.0, erPrevClose = double.NaN, curEr = 1.0;
+
+			// rolling highs of the decision close as monotonic-decreasing deques of (index, close) — the
+			// front is always the window max, so both drawdowns are O(1) per bar.
+			var ddWin = new LinkedList<(int Idx, double Close)>();        // DdWindow (long)
+			var ddShortWin = new LinkedList<(int Idx, double Close)>();   // DdShortWindow (short)
 
 
 			// rolling LT-direction window for the dynamic long bias
@@ -487,6 +563,25 @@ namespace StockOdds
 				double extSma = extMaWin.Count > 0 ? extMaSum / extMaWin.Count : prev.Close;
 				double extPct = extSma > 0 ? (prev.Close / extSma - 1.0) * 100.0 : 0.0;
 
+				// rolling highs of the decision close (no look-ahead: uses prev) -> the two trailing drawdowns
+				{
+					int dw = Math.Max(2, DdWindow);
+					while (ddWin.Count > 0 && ddWin.Last!.Value.Close <= prev.Close) ddWin.RemoveLast();
+					ddWin.AddLast((i - 1, prev.Close));
+					while (ddWin.First!.Value.Idx <= i - 1 - dw) ddWin.RemoveFirst();
+				}
+				double ddHigh = ddWin.First!.Value.Close;
+				double ddPct = ddHigh > 0 ? (ddHigh - prev.Close) / ddHigh * 100.0 : 0.0;
+				// the shorter window (how much of the long drawdown is still un-recovered)
+				{
+					int sw = Math.Max(2, DdShortWindow);
+					while (ddShortWin.Count > 0 && ddShortWin.Last!.Value.Close <= prev.Close) ddShortWin.RemoveLast();
+					ddShortWin.AddLast((i - 1, prev.Close));
+					while (ddShortWin.First!.Value.Idx <= i - 1 - sw) ddShortWin.RemoveFirst();
+				}
+				double ddShortHigh = ddShortWin.First!.Value.Close;
+				double ddShortPct = ddShortHigh > 0 ? (ddShortHigh - prev.Close) / ddShortHigh * 100.0 : 0.0;
+
 				// rolling price efficiency ratio (no look-ahead: uses prev)
 				if (!double.IsNaN(erPrevClose)) { double ed = Math.Abs(prev.Close - erPrevClose); erDiffWin.Enqueue(ed); erDiffSum += ed; while (erDiffWin.Count > PersistWindow) erDiffSum -= erDiffWin.Dequeue(); }
 				erPrevClose = prev.Close;
@@ -524,12 +619,18 @@ namespace StockOdds
 				// Applied before smoothing so the cut eases in/out.
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
+				// drawdown-recovery scaler: de-lever while still making new 30-bar lows, lever once recovered
+				double ddRatioMult = DdRatioMult(ddPct, ddShortPct);
+				if (DdRatioMode != 0 && !DdRatioPostSmooth)
+					position = Clamp(position * ddRatioMult, minExp, maxExp);
 				// KAMA-distance smoothing: heavier the further price sits below its KAMA, light (P5) at/above it.
 				double smoothPer = PositionSmoothPeriod;
 				if (KamaSmooth && !double.IsNaN(kama) && kama > 0)
 				{ double below = Math.Max(0.0, (kama - prev.Close) / kama);
 					smoothPer = Clamp(PositionSmoothPeriod + KamaSmoothSlope * below * KamaSmoothMaxPeriod, PositionSmoothPeriod, KamaSmoothMaxPeriod); }
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
+				if (DdRatioMode != 0 && DdRatioPostSmooth)
+					position = Clamp(position * ddRatioMult, minExp, maxExp);
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------

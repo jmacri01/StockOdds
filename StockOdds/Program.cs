@@ -134,6 +134,16 @@ class Program
 		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
+		// Drawdown-recovery scaler: position *= clamp(K * dd60/dd30, min, max). dd60 >= dd30 always, so the
+		// ratio reads WHERE in a drawdown price sits -- ~1 while still making new 30-bar lows (scaled toward
+		// 0.5x at K=0.5), large once it has climbed off an older low (up to the 1.5x cap).
+		BankrollSimulator.DdWindow      = 60;             // long drawdown window
+		BankrollSimulator.DdShortWindow = 30;             // short drawdown window
+		BankrollSimulator.DdRatioMode = 1;                // 1 = ratio form (shipped); 2 = recovered-fraction form; 0 = off
+		BankrollSimulator.DdRatioK    = 0.5;              // participation dial: 0.4 more defensive, 0.75 keeps more upside
+		BankrollSimulator.DdRatioMin  = 0.5;              // hardest de-lever (the workhorse half)
+		BankrollSimulator.DdRatioMax  = 1.5;              // multiplier ceiling (barely matters; 1.5 ~ 2.0)
+		BankrollSimulator.DdRatioGate = 0.0;              // 0 = always on; gating it on a minimum dd60 measurably HURT
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),
 			// EMA-smoothed. Defaults are exp / base 1 / decay 0.6, refs calibrated to a ~110-name
