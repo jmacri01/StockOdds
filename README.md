@@ -231,13 +231,56 @@ Because the engine now clamps to **150%** exposure (see [defaults](#5-from-targe
 
 When the engine target drops **below 0.20** the bar is treated as **"flat"** — the signal is too weak to express (`FlatEps = 0.20`). A structure with a core (PMCC, covered stock) then **holds the small position for 20 days and only closes to cash if it's still flat** (see [Tuning the PMCC](#tuning-the-pmcc-delta-dte-and-the-flat-rule)) rather than flattening on the first weak bar — holding won on every universe (it keeps the core's gamma for the frequent snap-backs and avoids churning the wide-spread LEAP in and out). The single short-put carries no core, so for it the rule is simply an **expression floor**: it won't sell a put below a 0.20 target and holds cash instead.
 
-All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim, N cap 40) at the **optimal/default overlay parameters** (365-DTE LEAP core, **14-DTE short legs**, **flat below a 0.20 target, hold-20-then-cash**; PMCC 0.80Δ), **pooled across four disjoint samples covering the full ≥ $500M universe (2,289 names).** Each cell is **return% / max-DD%** — the metric that matters — shown **frictionless** (a ceiling) and at **mid ~1%** (patient limit fills near mid). *(Sharpe dropped by design — these are read on return vs drawdown.)* The last column is the **opportunity-cost lens**: **In-trade %** (share of OOS bars the position actually holds market exposure, |net delta| > 0.05) and **avg exp** (mean |net delta| across all bars — capital at work per dollar). Buy-&-hold is 100% / 1.00 by definition; every overlay sits well below on both, and that gap is the price paid for the drawdown reduction.
+All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim, N cap 40) at the **optimal/default overlay parameters** (365-DTE LEAP core, **14-DTE short legs**, **flat below a 0.20 target, hold-20-then-cash**; PMCC 0.80Δ), **pooled across four disjoint samples covering the full ≥ $500M universe (2,289 names), over each name's FULL ~5-year history** (the out-of-sample versions of all four tables are folded in below them). Each cell is the **median across names** of **return% / max-DD%** — shown **frictionless** (a ceiling) and at **mid ~1%** (patient limit fills near mid). **Medians understate the skewed cohorts badly, so the reference rows carry the mean too**: on the 19-name basket buy-&-hold's median return is +49% but its mean is **+138%**, because 7 of the 19 names have *negative* buy-&-hold while NVDA (+862%) and BE (+797%) sit in the tail. Compare like with like — median against median, mean against mean. *(Sharpe dropped by design — these are read on return vs drawdown.)* The last column is the **opportunity-cost lens**: **In-trade %** (share of OOS bars the position actually holds market exposure, |net delta| > 0.05) and **avg exp** (mean |net delta| across all bars — capital at work per dollar). Buy-&-hold is 100% / 1.00 by definition; every overlay sits well below on both, and that gap is the price paid for the drawdown reduction.
 
 ### Broad (2289 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
-| *Buy & hold* | *+14% / 35.9* | — | 100% / 1.00 |
-| *Cash (engine)* | *+5% / 13.9* | — | 81% / 0.28 |
+| *Buy & hold* | *+21% / 56.0  ·  mean +71%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+9% / 23.2  ·  mean +25%* | — | 77% / 0.26 |
+| PMCC + short puts | +31% / 18.2 | **+13% / 22.0** | 73% / 0.26 |
+| PMCC | +29% / 18.3 | **+12% / 22.1** | 72% / 0.25 |
+| **Short-put** | +25% / 16.8 | **+20% / 17.8** | 49% / 0.17 |
+| Covered stock | +23% / 20.5 | **+9% / 24.0** | 49% / 0.21 |
+
+### Decliners (906 names)
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *−41% / 73.9  ·  mean −43%* | — | 100% / 1.00 |
+| *Cash (engine)* | *−5% / 33.2  ·  mean +5%* | — | 76% / 0.26 |
+| PMCC + short puts | +12% / 17.7 | **+1% / 20.9** | 72% / 0.27 |
+| PMCC | +11% / 18.0 | **−1% / 21.1** | 72% / 0.26 |
+| **Short-put** | +11% / 16.1 | **+8% / 17.1** | 48% / 0.18 |
+| Covered stock | +8% / 19.3 | **−1% / 22.3** | 48% / 0.22 |
+
+### Violent (595 names)
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+71% / 64.1  ·  mean +182%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+31% / 31.0  ·  mean +63%* | — | 79% / 0.29 |
+| PMCC + short puts | +62% / 29.9 | **+34% / 34.7** | 76% / 0.29 |
+| PMCC | +56% / 29.8 | **+31% / 34.4** | 75% / 0.29 |
+| **Short-put** | +56% / 24.6 | **+45% / 26.0** | 54% / 0.19 |
+| Covered stock | +56% / 32.2 | **+34% / 36.4** | 54% / 0.25 |
+
+### Hand-picked high-vol basket (19 names)
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+49% / 81.4  ·  mean +138%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+102% / 34.8  ·  mean +203%* | — | 79% / 0.29 |
+| PMCC + short puts | +67% / 30.3 | **+44% / 34.3** | 74% / 0.29 |
+| PMCC | +74% / 28.0 | **+40% / 34.3** | 73% / 0.28 |
+| **Short-put** | +44% / 22.4 | **+41% / 23.4** | 51% / 0.19 |
+| Covered stock | +46% / 32.9 | **+38% / 35.0** | 51% / 0.24 |
+
+<details>
+<summary><b>The same four tables scored out-of-sample (last 30% of each name's history)</b> — the honest expectation, on data the parameters never saw</summary>
+
+### Broad (2289 names)
+| Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
+|---|---|---|---|
+| *Buy & hold* | *+14% / 35.9  ·  mean +37%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+5% / 13.9  ·  mean +13%* | — | 81% / 0.28 |
 | PMCC + short puts | +13% / 12.7 | **+7% / 14.3** | 78% / 0.29 |
 | PMCC | +12% / 12.8 | **+6% / 14.4** | 78% / 0.28 |
 | **Short-put** | +11% / 11.8 | **+10% / 12.2** | 54% / 0.19 |
@@ -246,8 +289,8 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 ### Decliners (834 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
-| *Buy & hold* | *−23% / 47.3* | — | 100% / 1.00 |
-| *Cash (engine)* | *−5% / 18.4* | — | 80% / 0.28 |
+| *Buy & hold* | *−23% / 47.3  ·  mean −26%* | — | 100% / 1.00 |
+| *Cash (engine)* | *−5% / 18.4  ·  mean −5%* | — | 80% / 0.28 |
 | PMCC + short puts | +2% / 13.6 | **−1% / 15.3** | 77% / 0.29 |
 | PMCC | +2% / 14.1 | **−2% / 15.7** | 77% / 0.28 |
 | **Short-put** | +3% / 13.0 | **+2% / 13.4** | 52% / 0.19 |
@@ -256,8 +299,8 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 ### Violent (208 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
-| *Buy & hold* | *+78% / 57.9* | — | 100% / 1.00 |
-| *Cash (engine)* | *+47% / 28.5* | — | 85% / 0.36 |
+| *Buy & hold* | *+78% / 57.9  ·  mean +143%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+47% / 28.5  ·  mean +66%* | — | 85% / 0.36 |
 | PMCC + short puts | +55% / 33.8 | **+41% / 37.0** | 83% / 0.37 |
 | PMCC | +53% / 33.8 | **+40% / 37.4** | 83% / 0.37 |
 | **Short-put** | +49% / 24.2 | **+44% / 25.5** | 64% / 0.23 |
@@ -266,18 +309,20 @@ All on the **shipped engine config** (150% exposure cap, HV-conditioned RSI trim
 ### Hand-picked high-vol basket (19 names)
 | Strategy | frictionless (Ret / DD) | mid ~1% (Ret / DD) | In-trade % / avg exp |
 |---|---|---|---|
-| *Buy & hold* | *+49% / 81.4* | — | 100% / 1.00 |
-| *Cash (engine)* | *+102% / 34.8* | — | 79% / 0.29 |
+| *Buy & hold* | *+49% / 81.4  ·  mean +138%* | — | 100% / 1.00 |
+| *Cash (engine)* | *+102% / 34.8  ·  mean +203%* | — | 79% / 0.29 |
 | PMCC + short puts | +67% / 30.3 | **+44% / 34.3** | 74% / 0.29 |
 | PMCC | +74% / 28.0 | **+40% / 34.3** | 73% / 0.28 |
 | **Short-put** | +44% / 22.4 | **+41% / 23.4** | 51% / 0.19 |
 | Covered stock | +46% / 32.9 | **+38% / 35.0** | 51% / 0.24 |
 
-**Reading it (return ÷ max-DD).** Three model-honesty rules shape this: short calls are covered 1:1 (no naked calls), the single short-put is **cash-secured** (its size is capped so the strike collateral never exceeds the account), and weak signals aren't expressed — **any target below 0.20 is treated as "flat"** (`FlatEps = 0.20`; see [the flat rule](#tuning-the-pmcc-delta-dte-and-the-flat-rule)). The short-put leads the broad and decliner cohorts and carries the shallowest drawdowns everywhere; on the high-flyer basket the un-overlaid engine in Cash mode now posts the top ratio, because the scaler's de-levering bites hardest on structures whose delta is already capped:
-- **Broad:** the **short-put leads** as the lowest-drawdown seller (+10%/11.8, ratio **0.85**), then PMCC + short puts (+7%/14.4, 0.49) and plain PMCC (+6%/14.4, 0.42). B&H is +14%/35.9 (0.39) and Cash +5%/14.1 (0.35); covered stock (+5%/15.4, **0.32**) sits between them once its naked-call theta is gone.
-- **Decliners:** the **short-put is the only structure positive at mid** (+2%/13.3) where buy-&-hold loses −23%, and the scaler pushed the call-covered structures to roughly breakeven (PMCC −2%, PMCC + short puts −1%, covered stock −3%) — a clear improvement on the previous config, where they sat at −8 / −7 / −9%.
-- **Violent:** **B&H still edges the ratio** (+78%/57.9, **1.35**), with the short-put closest behind at the shallowest drawdown (+44%/25.5, **1.73** — in fact now *ahead* of B&H on the ratio), then PMCC + short puts (+41%/37.2, 1.10), covered stock (+42%/35.7, 1.18) and PMCC (+37%/37.1, 1.00). On this cohort the overlays' value is mostly drawdown reduction.
-- **Basket (19, incl IREN):** the plain engine in **Cash mode posts the top ratio here** (+133%/36.7, **3.62**) — the scaler's de-levering costs the option structures more than it costs the underlying, because their delta is already capped. Among the overlays, PMCC + short puts leads (+51%/34.4, **1.49**), then PMCC (+46%/35.6, 1.29), the short-put at the shallowest drawdown (+36%/20.9, 1.75 on the ratio) and covered stock (+40%/35.2, **1.14**). B&H is +49%/81.4 (0.60).
+</details>
+
+**Reading it (return ÷ max-DD).** Three model-honesty rules shape this: short calls are covered 1:1 (no naked calls), the single short-put is **cash-secured** (its size is capped so the strike collateral never exceeds the account), and weak signals aren't expressed — **any target below 0.20 is treated as "flat"** (`FlatEps = 0.20`; see [the flat rule](#tuning-the-pmcc-delta-dte-and-the-flat-rule)). Over full history the **single cash-secured short-put leads every broad cohort** and carries the shallowest drawdowns everywhere; on the concentrated high-flyer basket the un-overlaid engine in Cash mode posts the top ratio, because the option structures' delta caps bite hardest exactly where the underlying compounds fastest:
+- **Broad:** the **short-put leads by a wide margin** (+20%/17.8, ratio **1.12**) and is the only overlay clearly ahead of buy-&-hold (+21%/56.0, 0.38) — it earns nearly the same return at under a third of the drawdown. Then PMCC + short puts (+13%/22.0, 0.59), PMCC (+12%/22.1, 0.54), Cash (+9%/23.2, 0.39) and covered stock (+9%/24.0, 0.38).
+- **Decliners:** every overlay beats buy-&-hold's −41%, and the **short-put is decisively best** (+8%/17.1, **0.47**) — positive where the underlying loses two-fifths. PMCC + short puts is breakeven (+1%/20.9), PMCC and covered stock a touch negative (−1%). Cash is −5%/33.2.
+- **Violent:** the **short-put now beats buy-&-hold outright** (+45%/26.0, **1.73** vs +71%/64.1, 1.11) — 63% of the return at 41% of the drawdown. PMCC + short puts (+34%/34.7, 0.98), covered stock (+34%/36.4, 0.93) and PMCC (+31%/34.4, 0.90) all sit near Cash (1.00).
+- **Basket (19, incl IREN):** here the **un-overlaid engine wins** — Cash posts +102%/34.8 (**2.93**) against the best overlay's 1.75 (short-put, +41%/23.4, and the shallowest drawdown of anything on the page). PMCC + short puts (+44%/34.3, 1.28), PMCC (+40%/34.3, 1.17) and covered stock (+38%/35.0, 1.09) follow; buy-&-hold is +49%/81.4 (0.60). On concentrated high-flyers the option structures' delta caps cost more than their premium earns.
 - **Cost sensitivity:** covered stock rolls the most contracts, so it loses the most from frictionless→mid; the single-leg **short-put is the most cost-stable** (only ~3–4 points), ahead of the PMCC structures (~6 points).
 - **Opportunity cost (last column):** every overlay runs at **~0.23–0.51 mean exposure** — roughly a third to a half of capital at work vs buy-&-hold's 1.00 — which is precisely *why* they roughly halve the drawdown. The **short-put is by far the least-deployed** (in-trade only ~59–74% of bars, avg exposure ~0.23–0.29, both the lowest) — its delta is capped at 0.50, trimmed again by the cash-secured cap, and floored out below a 0.20 target. Yet it earns the top-or-near-top risk-adjusted ratio on broad, decliners *and* the basket — it does the most with the least capital. PMCC and PMCC + short puts are the most-deployed overlays (~0.36–0.51) and lead on raw return.
 
@@ -299,9 +344,9 @@ Read on the metric that matters here — **return ÷ max-drawdown** — the PMCC
 
 - **Short-put roll trigger — roll on *time* (hold to expiry), not on 50% profit.** The short-put caps net delta at `ShortPutCap = 0.50`, so above a 0.50 target it never rebalances on the drift band — the roll triggers are time (`ShortRollDte`) and an optional profit target (`ShortProfitTarget`). Swept both: at the 14-DTE harvest **rolling at expiry wins** (broad ratio 1.42) and a 50%-profit rule is *counterproductive* (broad 1.39, decliners negative, ~50% more rolls) — a profit exit fires at ~0.30 delta with plenty of theta left and just churns, whereas at 14 DTE holding captures the full theta ramp; the profit exit only ever fires on rallies (a losing put runs to expiry regardless), where it pays a round-trip to re-sell a slower-decaying put. (A `ShortDeltaFloor` roll — re-arming a put once its delta decays below 0.10 — was tried and dropped: once the position is cash-secured its incremental effect is marginal.) **Defaults: `ShortRollDte = 1`, `ShortProfitTarget = 0` (off).**
 
-**In one line:** *PMCC — 0.80-delta, 365-DTE call LEAP, ~14-DTE short calls to target, flat below a 0.20 target, hold-20-then-cash.* On the concentrated flyer basket this beats buy-&-hold on return/max-DD (4.24 vs 2.78); on the broad universe plain buy-&-hold still wins that ratio, so use the overlay there for the drawdown cushion, not for outperformance.
+**In one line:** *a single cash-secured short put — one put at delta ≤ 0.50, ~14 DTE, rolled at expiry, never sold below a 0.20 target.* Over full history it leads **three of the four universes** and carries the shallowest drawdown in all four, beating buy-&-hold outright on broad (1.12 vs 0.38) and violent (1.73 vs 1.11). On the concentrated high-flyer basket, though, no overlay beats simply running the engine on the underlying (Cash 2.93 vs the short-put's 1.75).
 
-**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, flat below 0.20 with hold-20), and with two model-honesty rules enforced — **all short calls covered 1:1 (no naked calls)** and the **short-put genuinely cash-secured (no put margin)** — the overlays still beat buy-&-hold on **return ÷ max-drawdown in three of four universes**, most of the upside at roughly half the drawdown, breakeven on decliners where B&H bleeds −23%. The **single cash-secured short-put** (one put at delta ≤ 0.50, no naked legs of any kind) leads the broad set (1.47) and decliners, carries the shallowest drawdowns, and is the most cost-stable — the honest, most-capital-efficient pick for a diversified book (it's also the least-deployed, ~0.24 avg exposure — most of the drawdown cushion comes from simply holding less). On the **high-flyer basket, plain PMCC (0.80Δ) still just leads** (4.24) — its delta rides an owned, fully-paid LEAP — but the cash-secured short-put now **nearly ties it (4.16) at half the drawdown**. **PMCC + short puts** adds a >1.0 lean (basket 3.68) at the cost of naked-short-*put* margin (a delta-only picture — see the capital caveat above). On the violent cohort **B&H still edges the ratio**, with PMCC + short puts close behind — there the overlays are mostly a drawdown tool. Two things to keep honest: this rests on **near-mid execution** and, more importantly, on the **14-DTE theta harvest whose front-week gamma/gap/assignment risk the model can't see** — so read the edge as a model ceiling, strongest and most-trustworthy in the *drawdown-reduction* it shows (consistent across the whole study) rather than the short-DTE return spike. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
+**Bottom line:** at the tuned defaults (365-DTE LEAP, 14-DTE short legs, flat below a 0.20 target — hold-20 for option cores, close-immediately for stock) and with two model-honesty rules enforced — **all short calls covered 1:1 (no naked calls)** and the **short-put genuinely cash-secured (no put margin)** — the picture over full history is: the **single cash-secured short-put is the standout**, leading broad (+20%/17.8, **1.12**), decliners (+8%/17.1, **0.47** — positive where buy-&-hold loses 41%) and violent (+45%/26.0, **1.73**, ahead of buy-&-hold's 1.11), always at the shallowest drawdown, and it is the most cost-stable because it trades one leg. It is also the **least-deployed** (~0.17-0.19 average exposure, in-trade under half the bars) — most of the cushion comes from simply holding less, which is the honest way to read it. The **PMCC structures earn their keep on the broad set** (PMCC + short puts 0.59, PMCC 0.54, both roughly 1.4x buy-&-hold's ratio) but are only level with Cash on the violent cohort and **behind the plain engine on the basket** — their delta caps bite hardest exactly where the underlying compounds fastest, so on concentrated flyers the overlay costs more than it earns. Two things to keep honest: this rests on **near-mid execution**, and more importantly on the **14-DTE theta harvest whose front-week gamma/gap/assignment risk the close-to-close Black-Scholes model cannot see** — read the edge as a model ceiling, most trustworthy in the *drawdown reduction* it shows (consistent across every cohort and both windows) rather than in the return figures. Reproduce with `OptionsOverlaySimulator` over `BankrollResult.Positions`.
 
 ---
 
