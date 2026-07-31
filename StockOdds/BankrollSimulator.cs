@@ -81,6 +81,8 @@ namespace StockOdds
 		// the actual traded exposure (clamped/RSI/smoothed/region-adjusted position) applied each bar,
 		// aligned with ReturnDates/StratReturns. Consumed by the options-overlay simulator.
 		public List<double>   Positions { get; set; } = new();
+		// RESEARCH diagnostic: was the decision close at/above its KAMA on that bar?
+		public List<bool>     KamaAbove { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -235,88 +237,97 @@ namespace StockOdds
 		public static double ExtCapCeil  = 60.0;
 		public static int    ExtMaPeriod = 50;
 
-		// ============ Drawdown-recovery exposure scaler (DEFAULT ON) ============
+		// ============ Peak-age exposure scaler, BELOW THE KAMA ONLY (DEFAULT ON) ============
 		// Two trailing drawdowns of the decision close are measured against its own rolling highs:
 		//   dd60 = (max close over DdWindow bars      - close) / that max * 100
 		//   dd30 = (max close over DdShortWindow bars - close) / that max * 100
-		// A 60-bar high is always at least a 30-bar high, so dd60 >= dd30 ALWAYS and their relationship is a
-		// pure "where in the drawdown are we" reading: dd30 ~ dd60 means the low is inside the last 30 bars
-		// (price is still printing new short-window lows), while dd30 << dd60 means it has already climbed
-		// well off an older low. The position is then multiplied by
+		// A 60-bar high is always at least a 30-bar high, so dd60 >= dd30 ALWAYS. The position is multiplied by
 		//   mult = clamp( DdRatioK * dd60 / max(dd30, DdRatioEps), DdRatioMin, DdRatioMax )
-		// so at K = 0.5 the still-falling case scales toward 0.5x and a recovered one toward the 1.5x cap.
-		// Applied before the position smoother (so the change eases in/out) and re-clamped to the exposure
-		// band afterwards, so it can never breach MaxExposurePercent.
+		// ...but ONLY on bars where close < KAMA (DdRatioKamaMode = 1). Applied before the position smoother so
+		// the change eases in and out, and re-clamped to the exposure band afterwards, so it can never breach
+		// MaxExposurePercent.
 		//
-		// WHY: a joint (dd30 x dd60) map of 2.6M bar-observations shows forward return tracks RECOVERY, not
-		// depth. Holding dd30 at 0-2% and deepening dd60, mean fwd-20 runs 0.42 -> 14.4%; holding dd60 at
-		// 30-45% and deepening dd30 (still falling) it runs 5.1 -> 1.3%. The still-falling diagonal is the
-		// only region with a negative median forward return (30-40%: -1.21%, up-rate 47.0%), and the
-		// shallow "at/near a 60-bar high" corner -- ~30% of all bars -- is the WEAKEST cell in the map
-		// (median fwd-20 -0.04%, up-rate 49.4%) despite the engine previously holding 0.40 exposure there.
-		// Scaling down both of those and up in the recovery cells cuts drawdown hard for a small return cost.
+		// WHAT THE RATIO ACTUALLY MEASURES -- state this precisely, because getting it wrong once already cost
+		// a shipped release (see the disabled-then-refined history below). dd30 == dd60 exactly when
+		// hi30 == hi60, i.e. when the 60-bar peak falls INSIDE the last 30 bars. So:
+		//   ratio == 1  <=>  the peak is RECENT (a fresh pullback from a high made in the last 30 bars)
+		//                    -> mult pins to K, the hardest de-lever, AT ANY DEPTH
+		//   ratio > 1   <=>  the 60-bar peak is OLDER than 30 bars, and it grows with the gap between the two
+		//                    highs -> price is grinding back up toward a recent high that still sits well under
+		//                    an older peak -> mult toward the DdRatioMax cap
+		// The expression encodes PEAK AGE, and being scale-free it discards depth entirely. It does NOT
+		// "de-lever while price makes new short-window lows" -- that description was wrong, and the difference
+		// is the whole reason for the KAMA confinement below.
 		//
-		// VALIDATION: swept ~340 configs over 2,289 names (full >=$500M universe, 4 disjoint samples), scored
-		// on the last 30% of each name's history. Broad median max-drawdown 17.9 -> 14.1 with Sharpe 0.38 ->
-		// 0.40 at 26% less capital deployed; every one of 2,283/2,289 names ends shallower than buy-&-hold.
-		// Two controls make the case that this is a signal and not just a smaller position:
-		//   * a FLAT multiplier ignoring both drawdowns raises return/drawdown monotonically (to 0.398 at
-		//     x0.4) but leaves Sharpe pinned at exactly 0.38 -- so return/drawdown is NOT comparable across
-		//     configs with different exposure, and Sharpe at matched exposure is the honest metric. At
-		//     matched exposure (~0.27) the flat control gets 0.38 and this scaler gets 0.40-0.43.
-		//   * INVERTING the tilt (lever the still-falling bars) fails on all four samples (Sharpe 0.29-0.32)
-		//     at unchanged exposure, so the direction carries real information.
-		// The parameter choice also survives a walk-forward: chosen on the first 70% of history it picks the
-		// same region (no gate, K 0.4-0.75) and still beats the baseline 4/4 on the untouched tail.
-		// Complementary to the RSI-2 trim and the KAMA smoother -- ablating either leaves the scaler adding
-		// value on top of what remains, and neither substitutes for it.
+		// WHY BELOW THE KAMA ONLY. Peak age means opposite things in the two regimes. Above the KAMA a recent
+		// peak is just an ordinary uptrend pullback and cutting it is pure cost; below the KAMA a recent peak is
+		// a fresh break down and cutting it is protection. Measured (2,289 names, last 30% OOS, means, each
+		// bucket's bars scored as their own return series):
+		//   above KAMA: return/drawdown 0.558 -> 0.475 with the scaler on   (it DESTROYS this bucket, -15%)
+		//   below KAMA: return/drawdown 0.514 -> 0.540, Sharpe 0.70 -> 0.76 (it helps)
+		// Bars split 50.9% above / 49.1% below. Running it above-KAMA-only is the single worst config tested.
 		//
-		// KNOBS. DdRatioK is the participation dial: 0.4 is more defensive, 0.75 keeps more upside (0.4-0.75
-		// is a flat plateau, so it is a preference, not a fit). DdRatioMin is the workhorse -- the de-lever
-		// half does most of the work -- and DdRatioMax barely matters (1.5 ~ 2.0). DdRatioGate would apply
-		// the scaler only past a minimum dd60; it is 0 (off) because gating it measurably HURT (de-levering
-		// near the highs is a large part of the edge). WINDOWS: 30/60 is the shipped pair -- it is the best
-		// on the concentrated high-vol basket; 15/45 and 20/60 score slightly higher on the broad universe
-		// but weaker on the basket, while every long pair (45/90, 45/120, 60/120) fails outright.
-		// DdRatioMode 2 is an equivalent bounded form, mult = 1 + K*(2*rec - 1) with rec = (dd60-dd30)/dd60,
-		// which lands in the same place once K is tuned. DdRatioMode = 0 turns the scaler off.
+		// VALIDATION. ~190 configs, 2,289 names (full >=$500M universe, 4 disjoint samples), scored on the last
+		// 30% of each name's history, MEANS across names. Because a signal-free flat haircut raises
+		// return/drawdown from 0.757 to 0.849 purely by holding more capital, raw return/drawdown is NOT
+		// comparable across configs; every candidate is scored as `ratio - flatRatio(exposure)` against a
+		// matched-exposure flat-haircut curve (DdRatioMode = 3 builds it).
+		//   shipped:  return 18.0 -> 19.0, drawdown 21.2 -> 21.6, ratio 0.849 -> 0.878, EXCESS +0.029,
+		//             Sharpe 0.36 -> 0.38, mean exposure 0.38 -> 0.39 -- i.e. UNCHANGED capital deployed, so
+		//             this reshapes when it holds rather than holding less. Better on all 4 samples.
+		//   cohorts:  violent 2.20 -> 2.30, decliners -0.32 -> -0.30, curated basket 5.84 -> 6.28
+		//             (13 of 19 basket names higher return, 13 of 19 better return/drawdown).
+		//   controls: the same scaler run EVERYWHERE scores +0.001 (and -0.018 at the old K), above-KAMA-only
+		//             -0.045, and the INVERTED tilt -0.022/-0.032 on 0 of 4 samples. So the confinement -- not
+		//             the softer K -- is what does the work, and the direction carries real information.
+		//   walk-forward: chosen on the first 70% of history it still wins on the untouched tail
+		//             (in-sample Sharpe 0.13 vs 0.12, out-of-sample 0.41 vs 0.38).
+		//
+		// HISTORY. The unconfined form shipped 2026-07-30, was disabled 2026-07-31 on a live-chart report, and
+		// returns here confined. The report: IREN 2025-09-08 had run 16.58 -> 26.19 (+58%) and sat 10% below a
+		// peak six sessions old, so dd30 == dd60 == 10.03%, ratio 1.000, and it took the MAXIMUM de-lever
+		// (0.6982 traded vs 1.2850 with the scaler off) -- identically to a name 40% down and still falling.
+		// Over 208k scored bars, 54% of all bars had the peak inside the last 30 bars, ~41% of ALL bars took the
+		// maximum cut, and 26.5% of ALL bars were uptrend bars (close > 50-bar SMA) being halved at a median
+		// depth of just 6.3%. Confining to below the KAMA removes exactly that population: the same IREN bar now
+		// prices at 1.2850, untouched, because it is above its KAMA.
+		//
+		// KNOBS. DdRatioK is the participation dial, on a flat plateau from 0.6 to 0.9 (excess +0.027 to +0.030,
+		// falling to +0.005 by K = 0.3), so 0.75 is a preference inside a plateau, not a fit. Clamps barely
+		// matter. DdRatioGate (require a minimum dd60 first) stays 0 -- gating measurably HURTS. DdRatioMinDd is
+		// now REDUNDANT rather than load-bearing: the fresh-high pathology it guarded only fires above the KAMA,
+		// so the confinement already excludes it and the knob is flat within +/-0.003 from 0 to 5; it is kept at
+		// 1 as a cheap belt-and-braces. WINDOWS: 30/60 is best (+0.025) ahead of 30/120 (+0.019), 30/90 (+0.017)
+		// and 20/60 (+0.013); 60/120 fails outright (-0.019). DdRatioMode 2 is an equivalent bounded form,
+		// mult = 1 + K*(2*rec - 1) with rec = (dd60-dd30)/dd60, landing in the same place once K is tuned.
+		// DdRatioMode = 0 turns the scaler off and restores the pre-scaler engine.
 		public static int    DdWindow      = 60;   // long drawdown window (bars)
 		public static int    DdShortWindow = 30;   // short drawdown window (bars)
-		// DEFAULT OFF (0). The ratio form is DEPTH-BLIND and was disabled on 2026-07-31 after a live-chart
-		// report. dd30 == dd60 whenever the 60-bar peak falls inside the last 30 bars -- the normal state in any
-		// uptrend -- and then the ratio is exactly 1 and the multiplier pins to K, the HARDEST de-lever, no
-		// matter how shallow the pullback. Worked example: IREN 2025-09-08 had run 16.58 -> 26.19 (+58%) over
-		// the window and sat 10% below its peak; it was cut to 0.50x, identically to a name 40% down and still
-		// falling. Measured over 208k scored bars, 54% of all bars have the peak inside the last 30 bars, ~41%
-		// of ALL bars take the maximum cut, and 26.5% of all bars are UPTREND bars (close > 50-bar SMA) being
-		// halved at a median depth of just 6.3%. The "de-levers while still making new short-window lows"
-		// rationale was never true of this expression -- dd60/dd30 encodes PEAK AGE, and being scale-free it
-		// discards depth entirely, which is the one thing that should govern how hard to de-lever.
-		// Set to 1 to restore the old behaviour, or 2 for the recovered-fraction form. A depth-aware
-		// replacement is the open work item; see the README.
-		public static int    DdRatioMode = 0;      // 0 = off (default), 1 = ratio form, 2 = recovered-fraction form
-		public static double DdRatioK    = 0.5;
-		public static double DdRatioMin  = 0.5;    // hardest de-lever (still making new short-window lows)
-		public static double DdRatioMax  = 1.5;    // ceiling on the multiplier (recovered off an older low)
+		public static int    DdRatioMode = 1;      // 0 = off, 1 = ratio form (default), 2 = recovered-fraction form
+		public static double DdRatioK    = 0.75;   // multiplier when the peak is recent; plateau 0.6-0.9
+		public static double DdRatioMin  = 0.5;    // hardest de-lever (fresh break down from a recent peak)
+		public static double DdRatioMax  = 2.0;    // ceiling on the multiplier (recovering under an older peak)
 		public static double DdRatioGate = 0.0;    // require dd60 > this % before scaling (0 = always on)
 		public static double DdRatioEps  = 1.0;    // floor on dd30 in mode 1 (keeps the ratio finite at a fresh high)
 		public static bool   DdRatioPostSmooth = false;   // apply after the position smoother instead of before
 
 		// ---- MINIMUM DRAWDOWN ON BOTH WINDOWS (DEFAULT ON, 1%) ----
 		// The scaler is neutral (mult = 1) unless BOTH dd60 and dd30 exceed DdRatioMinDd, so it only acts when
-		// there is an actual drawdown on both horizons. This closes a real defect in the ratio form: with no
-		// drawdown dd60 -> 0, so the raw ratio -> 0 and the clamp FLOORS it at DdRatioMin -- meaning the
-		// HARDEST de-lever fired at a fresh 60-bar high, where there is nothing to protect against. (Relatedly,
-		// on the diagonal dd30 == dd60 the ratio is exactly K at ANY depth, so "at a new high" and "40% down
-		// and still falling" were indistinguishable.) Measured: 19.5% of bars sit within 2% of the 60-bar high
-		// and 57.7% of those were being cut -- 11.2% of ALL bars de-levered with no real drawdown.
-		// Fixing it is free-to-positive on 2,289 names (last 30% OOS): broad ret/DD 0.380 -> 0.376 and Sharpe
-		// 0.40 unchanged, while max drawdown improves 14.1 -> 13.9, the violent cohort 1.64 -> 1.67, basket
-		// Sharpe 0.73 -> 0.78 with 13 of 19 basket names better, and the in-sample head is matched (Sharpe 0.18,
-		// drawdown 20.1 -> 19.8). Do NOT raise it far: requiring a SUBSTANTIAL drawdown walks the feature back
-		// to a plain haircut -- at 3% broad Sharpe falls to 0.36 (below the flat-haircut control's 0.37) and by
-		// 10% the scaler is indistinguishable from a flat x0.9. 0 disables the minimum.
+		// there is an actual drawdown on both horizons. Originally this closed a real defect: with no drawdown
+		// dd60 -> 0, so the raw ratio -> 0 and the clamp FLOORS it at DdRatioMin -- the HARDEST de-lever firing
+		// at a fresh 60-bar high, where there is nothing to protect against (19.5% of bars sat within 2% of the
+		// 60-bar high and 57.7% of those were being cut -- 11.2% of ALL bars). Under the KAMA confinement that
+		// population is already excluded, since a bar at a fresh high is above its KAMA by construction, so this
+		// knob is now REDUNDANT: excess is flat within +/-0.003 across DdRatioMinDd 0 to 5. Kept at 1 as cheap
+		// insurance for anyone who sets DdRatioKamaMode = 0. Do NOT raise it far in that unconfined case:
+		// requiring a SUBSTANTIAL drawdown walks the feature back to a plain haircut. 0 disables the minimum.
 		public static double DdRatioMinDd = 1.0;
+		// ---- KAMA CONFINEMENT (DEFAULT 1 = below only) ----
+		// Restrict the scaler by position relative to the KAMA (the same KAMA the position smoother uses).
+		//   0 = everywhere, 1 = only when close < KAMA (DEFAULT), 2 = only when close >= KAMA
+		// See the block above for why: the scaler's effect flips sign across the KAMA, so this is the difference
+		// between a feature worth shipping (+0.029 excess) and one that is worse than a flat haircut (-0.018).
+		public static int DdRatioKamaMode = 1;
 
 		// The scaler as a pure function of the two drawdowns, so a harness or the Pine port can reproduce it.
 		public static double DdRatioMult(double dd60Pct, double dd30Pct)
@@ -434,6 +445,7 @@ namespace StockOdds
 			// per-bar return series for Sharpe (strategy = sized/signed, buy&hold = raw move),
 			// over the exact same bars so the two ratios are comparable.
 			var positions = new List<double>();
+			var kamaAbove = new List<bool>();
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
@@ -656,8 +668,15 @@ namespace StockOdds
 				// Applied before smoothing so the cut eases in/out.
 				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
 					position = Math.Min(position, ExtCapCeil / 100.0);
-				// drawdown-recovery scaler: de-lever while still making new 30-bar lows, lever once recovered
+				// peak-age scaler, below the KAMA only: de-lever a fresh break down from a recent peak, lever a
+				// name grinding back toward a recent high that still sits under an older one.
 				double ddRatioMult = DdRatioMult(ddPct, ddShortPct);
+				if (DdRatioKamaMode != 0 && !double.IsNaN(kama))
+				{
+					bool above = prev.Close >= kama;
+					if (DdRatioKamaMode == 1 && above) ddRatioMult = 1.0;    // only act BELOW the KAMA
+					if (DdRatioKamaMode == 2 && !above) ddRatioMult = 1.0;   // only act AT/ABOVE the KAMA
+				}
 				if (DdRatioMode != 0 && !DdRatioPostSmooth)
 					position = Clamp(position * ddRatioMult, minExp, maxExp);
 				// KAMA-distance smoothing: heavier the further price sits below its KAMA, light (P5) at/above it.
@@ -697,6 +716,7 @@ namespace StockOdds
 				bhReturns.Add(r);
 				returnDates.Add(bar.Date);
 				positions.Add(position);
+				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -730,6 +750,7 @@ namespace StockOdds
 			result.StratReturns = stratReturns;
 			result.ReturnDates = returnDates;
 			result.Positions = positions;
+			result.KamaAbove = kamaAbove;
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
 			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
 			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);

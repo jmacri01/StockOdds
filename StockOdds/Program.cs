@@ -134,20 +134,24 @@ class Program
 		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
 		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
-		// Drawdown-recovery scaler: position *= clamp(K * dd60/dd30, min, max). dd60 >= dd30 always, so the
-		// ratio reads WHERE in a drawdown price sits -- ~1 while still making new 30-bar lows (scaled toward
-		// 0.5x at K=0.5), large once it has climbed off an older low (up to the 1.5x cap).
+		// Peak-age scaler, BELOW THE KAMA ONLY: position *= clamp(K * dd60/dd30, min, max). dd60 >= dd30 always,
+		// and dd30 == dd60 exactly when the 60-bar peak falls inside the last 30 bars -- so the ratio reads PEAK
+		// AGE, not depth: ~1 on a fresh pullback from a recent high (scaled to K), large when the 60-bar peak is
+		// older than 30 bars and price is grinding back toward a nearer high (up to the cap). That read is only
+		// useful below the KAMA -- above it a recent peak is just an uptrend pullback, and cutting it is pure
+		// cost (return/drawdown 0.558 -> 0.475 on those bars). Confined, it is +0.029 over a matched-exposure
+		// flat haircut; unconfined it is -0.018, i.e. worse than simply holding less.
 		BankrollSimulator.DdWindow      = 60;             // long drawdown window
 		BankrollSimulator.DdShortWindow = 30;             // short drawdown window
-		BankrollSimulator.DdRatioMode = 0;                // OFF by default: the ratio is depth-blind (dd30 == dd60 whenever
-		                                                  // the peak is within 30 bars, i.e. all uptrends), so it cut shallow
-		                                                  // pullbacks as hard as collapses. 1 restores it, 2 = recovered-fraction
-		BankrollSimulator.DdRatioK    = 0.5;              // participation dial: 0.4 more defensive, 0.75 keeps more upside
-		BankrollSimulator.DdRatioMin  = 0.5;              // hardest de-lever (the workhorse half)
-		BankrollSimulator.DdRatioMax  = 1.5;              // multiplier ceiling (barely matters; 1.5 ~ 2.0)
+		BankrollSimulator.DdRatioMode = 1;                // 1 = ratio form (default), 0 = off, 2 = recovered-fraction
+		BankrollSimulator.DdRatioKamaMode = 1;            // 1 = act only below the KAMA (the whole ballgame; see above)
+		BankrollSimulator.DdRatioK    = 0.75;             // participation dial; flat plateau 0.6-0.9, so not a fit
+		BankrollSimulator.DdRatioMin  = 0.5;              // hardest de-lever (fresh break down from a recent peak)
+		BankrollSimulator.DdRatioMax  = 2.0;              // multiplier ceiling (barely matters)
 		BankrollSimulator.DdRatioGate = 0.0;              // 0 = always on; gating it on a minimum dd60 measurably HURT
-		BankrollSimulator.DdRatioMinDd = 1.0;             // only act when BOTH dd30 and dd60 exceed this % (else neutral):
-		                                                  // without it the ratio's floor de-levered hardest at a fresh high
+		BankrollSimulator.DdRatioMinDd = 1.0;             // only act when BOTH dd30 and dd60 exceed this % (else neutral).
+		                                                  // Redundant under the KAMA confinement (a fresh high is above its
+		                                                  // KAMA anyway); kept as insurance if KamaMode is set to 0
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),
 			// EMA-smoothed. Defaults are exp / base 1 / decay 0.6, refs calibrated to a ~110-name
