@@ -125,24 +125,26 @@ extCapCeil = input.float(60, "Extension cap ceiling (exposure %)", minval = 0, g
 extMaPeriod = input.int(50, "Extension MA period", minval = 1, group = grpExt,
      tooltip = "SMA lookback the extension is measured against. 50 isolates ACUTE spikes; a slower MA (100) flags sustained trends and caps genuine winners.")
 
-grpDd = "Drawdown-recovery scaler"
-ddRatioMode = input.string("Off", "Scaler form", options = ["Ratio (K * dd60/dd30)", "Recovered fraction", "Off"], group = grpDd,
-     tooltip = "DEFAULT OFF: the ratio is depth-blind -- dd30 equals dd60 whenever the 60-bar peak is inside the last 30 bars (every uptrend), so it cut a 10% pullback exactly as hard as a 40% collapse. Multiplies the position by where price sits in its drawdown. dd60/dd30 are the drawdowns from the rolling 60- and 30-bar highs of the close; a 60-bar high is always >= a 30-bar high, so the ratio reads POSITION in the drawdown, not depth: ~1 while still making new 30-bar lows, large once recovered off an older low. 'Recovered fraction' is the equivalent bounded form 1 + K*(2*rec - 1), rec = (dd60 - dd30)/dd60.")
+grpDd = "Peak-age scaler (below KAMA)"
+ddRatioMode = input.string("Ratio (K * dd60/dd30)", "Scaler form", options = ["Ratio (K * dd60/dd30)", "Recovered fraction", "Off"], group = grpDd,
+     tooltip = "Multiplies the position by a PEAK-AGE reading. dd60/dd30 are the drawdowns from the rolling 60- and 30-bar highs of the close; a 60-bar high is always >= a 30-bar high, so dd30 equals dd60 exactly when the 60-bar peak falls INSIDE the last 30 bars. The ratio therefore reads peak AGE, not depth: ~1 on a fresh pullback from a recent high (scaled to K, the hardest de-lever, at any depth), and large when the 60-bar peak is older than 30 bars and price is grinding back toward a nearer high (up to the max). That reading is only useful BELOW the KAMA -- see the confinement setting. 'Recovered fraction' is the equivalent bounded form 1 + K*(2*rec - 1), rec = (dd60 - dd30)/dd60.")
+ddRatioKamaMode = input.string("Below KAMA only", "Apply where", options = ["Below KAMA only", "Everywhere", "At/above KAMA only"], group = grpDd,
+     tooltip = "THE LOAD-BEARING SETTING. The scaler's effect flips sign across the KAMA, because peak age means opposite things in the two regimes: above the KAMA a recent peak is an ordinary uptrend pullback and cutting it is pure cost (those bars' return/drawdown goes 0.558 -> 0.475), while below it a recent peak is a fresh break down and cutting it is protection (0.514 -> 0.540, Sharpe 0.70 -> 0.76). Confined below, the feature beats a matched-exposure flat haircut by +0.029; run everywhere it scores -0.018, i.e. WORSE than simply holding less; 'at/above only' is the worst configuration tested. Bars split roughly 51% above / 49% below.")
 ddWindow = input.int(60, "Long drawdown window (bars)", minval = 2, group = grpDd)
 ddShortWindow = input.int(30, "Short drawdown window (bars)", minval = 2, group = grpDd,
-     tooltip = "30/60 is the shipped pair (best on the concentrated high-vol basket). 15/45 and 20/60 score slightly better on a broad universe; long pairs (45/90, 60/120) fail.")
-ddRatioK = input.float(0.5, "Scaler K", minval = 0, step = 0.05, group = grpDd,
-     tooltip = "Participation dial. 0.4 = more defensive, 0.75 = keeps more upside. 0.4-0.75 is a flat plateau, so treat it as a preference rather than a fitted value.")
+     tooltip = "30/60 is best (+0.025 excess over the flat-haircut curve), ahead of 30/120 (+0.019), 30/90 (+0.017) and 20/60 (+0.013). 60/120 fails outright.")
+ddRatioK = input.float(0.75, "Scaler K", minval = 0, step = 0.05, group = grpDd,
+     tooltip = "Participation dial: the multiplier applied when the peak is recent. Flat plateau from 0.6 to 0.9 (excess +0.027 to +0.030), falling to +0.005 by 0.3 -- so treat it as a preference inside a plateau, not a fitted value.")
 ddRatioMin = input.float(0.5, "Scaler min (hardest de-lever)", minval = 0, step = 0.05, group = grpDd,
-     tooltip = "The workhorse half: the de-lever side does most of the work.")
-ddRatioMax = input.float(1.5, "Scaler max", minval = 0, step = 0.05, group = grpDd,
-     tooltip = "Barely matters (1.5 is ~ equivalent to 2.0).")
+     tooltip = "Floor on the multiplier: a fresh break down from a recent peak. Barely matters at the shipped K.")
+ddRatioMax = input.float(2.0, "Scaler max", minval = 0, step = 0.05, group = grpDd,
+     tooltip = "Ceiling on the multiplier: recovering toward a nearer high that still sits under an older peak. Barely matters.")
 ddRatioGate = input.float(0, "Only apply when dd60 exceeds (%)", minval = 0, step = 1, group = grpDd,
-     tooltip = "0 = always on. Gating this on a minimum drawdown measurably HURT: de-levering near the highs is a large part of the edge.")
+     tooltip = "0 = always on. Gating this on a minimum drawdown measurably HURT.")
 ddRatioEps = input.float(1.0, "dd30 floor (%)", minval = 0.01, step = 0.1, group = grpDd,
      tooltip = "Keeps the ratio finite when price is at a fresh high (dd30 -> 0).")
 ddRatioMinDd = input.float(1.0, "Require both drawdowns above (%)", minval = 0, step = 0.5, group = grpDd,
-     tooltip = "The scaler stays neutral unless BOTH dd60 and dd30 exceed this. Without it the ratio's floor de-levers HARDEST at a fresh high (dd60 -> 0 makes the raw ratio 0, which clamps to the minimum) -- 11% of all bars were being cut with no real drawdown. Do not raise it far: requiring a substantial drawdown walks the feature back to a plain haircut.")
+     tooltip = "The scaler stays neutral unless BOTH dd60 and dd30 exceed this. It guards a corner where dd60 -> 0 makes the raw ratio 0, which clamps to the MINIMUM -- the hardest de-lever at a fresh high. Redundant while confined below the KAMA (a bar at a fresh high is above its KAMA by construction), so excess is flat from 0 to 5; it matters only if you set 'Apply where' to Everywhere.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -335,26 +337,33 @@ rawPosPreCap = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0
 extSma = ta.sma(close, extMaPeriod)
 extPct = not na(extSma) and extSma > 0 ? (close / extSma - 1.0) * 100.0 : 0.0
 rawPosPreDd = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stState != 3) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
-// Drawdown-recovery scaler: multiply the position by where price sits in its drawdown. dd60 >= dd30 always,
-// so the ratio is a POSITION-in-the-drawdown reading: ~1 while still printing new 30-bar lows (scaled toward
-// the min at K = 0.5), large once price has climbed off an older low (up to the max). Applied before the
-// position smoother so the change eases in/out, then re-clamped to the exposure band.
+// KAMA of the close (fast 2 / slow 30, using the same ER as the persistence window). Computed HERE, before the
+// scaler, because both the peak-age scaler's confinement and the position smoother read it -- matching the C#
+// engine, where kama is updated from the decision close and then used by both.
+priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
+var float kama = na
+kamaSc = math.pow(priceEr * (2.0 / 3.0 - 2.0 / 31.0) + 2.0 / 31.0, 2)   // Kaufman smoothing constant (fast 2 / slow 30)
+kama := na(kama) ? close : kama + kamaSc * (close - kama)
+aboveKama = not na(kama) and close >= kama
+belowKama = (not na(kama) and kama > 0) ? math.max(0.0, (kama - close) / kama) : 0.0
+// Peak-age scaler: multiply the position by a peak-AGE reading. dd30 equals dd60 exactly when the 60-bar peak
+// falls inside the last 30 bars, so the ratio is ~1 on a fresh pullback from a recent high (scaled to K, the
+// hardest de-lever, at any depth) and large when the 60-bar peak is older than 30 bars and price is grinding
+// back toward a nearer high (up to the max). Applied on BELOW-KAMA bars only by default -- above the KAMA the
+// same reading just cuts ordinary uptrend pullbacks, which is pure cost. Applied before the position smoother
+// so the change eases in/out, then re-clamped to the exposure band.
 ddHi60 = ta.highest(close, ddWindow)
 ddHi30 = ta.highest(close, ddShortWindow)
 dd60Pct = (not na(ddHi60) and ddHi60 > 0) ? (ddHi60 - close) / ddHi60 * 100.0 : 0.0
 dd30Pct = (not na(ddHi30) and ddHi30 > 0) ? (ddHi30 - close) / ddHi30 * 100.0 : 0.0
 ddRec = dd60Pct > 1e-9 ? (dd60Pct - dd30Pct) / dd60Pct : 0.0
 ddMultRaw = ddRatioMode == "Ratio (K * dd60/dd30)" ? ddRatioK * dd60Pct / math.max(dd30Pct, ddRatioEps) : 1.0 + ddRatioK * (2.0 * ddRec - 1.0)
-ddMult = (ddRatioMode == "Off" or dd60Pct <= ddRatioGate or (ddRatioMinDd > 0 and (dd60Pct < ddRatioMinDd or dd30Pct < ddRatioMinDd))) ? 1.0 : math.min(math.max(ddMultRaw, ddRatioMin), ddRatioMax)
+ddKamaOff = (ddRatioKamaMode == "Below KAMA only" and aboveKama) or (ddRatioKamaMode == "At/above KAMA only" and not aboveKama)
+ddMult = (ddRatioMode == "Off" or ddKamaOff or dd60Pct <= ddRatioGate or (ddRatioMinDd > 0 and (dd60Pct < ddRatioMinDd or dd30Pct < ddRatioMinDd))) ? 1.0 : math.min(math.max(ddMultRaw, ddRatioMin), ddRatioMax)
 rawPos = na(rawPosPreDd) ? na : math.min(math.max(rawPosPreDd * ddMult, loExp), hiExp)
 // EMA-smooth the final position (matches BankrollSimulator.PositionSmoothPeriod)
 var float posEma = na
 // KAMA-distance smoothing: heavier period the further the close is BELOW its KAMA, light (default) at/above it.
-priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
-var float kama = na
-kamaSc = math.pow(priceEr * (2.0 / 3.0 - 2.0 / 31.0) + 2.0 / 31.0, 2)   // Kaufman smoothing constant (fast 2 / slow 30)
-kama := na(kama) ? close : kama + kamaSc * (close - kama)
-belowKama = (not na(kama) and kama > 0) ? math.max(0.0, (kama - close) / kama) : 0.0
 smoothPer = kamaSmooth ? math.max(posSmoothPeriod, math.min(kamaSmoothMaxPeriod, posSmoothPeriod + kamaSmoothSlope * belowKama * kamaSmoothMaxPeriod)) : posSmoothPeriod
 posEma := (smoothPer > 0 and not na(rawPos)) ? (na(posEma) ? rawPos : (2.0 / (smoothPer + 1)) * rawPos + (1.0 - 2.0 / (smoothPer + 1)) * posEma) : rawPos
 position = posEma
