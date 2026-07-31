@@ -290,11 +290,32 @@ namespace StockOdds
 		public static double DdRatioEps  = 1.0;    // floor on dd30 in mode 1 (keeps the ratio finite at a fresh high)
 		public static bool   DdRatioPostSmooth = false;   // apply after the position smoother instead of before
 
+		// ---- MINIMUM DRAWDOWN ON BOTH WINDOWS (DEFAULT ON, 1%) ----
+		// The scaler is neutral (mult = 1) unless BOTH dd60 and dd30 exceed DdRatioMinDd, so it only acts when
+		// there is an actual drawdown on both horizons. This closes a real defect in the ratio form: with no
+		// drawdown dd60 -> 0, so the raw ratio -> 0 and the clamp FLOORS it at DdRatioMin -- meaning the
+		// HARDEST de-lever fired at a fresh 60-bar high, where there is nothing to protect against. (Relatedly,
+		// on the diagonal dd30 == dd60 the ratio is exactly K at ANY depth, so "at a new high" and "40% down
+		// and still falling" were indistinguishable.) Measured: 19.5% of bars sit within 2% of the 60-bar high
+		// and 57.7% of those were being cut -- 11.2% of ALL bars de-levered with no real drawdown.
+		// Fixing it is free-to-positive on 2,289 names (last 30% OOS): broad ret/DD 0.380 -> 0.376 and Sharpe
+		// 0.40 unchanged, while max drawdown improves 14.1 -> 13.9, the violent cohort 1.64 -> 1.67, basket
+		// Sharpe 0.73 -> 0.78 with 13 of 19 basket names better, and the in-sample head is matched (Sharpe 0.18,
+		// drawdown 20.1 -> 19.8). Do NOT raise it far: requiring a SUBSTANTIAL drawdown walks the feature back
+		// to a plain haircut -- at 3% broad Sharpe falls to 0.36 (below the flat-haircut control's 0.37) and by
+		// 10% the scaler is indistinguishable from a flat x0.9. 0 disables the minimum.
+		public static double DdRatioMinDd = 1.0;
+
 		// The scaler as a pure function of the two drawdowns, so a harness or the Pine port can reproduce it.
 		public static double DdRatioMult(double dd60Pct, double dd30Pct)
 		{
 			if (DdRatioMode == 0) return 1.0;
 			if (dd60Pct <= DdRatioGate) return 1.0;
+			// only act when BOTH horizons show a real drawdown
+			if (DdRatioMinDd > 0 && (dd60Pct < DdRatioMinDd || dd30Pct < DdRatioMinDd)) return 1.0;
+			// mode 3 = FLAT control (ignores both drawdowns): the yardstick any reshaping must beat at
+			// matched exposure, since Sharpe is scale-invariant.
+			if (DdRatioMode == 3) return Clamp(DdRatioK, DdRatioMin, DdRatioMax);
 			double raw;
 			if (DdRatioMode == 1)
 				raw = DdRatioK * dd60Pct / Math.Max(dd30Pct, DdRatioEps);
