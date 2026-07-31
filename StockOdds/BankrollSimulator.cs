@@ -322,7 +322,11 @@ namespace StockOdds
 			else
 			{
 				double rec = dd60Pct > 1e-9 ? (dd60Pct - dd30Pct) / dd60Pct : 0.0;
-				raw = 1.0 + DdRatioK * (2.0 * rec - 1.0);
+				// mode 4 = INVERTED control (lever the still-falling bars, de-lever the recovered ones). If a
+				// candidate's mirror image also beats the baseline, the direction carries nothing.
+				raw = DdRatioMode == 4
+					? 1.0 + DdRatioK * (1.0 - 2.0 * rec)
+					: 1.0 + DdRatioK * (2.0 * rec - 1.0);
 			}
 			return Clamp(raw, DdRatioMin, DdRatioMax);
 		}
