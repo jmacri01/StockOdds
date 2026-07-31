@@ -93,6 +93,21 @@ namespace StockOdds
 		// first flat bar (harmful for core structures -- see above); N = hold for N consecutive flat bars, then close.
 		// 20 is the sweet spot: ≈ pure hold on every universe while keeping the position finite.
 		public static int    FlatHoldDays       = 20;
+		// STRUCTURE-SPECIFIC OVERRIDE: covered stock closes on the FIRST flat bar (0), not after 20.
+		// The "hold, don't flatten" rule was derived on the PMCC and over-generalised to stock. A PMCC core is
+		// a wide-spread call LEAP with convexity: churning it is expensive and holding it through a weak stretch
+		// captures the snap-backs (FlatHoldDays = 0 craters PMCC's broad ratio 1.09 -> 0.57). Covered stock's
+		// core is SHARES -- ~5bp to trade, no gamma -- so holding it while the signal is weak just absorbs
+		// drawdown for nothing. Measured on 2,289 names, 4 disjoint samples, with the drawdown-recovery scaler:
+		// closing immediately beats holding on BOTH the in-sample head (ret/DD 0.04 -> 0.20) and the held-out
+		// tail (0.24 -> 0.32), and lifts the high-vol basket 0.72 -> 1.15. Set to 20 to restore the old shared
+		// behaviour. (This was found while diagnosing why the scaler cost the overlays more than the underlying:
+		// the scaler lengthens runs of weak-signal bars, so forced core closes rose 1.86 -> 2.71 per name.)
+		public static int    CoveredFlatHoldDays = 0;
+
+		// the flat-close timer actually in force for the configured structure
+		private static int EffFlatHoldDays =>
+			Strategy == OverlayStrategy.CoveredStock ? CoveredFlatHoldDays : FlatHoldDays;
 		public static int    HvWindow           = 60;   // trailing bars for realized-vol estimate
 		public static double HvFloor            = 0.08; // floor on annualized HV
 
@@ -130,7 +145,7 @@ namespace StockOdds
 
 				bool flat = target <= FlatEps;
 				if (flat) flatCount++; else flatCount = 0;
-				bool doClose = flat && FlatHoldDays >= 0 && flatCount > FlatHoldDays;
+				bool doClose = flat && EffFlatHoldDays >= 0 && flatCount > EffFlatHoldDays;
 				if (doClose)
 				{
 					if (legs.Count > 0) { foreach (var l in legs) friction += Cost(l, l.VPrev); legs.Clear(); res.Rolls++; }
