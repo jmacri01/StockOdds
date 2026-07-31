@@ -10,7 +10,9 @@ This is **not an alpha engine** and doesn't pretend to be. It's an exposure-cont
 
 ## What to expect
 
-The proof is out-of-sample. Every table below is scored on the **last 30% of each name's ~5-year history** (data the parameters never saw), on the **full US-common-stock universe above the recommended ≥ $500M market-cap floor** — 2,429 eligible tickers, 2,289 with enough history, split into four disjoint samples so every finding below is checked for replication across all four. Drawdowns are shown as positive magnitudes (smaller = better).
+The proof is out-of-sample. Every table below is scored on the **last 30% of each name's ~5-year history** (data the parameters never saw), on the **full US-common-stock universe above the recommended ≥ $500M market-cap floor** — 2,429 eligible tickers, 2,289 with enough history, split into four disjoint samples so every finding below is checked for replication across all four. Drawdowns are shown as positive magnitudes (smaller = better). The **basket table further down covers each name's full ~5-year history** instead, and a full-history version of the three cohort tables is folded in below them.
+>
+> **Span convention:** the strategy can't trade until its state machine has warmed up (2-12 bars), so buy-&-hold is measured over the **identical bar span** as the strategy rather than from the very first bar — an apples-to-apples comparison. The console app's own `BuyHoldReturnPct` starts one bar in, so for names with a longer warmup its buy-&-hold figure differs slightly from these tables (materially only on the wildest names: GRPN −23% vs −1%, BE +871% vs +797%).
 
 > **Regenerated 2026-07-30** on the shipped config, which now adds the **drawdown-recovery scaler**: exposure is multiplied by `clamp(0.5 x dd60/dd30, 0.5, 1.5)`, where dd30 and dd60 are the trailing drawdowns from the rolling 30- and 60-bar highs. Because a 60-bar high is always at least a 30-bar high, that ratio reads *where in a drawdown* price sits rather than how deep it is — it de-levers while a name is still printing new 30-bar lows (and while it sits at its highs, the weakest cell in the map) and levers back up once it has climbed off an older low. Versus the previous config this cuts the whole-universe Cash drawdown **17.9% -> 14.1%** and lifts Sharpe **0.38 -> 0.40** on 26% less capital deployed; **Deploy keeps its 0.60 Sharpe at 29.3% -> 21.3% drawdown**, and on the violent cohort Deploy/Hold *gain* Sharpe (0.88 -> 0.93, 0.92 -> 0.94) while drawdown falls **57.7% -> 42.6%**. All tables below — including the options overlay — are on this config. See [the trade-off](#the-trade-off-honestly).
 
@@ -37,6 +39,38 @@ The proof is out-of-sample. Every table below is scored on the **last 30% of eac
 | **Cash** *(default)* | +48% | **29.2%** | 0.87 |
 | **Hold** | +71% | 43.7% | 0.94 |
 | *Buy & hold* | *+78%* | *57.9%* | *0.90* |
+
+<details>
+<summary><b>The same three cohorts over each name's full ~5-year history</b> (partly in-sample — includes the 2022 bear the strategy dodges)</summary>
+
+The tables above are the honest out-of-sample proof. These cover the **whole window** for reference — every name's full history, cohorts re-derived on full-history buy-&-hold (so the counts differ). The 2022 bear is in here, which is why buy-&-hold's drawdowns are far deeper and the engine's edge looks larger.
+
+| Mode | Sharpe | Max DD | Return |
+|---|---:|---:|---:|
+| **Deploy** | 0.39 | 33.1% | +28% |
+| **Cash** *(default)* | 0.24 | **23.5%** | +9% |
+| **Hold** | 0.39 | 38.1% | +31% |
+| *Buy & hold* | *0.34* | *56.0%* | *+21%* |
+
+*Whole universe, 2,289 names. Cash is shallower than buy-&-hold on 2,286 of them.*
+
+| Falling (906 names) | Return | Max DD | Sharpe |
+|---|---:|---:|---:|
+| **Cash** *(default)* | −6% | **33.9%** | 0.03 |
+| **Deploy** | −3% | 46.2% | 0.12 |
+| **Hold** | −10% | 53.5% | 0.08 |
+| *Buy & hold* | *−41%* | *73.9%* | *−0.01* |
+
+| Violent (595 names) | Return | Max DD | Sharpe |
+|---|---:|---:|---:|
+| **Deploy** | +66% | 43.2% | 0.51 |
+| **Cash** *(default)* | +30% | **31.6%** | 0.41 |
+| **Hold** | +69% | 47.7% | 0.50 |
+| *Buy & hold* | *+71%* | *64.1%* | *0.51* |
+
+*Cash is shallower than buy-&-hold on 906/906 falling names and 593/595 violent ones.*
+
+</details>
 
 ### The three modes
 
