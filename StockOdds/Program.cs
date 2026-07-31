@@ -144,6 +144,8 @@ class Program
 		BankrollSimulator.DdRatioMin  = 0.5;              // hardest de-lever (the workhorse half)
 		BankrollSimulator.DdRatioMax  = 1.5;              // multiplier ceiling (barely matters; 1.5 ~ 2.0)
 		BankrollSimulator.DdRatioGate = 0.0;              // 0 = always on; gating it on a minimum dd60 measurably HURT
+		BankrollSimulator.DdRatioMinDd = 1.0;             // only act when BOTH dd30 and dd60 exceed this % (else neutral):
+		                                                  // without it the ratio's floor de-levered hardest at a fresh high
 
 			// Long bias: a per-candle dynamic bias scaled by each candle's z = z(HV) + z(persistence),
 			// EMA-smoothed. Defaults are exp / base 1 / decay 0.6, refs calibrated to a ~110-name

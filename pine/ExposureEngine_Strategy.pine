@@ -127,6 +127,8 @@ ddRatioGate = input.float(0, "Only apply when dd60 exceeds (%)", minval = 0, ste
      tooltip = "0 = always on. Gating this on a minimum drawdown measurably HURT: de-levering near the highs is a large part of the edge.")
 ddRatioEps = input.float(1.0, "dd30 floor (%)", minval = 0.01, step = 0.1, group = grpDd,
      tooltip = "Keeps the ratio finite when price is at a fresh high (dd30 -> 0).")
+ddRatioMinDd = input.float(1.0, "Require both drawdowns above (%)", minval = 0, step = 0.5, group = grpDd,
+     tooltip = "The scaler stays neutral unless BOTH dd60 and dd30 exceed this. Without it the ratio's floor de-levers HARDEST at a fresh high (dd60 -> 0 makes the raw ratio 0, which clamps to the minimum) -- 11% of all bars were being cut with no real drawdown. Do not raise it far: requiring a substantial drawdown walks the feature back to a plain haircut.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -315,7 +317,7 @@ dd60Pct = (not na(ddHi60) and ddHi60 > 0) ? (ddHi60 - close) / ddHi60 * 100.0 : 
 dd30Pct = (not na(ddHi30) and ddHi30 > 0) ? (ddHi30 - close) / ddHi30 * 100.0 : 0.0
 ddRec = dd60Pct > 1e-9 ? (dd60Pct - dd30Pct) / dd60Pct : 0.0
 ddMultRaw = ddRatioMode == "Ratio (K * dd60/dd30)" ? ddRatioK * dd60Pct / math.max(dd30Pct, ddRatioEps) : 1.0 + ddRatioK * (2.0 * ddRec - 1.0)
-ddMult = (ddRatioMode == "Off" or dd60Pct <= ddRatioGate) ? 1.0 : math.min(math.max(ddMultRaw, ddRatioMin), ddRatioMax)
+ddMult = (ddRatioMode == "Off" or dd60Pct <= ddRatioGate or (ddRatioMinDd > 0 and (dd60Pct < ddRatioMinDd or dd30Pct < ddRatioMinDd))) ? 1.0 : math.min(math.max(ddMultRaw, ddRatioMin), ddRatioMax)
 rawPos = na(rawPosPreDd) ? na : math.min(math.max(rawPosPreDd * ddMult, loExp), hiExp)
 // EMA-smooth the final position (matches BankrollSimulator.PositionSmoothPeriod)
 var float posEma = na
