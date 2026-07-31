@@ -21,9 +21,10 @@ namespace StockOdds
 	public enum OverlayStrategy
 	{
 		Pmcc,         // long call LEAP + short calls only (can reduce delta, never add above the LEAP)
-		PmccShortPut, // long call LEAP + short calls (reduce) AND short puts (add) -> reaches >1 via short puts.
-		              // CAPITAL CAVEAT: the >1.0 leg is NAKED short puts (can't be cash-secured with the freed cash);
-		              // an experiment -- the model is delta-only, so it shows the delta exposure, not the margin needed.
+		PmccShortPut, // long call LEAP + short calls (reduce) AND short puts (add). The puts are CASH-SECURED like
+		              // every other structure's, funded only from bankroll minus the LEAP's cost, so net delta
+		              // reaches only what the account can actually post collateral for (~1.0-1.1), not an
+		              // unfunded 1.5. Before that rule this structure's apparent >1 leverage was naked puts.
 		ShortPut,     // no core; a single short put at delta = min(target, ShortPutCap); flat when target ~ 0
 		CoveredStock, // long shares + short calls
 		PmccStrangle, // long call LEAP + an always-on short strangle (1 call + 1 put); the nearer leg is
@@ -46,9 +47,16 @@ namespace StockOdds
 		public double MaxDrawdownPct { get; set; }
 		public double TotalReturnPct { get; set; }
 		public int Rolls { get; set; }                   // count of short-leg resizes / liquidations
-		public double MaxShortPutCollateralRatio { get; set; } // max at sale of (sum of short-put strikes)/bankroll; the pre-cap leverage a cash-secured account could not fund
+		public double MaxShortPutCollateralRatio { get; set; } // max over the run of REQUIRED short-put collateral / bankroll, measured BEFORE the cash-secured cap is applied. >1 means the structure wanted leverage a cash account could not fund. Tracked for every structure, not just the standalone short put.
 		public double TimeInTradePct { get; set; }       // % of measured bars the structure holds market exposure (|net delta| > 0.05); the rest is idle capital (opportunity cost)
 		public double MeanExposure { get; set; }         // average |net delta| across measured bars (0..>1); capital-at-work per dollar
+		// ---- per-bar diagnostics, parallel to Returns/Dates. Kept so the gap to the underlying engine can be
+		// DECOMPOSED rather than guessed at: exposure tracking (NetDeltas vs the engine's target) / option
+		// non-linearity (gross return vs delta x underlying return) / friction. See README "why the overlay
+		// gives back on compounders".
+		public List<double> NetDeltas { get; } = new();  // net delta held INTO the next bar (signed)
+		public List<double> Targets { get; } = new();    // the engine target the overlay was tracking that bar
+		public List<double> FrictionFrac { get; } = new(); // that bar's friction as a fraction of bankroll
 	}
 
 	public static class OptionsOverlaySimulator
@@ -60,10 +68,25 @@ namespace StockOdds
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
 		public static double RebalanceEdge     = 0.0;  // on a resize, aim net delta at target + this*DeadbandDelta: 0 = center (position exposure), -1 = lower edge (exposure - drift), +1 = upper edge
-		public static double MaxNetDelta       = 1.0;  // ceiling on the resize target (raise to allow leveraged net delta > 1; only structures that can add — straddle/put-diagonal/covered-stock via short puts — reach it)
+		// CEILING ON NET DELTA. By default this is TIED to the engine's exposure ceiling
+		// (MaxExposurePercent / 100) so the overlay can always express what the engine asks for and neither knob
+		// silently clips the other. Leaving them as two independent literals is what hid a real bug: the engine was
+		// swept up to 300% while this stayed at 1.0, so the overlay discarded every target above 1.0 and the extra
+		// exposure showed up as pure drawdown. Note the tie is not licence to lever -- short puts still have to be
+		// cash-secured, so the delta actually reached is whatever the account can fund (~1.0-1.1 for a PMCC core).
+		// Set TieNetDeltaToEngine = false to use MaxNetDelta as an explicit, independent override.
+		public static bool   TieNetDeltaToEngine = true;
+		public static double MaxNetDelta       = 1.0;  // only consulted when TieNetDeltaToEngine is false
+		private static double EffMaxNetDelta =>
+			TieNetDeltaToEngine ? BankrollSimulator.MaxExposurePercent / 100.0 : MaxNetDelta;
 		public static double ShortRollDte      = 1;    // roll a trim leg when its remaining DTE <= this (1 = hold to expiry; ShortDteDays/2 = roll at half-life to dodge the final-week gamma/pin ramp)
 		public static double ShortProfitTarget = 0.0;  // roll a SHORT leg once it decays to this fraction of its opening premium (0 = off; 0.5 = take 50% profit)
-		public static bool   CashSecuredPut     = true; // ShortPut structure: at each sale cap the short-put size so its collateral (strike) never exceeds the bankroll -- a genuinely cash-secured put, no margin. Once the underlying has run far past the (premium-grown) account a full ATM put can't be funded, so the position is scaled down. false = the delta-only picture (implicitly leveraged for winners).
+		// EVERY structure's short puts are cash-secured (collateral = strike, netted to the spread width where a
+		// long put offsets it, funded only from bankroll MINUS capital already in long legs). See
+		// EnforceCashSecured. Setting this false is a RESEARCH ESCAPE HATCH only -- it reproduces the old
+		// delta-only fiction in which PMCC + short puts and covered stock reached net delta > 1 on unfunded naked
+		// puts. Leave it true for anything you intend to trade.
+		public static bool   CashSecuredPut     = true;
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
@@ -161,6 +184,8 @@ namespace StockOdds
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) friction += Cost(l, l.VPrev);
 						legs.RemoveAll(l => l.Core && !l.Stock); EstablishCore(legs, S, iv, date);
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						// a core roll changes committed capital, so re-test the collateral of any live short puts
+						EnforceCashSecured(legs, S, iv, bankroll, date);
 					}
 
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
@@ -171,32 +196,26 @@ namespace StockOdds
 					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit  || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
-						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(MaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
-						// CASH-SECURED: cap the just-sold short put(s) so collateral (sum of strikes) <= bankroll.
-						// A cash-secured put posts K per contract; once the underlying has run far past the
-						// (premium-grown) account a full ATM put can't be funded, so scale down instead of using margin.
-						if (Strategy == OverlayStrategy.ShortPut && bankroll > 1e-9)
-						{
-							var sp = legs.Where(l => !l.Core && l.Qty < 0 && !l.Call).ToList();
-							double coll = sp.Sum(l => -l.Qty * l.K);
-							if (coll > 1e-9)
-							{
-								double r2 = coll / bankroll; if (r2 > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = r2;
-								if (CashSecuredPut && coll > bankroll) { double f = bankroll / coll; foreach (var l in sp) l.Qty *= f; }
-							}
-						}
+						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
+						// the two invariants, applied to EVERY structure (see the definitions above)
+						EnforceNoNakedCalls(legs);
+						double collRatio = EnforceCashSecured(legs, S, iv, bankroll, date);
+						if (collRatio > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = collRatio;
 						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
 						res.Rolls++;
 					}
 				}
 
-				if (bankroll <= 1e-6) { res.Returns.Add(-1.0); res.Dates.Add(date); break; } // ruin
+				// ruin (the diagnostic lists are kept the same length as Returns so they can be zipped)
+				if (bankroll <= 1e-6) { res.Returns.Add(-1.0); res.Dates.Add(date); res.FrictionFrac.Add(0); res.NetDeltas.Add(0); res.Targets.Add(0); break; }
 				double netPnl = pnl - friction;
 				double dr = netPnl / bankroll; if (double.IsNaN(dr) || double.IsInfinity(dr)) dr = 0;
+				res.FrictionFrac.Add(bankroll > 1e-9 ? friction / bankroll : 0.0);
 				bankroll += netPnl; res.Returns.Add(dr); res.Dates.Add(date);
 					// time-in-trade / mean-exposure: |net delta| of the position held into the next bar
 					double curNet = Math.Abs(legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)));
 					nBars++; if (curNet > 0.05) nInTrade++; sumExp += curNet;
+					res.NetDeltas.Add(curNet); res.Targets.Add(target);
 			}
 
 			res.SharpeRatio = Sharpe(res.Returns);
@@ -266,6 +285,60 @@ namespace StockOdds
 			double rem = reduce - cd;
 			if (rem > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, rem)), Exp = exp });
 		}
+		// ================= HARD INVARIANT 1: EVERY SHORT PUT IS CASH-SECURED, IN EVERY STRUCTURE =================
+		// A short put must post its collateral in cash. Available cash is the bankroll MINUS capital already
+		// committed to long legs (shares at spot, long options at market value) -- money spent on a call LEAP or on
+		// stock cannot simultaneously secure a put. Collateral per short put is its STRIKE, netted down to the
+		// spread width when a long put at a lower strike and the same expiry offsets it (a defined-risk vertical
+		// genuinely needs only the difference). If the requirement exceeds available cash, every put leg in that
+		// expiry is scaled down pro rata -- short and long together, so a spread keeps its shape.
+		//
+		// This used to be applied ONLY to the standalone ShortPut structure, which meant PMCC + short puts and
+		// covered stock reached net delta > 1 with NAKED, UNFUNDED puts. That is what let them appear to improve
+		// monotonically as the delta ceiling rose: the "leverage" was free money the model never had to fund.
+		//
+		// Accounting caveat: the overlay is a P&L/delta model, not a full cash-flow ledger (bankroll accrues
+		// Sum qty*dV rather than tracking settlement), so "capital committed" is long legs at market value. That is
+		// the right first-order test for whether a put could actually be secured; it is not a margin engine.
+		// Returns the PRE-CAP collateral-to-bankroll ratio, for diagnostics.
+		private static double EnforceCashSecured(List<Leg> legs, double S, double iv, double bankroll, DateTime now)
+		{
+			if (bankroll <= 1e-9) return 0;
+			double longCapital = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * (l.Stock ? S : LegValue(l, S, iv, now)));
+			double available = Math.Max(0.0, bankroll - longCapital);
+
+			double required = 0;
+			foreach (var grp in legs.Where(l => !l.Call && !l.Stock).GroupBy(l => l.Exp))
+			{
+				double shortColl = grp.Where(l => l.Qty < 0).Sum(l => -l.Qty * l.K);
+				double longOffset = grp.Where(l => l.Qty > 0).Sum(l => l.Qty * l.K);
+				required += Math.Max(0.0, shortColl - longOffset);
+			}
+			if (required <= 1e-9) return 0;
+			double ratio = required / bankroll;
+			if (!CashSecuredPut || required <= available) return ratio;
+
+			double f = available / required;                 // 0 when every dollar is already committed
+			foreach (var l in legs.Where(l => !l.Call && !l.Stock).ToList()) l.Qty *= f;
+			legs.RemoveAll(l => !l.Call && !l.Stock && Math.Abs(l.Qty) < 1e-6);
+			return ratio;
+		}
+
+		// ================= HARD INVARIANT 2: NO NAKED SHORT CALLS, IN EVERY STRUCTURE =================
+		// Short calls may never exceed the long core that covers them 1:1 (one LEAP or one share unit per call).
+		// Every branch below is written to satisfy this (a single Qty = -1 call against a Qty = 1 core, with any
+		// further reduction expressed as a LONG PUT), but it is clamped here as well so a future edit cannot
+		// silently reintroduce the ~25-30% phantom theta that stacked naked calls used to harvest.
+		private static void EnforceNoNakedCalls(List<Leg> legs)
+		{
+			double cover = legs.Where(l => l.Qty > 0 && (l.Call || l.Stock)).Sum(l => l.Qty);
+			double shortCalls = legs.Where(l => l.Call && l.Qty < 0).Sum(l => -l.Qty);
+			if (shortCalls <= cover + 1e-9) return;
+			double f = cover / shortCalls;                   // 0 cover -> no short calls at all
+			foreach (var l in legs.Where(l => l.Call && l.Qty < 0).ToList()) l.Qty *= f;
+			legs.RemoveAll(l => l.Call && l.Qty < 0 && Math.Abs(l.Qty) < 1e-6);
+		}
+
 		private static void ResizeShorts(List<Leg> legs, double S, double iv, double target, DateTime now)
 		{
 			legs.RemoveAll(l => !l.Core); // drop all trim legs (short calls/puts + any remainder long put); keep the core
