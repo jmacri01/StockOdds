@@ -35,8 +35,15 @@ namespace StockOdds
 		              // short call struck so net delta = target (1x1 vertical, same expiry, rolled monthly)
 		PutSpread,    // short-dated (ShortDteDays) bull PUT spread, both legs ~40 DTE: long put at
 		              // PutLeapDelta (protection) + short higher-strike put struck so net delta = target
-		PmccPutFloor  // PMCC whose short calls are capped at ShortCallCap of delta reduction; any remaining
+		PmccPutFloor, // PMCC whose short calls are capped at ShortCallCap of delta reduction; any remaining
 		              // reduction (at low target) comes from BUYING a put instead of piling on more short calls
+		LeapScaled    // delta comes from SIZING the core, not from offsetting it: hold target/CallLeapDelta contracts
+		              // of the 0.80-delta LEAP and change the QUANTITY as the target moves. No short calls, no short
+		              // puts, no offsetting legs of any kind. Premium paid is capped at the account (no margin).
+		              // Motive: every other core structure holds a FULL unit (one LEAP or one share) and neutralises
+		              // most of it with short-dated options, so it carries option greeks at full notional while the
+		              // engine's equivalent fractional stock position carries none. On a 116-HV name that cost was
+		              // ~20 bp/bar regardless of whether the offsetting leg was a short call or a long put.
 	}
 
 	public sealed class OverlayResult
@@ -57,6 +64,14 @@ namespace StockOdds
 		public List<double> NetDeltas { get; } = new();  // net delta held INTO the next bar (signed)
 		public List<double> Targets { get; } = new();    // the engine target the overlay was tracking that bar
 		public List<double> FrictionFrac { get; } = new(); // that bar's friction as a fraction of bankroll
+		// ---- CORE lifecycle diagnostics. A LEAP core is re-bought at the CURRENT spot every time it is
+		// established: at the start, after a flat-close to cash, on a NeedsRebuild, and at each expiry roll. On a
+		// name that has run, every re-establishment resets the cost basis to a fresh ~0.80-delta strike, so the
+		// structure never holds one cheap deep-ITM call through the whole move. These count that.
+		public int CoreEstablished { get; set; }         // total times the core was (re)bought
+		public int CoreExpiryRolls { get; set; }         // of which: rolled because the LEAP reached expiry
+		public int CoreFlatCloses { get; set; }          // of which: re-bought after a flat-close liquidation
+		public double CorePremiumPaid { get; set; }      // cumulative core premium paid, in units of the initial bankroll
 	}
 
 	public static class OptionsOverlaySimulator
@@ -168,6 +183,7 @@ namespace StockOdds
 			var hvByDate = TrailingHv(bars);
 
 			double bankroll = 0; bool started = false; var legs = new List<Leg>(); int flatCount = 0;
+			bool closedToCash = false;   // the last liquidation was a flat-close, so the next establish is a re-buy
 			int nBars = 0, nInTrade = 0; double sumExp = 0;   // time-in-trade / mean-exposure accounting (opportunity cost)
 			for (int k = 0; k < engine.Positions.Count && k < engine.ReturnDates.Count; k++)
 			{
@@ -188,12 +204,14 @@ namespace StockOdds
 				bool doClose = flat && EffFlatHoldDays >= 0 && flatCount > EffFlatHoldDays;
 				if (doClose)
 				{
-					if (legs.Count > 0) { foreach (var l in legs) friction += Cost(l, l.VPrev); legs.Clear(); res.Rolls++; }
+					if (legs.Count > 0) { foreach (var l in legs) friction += Cost(l, l.VPrev); legs.Clear(); res.Rolls++; closedToCash = true; }
 				}
 				else
 				{
 					if (HasCore(Strategy) && !legs.Any(l => l.Core))
-					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Core)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); } }
+					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Core)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+					  res.CoreEstablished++; if (closedToCash) { res.CoreFlatCloses++; closedToCash = false; }
+					  res.CorePremiumPaid += legs.Where(l => l.Core && !l.Stock).Sum(l => l.Qty * l.VPrev) / Math.Max(1e-9, bankroll); }
 
 					// roll the (option) LEAP core one day before expiry
 					if (legs.Any(l => l.Core && !l.Stock && (l.Exp - date).TotalDays <= 1))
@@ -201,6 +219,8 @@ namespace StockOdds
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) friction += Cost(l, l.VPrev);
 						legs.RemoveAll(l => l.Core && !l.Stock); EstablishCore(legs, S, iv, date);
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						res.CoreEstablished++; res.CoreExpiryRolls++;
+						res.CorePremiumPaid += legs.Where(l => l.Core && !l.Stock).Sum(l => l.Qty * l.VPrev) / Math.Max(1e-9, bankroll);
 						// a core roll changes committed capital, so re-test the collateral of any live short puts
 						EnforceCashSecured(legs, S, iv, bankroll, date);
 					}
@@ -210,7 +230,23 @@ namespace StockOdds
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
 					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
 						bool profitHit = ShortProfitTarget > 0 && legs.Any(l => l.Qty < 0 && l.VOpen > 1e-9 && l.VPrev <= ShortProfitTarget * l.VOpen);
-					if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit  || NeedsRebuild(legs, target))
+					if (Strategy == OverlayStrategy.LeapScaled)
+					{
+						// size the core to the target; charge the spread only on the traded increment
+						var coreS = legs.FirstOrDefault(l => l.Core && l.Call);
+						if (coreS != null && Math.Abs(net - tnet) > DeadbandDelta)
+						{
+							double dS = LegDelta(coreS, S, iv, date);
+							double vS = LegValue(coreS, S, iv, date);
+							double want = dS > 1e-6 ? Math.Max(0.0, Math.Min(EffMaxNetDelta, tnet)) / dS : 0.0;
+							// NO MARGIN: the premium held cannot exceed the account
+							if (vS > 1e-9 && want * vS > bankroll) want = bankroll / vS;
+							friction += SpreadFraction * Math.Abs(want - coreS.Qty) * Math.Max(0, vS);
+							coreS.Qty = want; coreS.VPrev = vS;
+							res.Rolls++;
+						}
+					}
+					else if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit  || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
@@ -274,6 +310,7 @@ namespace StockOdds
 				case OverlayStrategy.PmccShortPut:
 				case OverlayStrategy.PmccStrangle:
 				case OverlayStrategy.PmccPutFloor:
+				case OverlayStrategy.LeapScaled:
 					legs.Add(new Leg { Core = true, Call = true, Qty = 1, K = StrikeForDelta(true, S, iv, T, CallLeapDelta), Exp = exp });
 					break;
 				case OverlayStrategy.ShortPut:
