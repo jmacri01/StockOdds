@@ -86,6 +86,8 @@ namespace StockOdds
 		// RESEARCH diagnostic: SIGNED distance of the decision close from its KAMA, in % ((close-kama)/kama*100).
 		// Exported rather than recomputed in a harness so a study cannot drift from the engine's own KAMA.
 		public List<double>   KamaDist { get; set; } = new();
+		// The per-bar SHORT-TERM state, so a downstream consumer (the options overlay) can condition on it.
+		public List<ShortTermState> StState { get; set; } = new();
 	}
 
 	public static class BankrollSimulator
@@ -186,7 +188,10 @@ namespace StockOdds
 		// Lower N trims harder (more defensive, less participation); higher N / RsiOverlayPeriod=0 approaches no trim.
 		// This is the single trim knob after volume/ATR/exposure-shaping conditioning was removed for failing to help
 		// BOTH the curated basket AND the broad OOS sets simultaneously.
-		public static double RsiMultNumerator = 40.0;
+		// SHIPPED: effectively UNCAPPED below the extension threshold. The cap only binds when 0.6*HV exceeds it, so
+		// 1000 means it never binds in practice (it would need HV > 1667) and the trim is purely HV-slope-driven
+		// there. The binding cap now lives in the extended zone only -- see ExtTrimCap below.
+		public static double RsiMultNumerator = 1000.0;
 		// HV-conditioned overbought trim (DEFAULT ON). The RSI numerator is scaled DOWN by the candle's live
 		// rolling HV(HvWindow): N_eff = min(RsiMultNumerator, max(HvTrimFloor, HvTrimSlope * rollingHV%)). So the
 		// trim is HARDER on low-vol candles (their overbought spikes mean-revert -> cut them) and relaxes back up
@@ -211,6 +216,57 @@ namespace StockOdds
 		public static double RsiKamaBandN  = 0.0;
 		public static double RsiKamaBandLo = -1e9;
 		public static double RsiKamaBandHi =  1e9;
+		// RESEARCH ONLY (default off): a cleaner parameterisation of the same idea. A bar is EXTENDED when its
+		// signed KAMA distance (close-kama)/kama*100 >= ExtTrimThreshold. Then
+		//     numer = min(cap_zone, max(HvTrimFloor, slope_zone * HV))
+		// with the extended zone free to use its own slope and/or cap. This expresses three different shapes:
+		//   * a flat CEILING when extended            -> ExtTrimCap = 30, ExtTrimSlope = 0 (inherit 0.6)
+		//   * a PROPORTIONAL harder trim when extended -> ExtTrimSlope = 0.25, ExtTrimCap = 0
+		//   * NO HV conditioning at all                -> HvTrimSlope = 0, then numer is just the cap per zone
+		// ExtTrimThreshold = 1e9 disables. ExtTrimSlope/Cap = 0 means "inherit the normal one".
+		// SHIPPED 2026-07-31 -- the KAMA trim adapter. A bar is EXTENDED when its signed KAMA distance
+		// (close-kama)/kama*100 >= ExtTrimThreshold, and there the numerator is capped at ExtTrimCap:
+		//     numer = min(cap_zone, max(HvTrimFloor, slope_zone * HV))
+		// So the shipped stack is: NO cap below +12% (trim = 0.6*HV, floored at 8), cap 30 at/above +12%.
+		//
+		// WHY. The KAMA-distance map (2.75M bars, 4 samples) shows median forward-20 return falling MONOTONICALLY
+		// with distance -- +1.08% at -20..-12% below the KAMA down to -0.27% at +12..+20% above -- with 4/4 sign
+		// replication in every populated bucket, while the engine's own exposure ran INVERTED to it (0.25 in the best
+		// buckets, 0.57-0.66 in the worst). This lifts the cap where forward returns are best and imposes a tighter
+		// one where they are worst. Because the numerator is a CAP and the trim is min(cap, 0.6*HV), it does nothing
+		// at all to names under HV 50 (68% of the universe) and acts progressively on the high-vol tail: at HV 116
+		// the below-zone numerator goes 40 -> 68, at HV 199 it goes 40 -> 88, while the extended zone goes 40 -> 30.
+		//
+		// MEASURED (2,289 names, last 30% OOS, means; against the ExtCapPct = 0 baseline): Sharpe 0.379 -> 0.383 on
+		// 4 of 4 disjoint samples, excess ret/dd over a matched-exposure flat curve +0.005, walk-forward IN
+		// 0.157 -> 0.159, decliners -0.238 -> -0.230, violent 0.858 -> 0.863, steady 0.711 -> 0.713, curated basket
+		// 281 -> 309 with basket Sharpe 0.674 -> 0.685, at mean exposure 0.387 -> 0.389 (i.e. essentially UNCHANGED
+		// capital, so this is reshaping rather than sizing -- and Sharpe is mathematically invariant to a pure
+		// exposure change, verified by scaling the shipped position by k = 0.85..1.05 and getting 0.380 every time).
+		// Cap 35 rather than 30 because 30 gives more broad Sharpe (+0.007) but goes NEGATIVE on excess ret/dd;
+		// 35 is the only setting in a 42-cell grid where every metric improves and none regresses.
+		//
+		// CONTROLS. (a) A flat CEILING beats a PROPORTIONAL harder slope on the basket and violent cohorts, though
+		// the proportional form (ExtTrimSlope 0.45) wins broad Sharpe by a further 0.007 -- it was rejected because
+		// it degrades violent 0.867 -> 0.849. (b) Removing the cap entirely instead ("no zone rule") gives similar
+		// return at +3.6 drawdown, MORE capital (0.398 vs 0.384) and LOWER Sharpe (0.379), so the extended-zone cap
+		// is what pays for lifting the one below it. (c) Dropping the HV slope and using a fixed numerator per zone
+		// fails outright: all 12 tuned combinations score 0/4 with excess ret/dd of -0.11 to -0.40. The slope is
+		// load-bearing and cannot be replaced by zone-conditioning.
+		//
+		// HONEST WEAK POINTS -- read these before citing the basket numbers.
+		//   * The basket gain is FOUR NAMES. Of a +803 total per-name return change, ASTS is +392, IREN +160,
+		//     MSTR +152 and ASST +148 -- the four highest-HV names, i.e. exactly where cap removal bites hardest.
+		//     The other fifteen net NEGATIVE. Per-name it is a coin flip: 10 of 19 better on return, ratio and
+		//     Sharpe alike, and the MEDIAN name is worse on all three (ret 76 -> 72, dd 44.2 -> 46.6, ratio
+		//     1.71 -> 1.55). The broad 4/4 result across 2,289 names is the real evidence, not the basket mean.
+		//   * It COSTS the options expression: PMCC + short puts falls 137 -> 123 mean return with Sharpe
+		//     0.431 -> 0.414, better on only 4 of 19 names (MSTR 95 -> 17, ASTS 603 -> 494).
+		//   * Buy-&-hold comparison is unaffected and still clean: 19 of 19 shallower drawdown, 13 of 19 higher return.
+		// ExtTrimThreshold = 1e9 disables the adapter; ExtTrimSlope/Cap = 0 mean "inherit the normal one".
+		public static double ExtTrimThreshold = 12.0;
+		public static double ExtTrimSlope     = 0.0;
+		public static double ExtTrimCap       = 35.0;
 		// Final-position EMA smoothing (DEFAULT ON, period 5). Smooths the FINAL traded position -- after clamp,
 		// RSI trim, accurate-sizing, and the out-of-region override -- so the RSI-2 single-bar chatter (spike-down,
 		// snap-back) is averaged out. Unlike lowering the RSI numerator (which cuts drawdown by holding LESS), this
@@ -250,7 +306,14 @@ namespace StockOdds
 		// while extended -- the state machine's BullNeutral); the still-pushing ST-Bull bars are continuation, so
 		// capping them only forfeits genuine-winner upside (a plain all-bars cap hurts the leveraged winners; the
 		// gate erases that cost). A 50-bar MA isolates ACUTE spikes (a slower MA flags sustained trends). 0 = off.
-		public static double ExtCapPct   = 55.0;
+		// DEFAULT OFF as of 2026-07-31. It was a genuine (if small) positive when it shipped, and it still is on the
+		// broad universe -- turning it off loses on 24 of 24 sample-comparisons across all three modes, and the
+		// violent/decliners/steady cohorts all prefer it in 6 of 6. But the margin is only 0.001-0.002 Sharpe, and it
+		// costs the concentrated high-vol basket 14-19 points of return (267 -> 281 shipped, 281 -> 294 with the KAMA
+		// trim adapter) plus real damage to the options expression (IREN PMCC+short-put 71 -> 44 when this layer is
+		// switched on in a layer-by-layer build). Disabled deliberately as a basket/overlay-focused trade: a
+		// broad-universe deployment should set this back to 55.
+		public static double ExtCapPct   = 0.0;
 		public static double ExtCapCeil  = 60.0;
 		public static int    ExtMaPeriod = 50;
 
@@ -464,6 +527,7 @@ namespace StockOdds
 			var positions = new List<double>();
 			var kamaAbove = new List<bool>();
 			var kamaDist = new List<double>();
+			var stStates = new List<ShortTermState>();
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
@@ -678,9 +742,16 @@ namespace StockOdds
 								double kdPct = (prev.Close - kama) / kama * 100.0;
 								if (kdPct >= RsiKamaBandLo && kdPct < RsiKamaBandHi) nCap = RsiKamaBandN;
 							}
-							double numer = HvTrimSlope > 0
-								? Math.Min(nCap, Math.Max(HvTrimFloor, HvTrimSlope * curHvPct))
-								: nCap;
+							double effSlope = HvTrimSlope, effCap = nCap;
+							if (ExtTrimThreshold < 1e8 && !double.IsNaN(kama) && kama > 0
+								&& (prev.Close - kama) / kama * 100.0 >= ExtTrimThreshold)
+							{
+								if (ExtTrimSlope > 0) effSlope = ExtTrimSlope;
+								if (ExtTrimCap > 0) effCap = ExtTrimCap;
+							}
+							double numer = effSlope > 0
+								? Math.Min(effCap, Math.Max(HvTrimFloor, effSlope * curHvPct))
+								: effCap;
 							rsiMult = rsi > 1e-6 ? Math.Min(numer / rsi, 1.0) : 1.0;
 						}
 					}
@@ -745,6 +816,7 @@ namespace StockOdds
 				positions.Add(position);
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
+				stStates.Add(st.Value);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -780,6 +852,7 @@ namespace StockOdds
 			result.Positions = positions;
 			result.KamaAbove = kamaAbove;
 			result.KamaDist = kamaDist;
+			result.StState = stStates;
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
 			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
 			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);

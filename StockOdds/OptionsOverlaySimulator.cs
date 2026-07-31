@@ -82,6 +82,11 @@ namespace StockOdds
 		public static double SpreadFraction   = 0.00;  // per-transaction cost as fraction of option premium (mid ≈ 0, full spread ≈ 0.03)
 		public static double StockSpreadFrac  = 0.0005;// per-transaction cost for the stock leg
 		public static double DeadbandDelta     = 0.30; // resize shorts when |netDelta - target| exceeds this (= engine RebalanceDrift)
+		// RESEARCH: a TIGHTER deadband on ST-Bull bars only. Motive -- the delta deadband is what let a stale short
+		// call sit through IREN's +38.9% gap on 2023-12-21 (delta gap 0.153 < 0.30, so no resize fired), and the
+		// engine's own signal was already at 1.03/1.19 those days. ST-Bull is where those gaps live, so tightening
+		// only there buys responsiveness without paying churn in every regime. 0 = use DeadbandDelta everywhere.
+		public static double DeadbandStBull    = 0.0;
 		// On a resize, aim net delta at target + this*DeadbandDelta: 0 = centre (the engine's exposure), -1 = the
 		// lower edge of the tolerance band, +1 = the upper edge.
 		// SWEPT AND REJECTED 2026-07-31 -- keep at 0. Aiming high (+0.25 to +0.5) attacks a real defect: the overlay
@@ -228,13 +233,15 @@ namespace StockOdds
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
 				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
+					double band = (DeadbandStBull > 0 && k < engine.StState.Count && engine.StState[k] == ShortTermState.Bull)
+						? DeadbandStBull : DeadbandDelta;
 					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
 						bool profitHit = ShortProfitTarget > 0 && legs.Any(l => l.Qty < 0 && l.VOpen > 1e-9 && l.VPrev <= ShortProfitTarget * l.VOpen);
 					if (Strategy == OverlayStrategy.LeapScaled)
 					{
 						// size the core to the target; charge the spread only on the traded increment
 						var coreS = legs.FirstOrDefault(l => l.Core && l.Call);
-						if (coreS != null && Math.Abs(net - tnet) > DeadbandDelta)
+						if (coreS != null && Math.Abs(net - tnet) > band)
 						{
 							double dS = LegDelta(coreS, S, iv, date);
 							double vS = LegValue(coreS, S, iv, date);
@@ -246,10 +253,10 @@ namespace StockOdds
 							res.Rolls++;
 						}
 					}
-					else if (Math.Abs(net - tnet) > DeadbandDelta || shortExpiring || profitHit  || NeedsRebuild(legs, target))
+					else if (Math.Abs(net - tnet) > band || shortExpiring || profitHit  || NeedsRebuild(legs, target))
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
-						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target + RebalanceEdge * DeadbandDelta)), date);
+						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target + RebalanceEdge * band)), date);
 						// the two invariants, applied to EVERY structure (see the definitions above)
 						EnforceNoNakedCalls(legs);
 						double collRatio = EnforceCashSecured(legs, S, iv, bankroll, date);
