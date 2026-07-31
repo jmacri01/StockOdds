@@ -88,12 +88,18 @@ bearRegimeMode = input.string("Cash", "Out-of-region mode", options = ["Cash", "
 grpRsi = "RSI position overlay"
 rsiOverlayPeriod = input.int(2, "RSI overlay period (0 = off)", minval = 0, group = grpRsi,
      tooltip = "Overbought-trim overlay on the final position: position *= min(N / RSI(period), 1), N = numerator below — trims when overbought; does nothing when oversold (capped at 1, never levers up). 0 disables. Short period (2) validated best across four random-500 OOS samples; an ablation showed the trim is the entire edge, so it never levers.")
-rsiMultNumerator = input.float(40, "RSI mult numerator N (cap)", minval = 1, group = grpRsi,
+rsiMultNumerator = input.float(1000, "RSI numerator cap below the KAMA threshold", minval = 1, group = grpRsi,
      tooltip = "The N cap. In min(N/RSI, 1): trimming begins when RSI>N; at RSI=100 exposure -> N%. Default 40, paired with the 1.5x max-exposure cap. With HV-trim on (below), the effective N is scaled DOWN by rolling HV and never exceeds this cap; raise it to lighten the trim everywhere. Lower N trims harder; RSI overlay period 0 = off.")
 hvTrimSlope = input.float(0.6, "HV-trim slope (0 = off)", minval = 0, step = 0.1, group = grpRsi,
      tooltip = "HV-conditioned trim: effective N = min(N-cap, max(HV-trim floor, slope * rolling HV%)). Trims HARDER on low-vol candles (their overbought spikes mean-revert) and relaxes up to the N cap as HV rises (reaching the cap at HV = N/slope). Validated as a genuine drawdown-reduction edge (return ~flat, drawdown down, 4/4 on disjoint random-500 OOS). 0 = fixed N everywhere.")
 hvTrimFloor = input.float(8, "HV-trim floor N", minval = 1, group = grpRsi,
      tooltip = "Hardest trim (floor on the HV-scaled N) applied to the quietest candles.")
+extTrimThreshold = input.float(12, "KAMA adapter: extended when close is this % above its KAMA (1e9 = off)", step = 1, group = grpRsi,
+     tooltip = "The trim numerator is a CAP; this is where a tighter cap kicks in. 12% is the shipped value. Motive: a 2.75M-bar map of signed KAMA distance shows median forward-20 return falling MONOTONICALLY with distance (+1.08% at 20-12% BELOW the KAMA down to -0.27% at 12-20% above, 4/4 sample replication), while the engine own exposure ran INVERTED to it (0.25 in the best buckets, 0.57-0.66 in the worst). This lifts the cap where forward returns are best and tightens it where they are worst.")
+extTrimCap = input.float(35, "KAMA adapter: numerator cap when extended (0 = inherit)", minval = 0, step = 1, group = grpRsi,
+     tooltip = "Shipped 35. Broad OOS Sharpe 0.379 -> 0.383 on 4 of 4 disjoint samples with excess return/drawdown +0.005 at unchanged exposure; walk-forward in-sample 0.157 -> 0.159; decliners -0.238 -> -0.230; violent 0.858 -> 0.863. A cap of 30 gives more broad Sharpe (+0.007) but goes NEGATIVE on excess return/drawdown, so 35 is the only setting where nothing regresses. Note it is a CAP: inert for any name whose 0.6*HV never reaches it (under ~HV 58), so this acts only on the high-vol tail.")
+extTrimSlope = input.float(0, "KAMA adapter: HV slope when extended (0 = inherit)", minval = 0, step = 0.05, group = grpRsi,
+     tooltip = "A PROPORTIONAL alternative to the flat cap: set e.g. 0.45 to keep scaling with HV when extended instead of imposing a ceiling. It wins broad Sharpe by a further 0.007 but degrades the violent cohort 0.867 -> 0.849 and basket Sharpe 0.685 -> 0.667, so it is not the shipped choice. 0 = keep the normal slope.")
 posSmoothPeriod = input.int(5, "Final position smoothing (EMA bars, 0 = off)", minval = 0, group = grpRsi,
      tooltip = "EMA-smooth the FINAL traded position (after clamp, RSI trim, and the out-of-region rule) so RSI-2 single-bar chatter is averaged out. Cuts downside/drawdown by holding STEADIER (vs a lower N, which cuts it by holding less) so it preserves upside participation. Improves Sortino over the fixed-N baseline; benefit concentrates in the 50-100 HV band. 0 disables.")
 kamaSmooth = input.bool(true, "KAMA-distance smoothing", group = grpRsi,
@@ -104,7 +110,7 @@ kamaSmoothMaxPeriod = input.int(50, "KAMA smoothing: max period", minval = 1, gr
      tooltip = "Ceiling on the smoothing EMA period (the floor is the default position-smoothing period). At/above the KAMA the period is the floor; it ramps toward this ceiling as the close falls below the KAMA.")
 
 grpExt = "Blow-off extension cap"
-extCapPct = input.float(55, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
+extCapPct = input.float(0, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
      tooltip = "When the close sits more than this % above its extension MA (an acute parabolic run) AND the candle is not ST-Bull, cap exposure at the ceiling below. Only lowers the top (never raises, never forces to cash) -- it stops the engine chasing the vertical tail without selling the trend. The give-back lives entirely in the non-ST-Bull states (a bull run's first crack while extended); sparing the still-pushing ST-Bull bars protects genuine winners. Capping lifts return AND cuts drawdown. 0 disables.")
 extCapCeil = input.float(60, "Extension cap ceiling (exposure %)", minval = 0, group = grpExt,
      tooltip = "Exposure % the position is pinned to when extended past the trigger. 60 bites (the extended tail averages ~72% exposure); a ceiling near/above 100 is nearly inert. Lower = more aggressive.")
@@ -292,9 +298,26 @@ hiExp = math.max(minExpPct, maxExpPct) / 100.0
 if not na(adjEma) and adjEma >= hiExp
     held := math.max(hiExp, math.max(hiExp - driftBand, adjEma - driftBand))
 posClamped = na(held) ? na : math.min(math.max(held, loExp), hiExp)
+// KAMA of the close (fast 2 / slow 30, using the same ER as the persistence window). Computed HERE, ahead of the
+// RSI trim, because the trim's KAMA adapter, the peak-age scaler's confinement and the position smoother all read
+// it -- matching the C# engine, where kama is updated from the decision close and then used by all three.
+priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
+var float kama = na
+kamaSc = math.pow(priceEr * (2.0 / 3.0 - 2.0 / 31.0) + 2.0 / 31.0, 2)   // Kaufman smoothing constant (fast 2 / slow 30)
+kama := na(kama) ? close : kama + kamaSc * (close - kama)
+aboveKama = not na(kama) and close >= kama
+belowKama = (not na(kama) and kama > 0) ? math.max(0.0, (kama - close) / kama) : 0.0
+kamaDistPct = (not na(kama) and kama > 0) ? (close - kama) / kama * 100.0 : 0.0
 // RSI overbought-trim overlay on the in-region position: *= min(N/RSI, 1) (trim when overbought only, never levers), before the out-of-region rule.
 rsiVal = ta.rsi(close, math.max(rsiOverlayPeriod, 1))
-rsiNumer = hvTrimSlope > 0 ? math.min(rsiMultNumerator, math.max(hvTrimFloor, hvTrimSlope * rollHv)) : rsiMultNumerator
+// KAMA TRIM ADAPTER: the numerator is a CAP on how light the trim may get, and that cap depends on how far the
+// close sits above its KAMA. Below the threshold there is effectively no cap (so the trim is purely hvTrimSlope*HV,
+// floored); at/above it the cap tightens to extTrimCap. Because it is a cap, it does nothing at all to a name whose
+// hvTrimSlope*HV never reaches it -- inert under ~HV 58 at cap 35 -- and acts progressively on the high-vol tail.
+extTrimOn = extTrimThreshold < 1e8 and kamaDistPct >= extTrimThreshold
+rsiCap = extTrimOn and extTrimCap > 0 ? extTrimCap : rsiMultNumerator
+rsiSlope = extTrimOn and extTrimSlope > 0 ? extTrimSlope : hvTrimSlope
+rsiNumer = rsiSlope > 0 ? math.min(rsiCap, math.max(hvTrimFloor, rsiSlope * rollHv)) : rsiCap
 rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsiVal > 0) ? math.min(math.max(posClamped * math.min(rsiNumer / rsiVal, 1.0), loExp), hiExp) : posClamped
 
 // OUT-OF-REGION rule (mirrors BankrollSimulator.BearRegimeMode): out of region when the RAW exposure signal is
@@ -309,15 +332,6 @@ rawPosPreCap = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0
 extSma = ta.sma(close, extMaPeriod)
 extPct = not na(extSma) and extSma > 0 ? (close / extSma - 1.0) * 100.0 : 0.0
 rawPosPreDd = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stState != 3) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
-// KAMA of the close (fast 2 / slow 30, using the same ER as the persistence window). Computed HERE, before the
-// scaler, because both the peak-age scaler's confinement and the position smoother read it -- matching the C#
-// engine, where kama is updated from the decision close and then used by both.
-priceEr = math.sum(math.abs(close - close[1]), persistWindow) > 0 ? math.abs(close - close[persistWindow]) / math.sum(math.abs(close - close[1]), persistWindow) : 1.0
-var float kama = na
-kamaSc = math.pow(priceEr * (2.0 / 3.0 - 2.0 / 31.0) + 2.0 / 31.0, 2)   // Kaufman smoothing constant (fast 2 / slow 30)
-kama := na(kama) ? close : kama + kamaSc * (close - kama)
-aboveKama = not na(kama) and close >= kama
-belowKama = (not na(kama) and kama > 0) ? math.max(0.0, (kama - close) / kama) : 0.0
 // Peak-age scaler: multiply the position by a peak-AGE reading. dd30 equals dd60 exactly when the 60-bar peak
 // falls inside the last 30 bars, so the ratio is ~1 on a fresh pullback from a recent high (scaled to K, the
 // hardest de-lever, at any depth) and large when the 60-bar peak is older than 30 bars and price is grinding

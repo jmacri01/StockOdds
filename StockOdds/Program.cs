@@ -124,15 +124,26 @@ class Program
 		BankrollSimulator.MinExposurePercent    = 0.0;    // position clamp low
 		BankrollSimulator.MaxExposurePercent    = 150.0;  // position clamp high (1.5x leverage; ceiling 200)
 		BankrollSimulator.RsiOverlayPeriod = 2;           // RSI overbought-trim overlay
-		BankrollSimulator.RsiMultNumerator = 40;          // N cap (single knob; the trim never lightens past this)
-		BankrollSimulator.HvTrimSlope = 0.6;              // HV-conditioned trim: harder on low-vol candles, caps at N (0 = off)
+		// The RSI trim's numerator is min(cap, max(floor, slope * HV)). The cap now depends on how far the close sits
+		// above its KAMA -- effectively no cap below +12%, a tight 30 at/above it. The slope is what actually does the
+		// trimming (it binds on ~87% of the universe); the cap only bites when 0.6*HV exceeds it, so this layer is
+		// inert for names under HV 50 and acts progressively on the high-vol tail. See BankrollSimulator for the
+		// measurements and the three controls that qualified it.
+		BankrollSimulator.RsiMultNumerator = 1000;        // no cap below the threshold (would need HV > 1667 to bind)
+		BankrollSimulator.ExtTrimThreshold = 12;          // "extended" = close >= 12% above its KAMA
+		BankrollSimulator.ExtTrimCap = 35;                // ...where the numerator is capped at 35 instead
+		BankrollSimulator.ExtTrimSlope = 0;               // 0 = keep the normal slope in the extended zone
+		BankrollSimulator.HvTrimSlope = 0.6;              // HV-conditioned trim: harder on low-vol candles (0 = off)
 		BankrollSimulator.HvTrimFloor = 8;                // floor on the scaled N (hardest trim on the quietest candles)
 		BankrollSimulator.PositionSmoothPeriod = 5;       // EMA-smooth the final position (cuts downside, keeps participation) -- the P5 floor
 		BankrollSimulator.KamaSmooth = true;              // KAMA-distance smoothing: smooth HARDER the further price is below its KAMA, light P5 at/above it
 		BankrollSimulator.KamaSmoothSlope = 4.0;          // ramp: smoothPer = clamp(P5 + slope*below*maxPer, P5, maxPer), below = max(0,(kama-close)/kama)
 		BankrollSimulator.KamaSmoothMaxPeriod = 50;       // smoothing-period ceiling (floor = PositionSmoothPeriod). KamaSmooth=false = flat P5
-		BankrollSimulator.ExtCapPct  = 55;                // extension cap: when >this% above the ExtMaPeriod SMA AND not ST-Bull...
-		BankrollSimulator.ExtCapCeil = 60;                // ...cap exposure here (stop chasing the parabolic top; 0 on ExtCapPct = off)
+		// Extension cap: DEFAULT OFF. Still a small positive on the broad universe (removing it loses 24 of 24
+		// sample-comparisons across all three modes) but it costs the high-vol basket 14-19 points of return and
+		// materially hurts the options expression. Set to 55 for a broad-universe deployment.
+		BankrollSimulator.ExtCapPct  = 0;                 // >this% above the ExtMaPeriod SMA AND not ST-Bull -> cap...
+		BankrollSimulator.ExtCapCeil = 60;                // ...exposure here (0 on ExtCapPct = off, which is the default)
 		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
 		// Peak-age scaler, BELOW THE KAMA ONLY: position *= clamp(K * dd60/dd30, min, max). dd60 >= dd30 always,
 		// and dd30 == dd60 exactly when the 60-bar peak falls inside the last 30 bars -- so the ratio reads PEAK
