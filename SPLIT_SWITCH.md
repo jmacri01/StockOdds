@@ -41,8 +41,14 @@ leave it alone. The band is the only source of hysteresis, and re-deciding every
 4. **Stock, never a LEAP.** Above 0.50 hold **shares**, not a long call standing in for them. Stock is
    linear, never expires, pays no premium and costs a few basis points to trade. A 0.80Δ LEAP core in the
    same slot scored **0.46 Sharpe against stock's 0.61** — even with no calls sold, i.e. even with its long
-   gamma working for it. And a long call can expire worthless: every LEAP-core variant reached **−100% on
-   at least one name**. Shares cannot do that.
+   gamma working for it. It loses on theta and on deep-in-the-money roll spreads, and its worst single name
+   is deeper: **−55% for PMCC against −29%** here.
+
+   *Correction (2026-08-01):* an earlier version of this claimed every LEAP-core variant reached −100% on a
+   name. That was an artifact of a short-call sizing bug — `AddCoveredShortCall` sold one contract regardless
+   of the core's size, so PMCC ran above its delta target. Fixed to a true 1:1 vertical, **no structure
+   reaches ruin**, and PMCC's basket return roughly doubled (+126% → +297% with short puts). Stock is still
+   the better core; the ruin argument was wrong.
 
 5. **Keep the short legs fresh.** Short legs run **~14 DTE** and roll at expiry — on **time, not profit**.
    Taking 50% profit early churns the position at ~0.30 delta and measured worse. Longer tenors are worse
@@ -60,12 +66,15 @@ Return % / max drawdown %, mean across names.
 
 | Universe | Split switch | Best alternative | Cash engine | Buy & hold |
 |---|---:|---:|---:|---:|
-| Broad (2,289) | **+25 / 22.7** | +21 / 17.1 `put` | +19 / 21.8 | +37 / 38.9 |
-| Decliners (834) | **−2 / 26.8** | +2 / 19.9 `put` | −8 / 26.1 | −26 / 48.4 |
-| Violent (208) | **+106 / 38.9** | +88 / 41.5 `stk` | +88 / 40.1 | +143 / 60.1 |
-| Basket (19) | **+349 / 43.9** | +212 / 47.9 `stk` | +309 / 43.0 | +138 / 71.3 |
+| Broad (2,289) OOS | **+25 / 22.7** | +23 / 22.0 `pmcc+sp` | +19 / 21.8 | +37 / 38.9 |
+| Decliners (834) OOS | **−2 / 26.8** | +2 / 19.9 `put` | −8 / 26.1 | −26 / 48.4 |
+| Violent (208) OOS | **+106 / 38.9** | +91 / 40.3 `stk` | +88 / 40.1 | +143 / 60.1 |
+| Basket (19) full history | **+349 / 43.9** | +314 / 45.7 `stk` | +309 / 43.0 | +138 / 71.3 |
 
-**Highest return in all four cohorts**, on both the full-history and out-of-sample windows — and the only
+On the basket's *own* out-of-sample window covered stock edges it — 110 / 32.3 / 0.98 against 102 / 33.1 / 1.00 —
+so the basket return lead is a full-history result, not an out-of-sample one.
+
+**Highest return in all four cohorts as cut above** (cohorts out-of-sample, basket full history) — and the only
 overlay that beats the plain cash engine on the violent cohort and on the high-vol basket. On broad
 out-of-sample Sharpe across four disjoint samples covering the whole 2,289-name universe it scores
 **0.557 against 0.547** for the next-best configuration, winning **4 of 4 samples**, at lower drawdown and
@@ -77,7 +86,7 @@ out-of-sample Sharpe across four disjoint samples covering the whole 2,289-name 
 
 | piece | evidence |
 |---|---|
-| **Stock above 0.50** | A LEAP core scored **0.46** Sharpe against stock's **0.61** even with no calls sold. It loses on theta and deep-ITM roll spreads, and it can go to zero. |
+| **Stock above 0.50** | A LEAP core scored **0.46** Sharpe against stock's **0.61** even with no calls sold. It loses on theta and deep-ITM roll spreads, and its worst name is −55% against −29%. |
 | **Aim at the target** | A band midpoint is a **clamp artifact** — the band's floor can't go below zero, so the midpoint sits above the target whenever the target is low. It also blocks any minimum-exposure rule. |
 | **Skip below 0.20** | Time in trade **88% → 71%**, return per unit of deployed time **27.3 → 33.4**, risk-adjusted return unchanged. You stop paying to be tied up in 0.1-delta positions. |
 | **Decide only on a rebalance** | Re-reading the split every bar scored **0.466** against **0.557**. Switching on every 0.50 crossing is the single most expensive mistake available here. |
