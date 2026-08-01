@@ -69,6 +69,11 @@ namespace StockOdds
 		public double MaxDrawdownPct { get; set; }
 		public double TotalReturnPct { get; set; }
 		public int Rolls { get; set; }                   // count of short-leg resizes / liquidations
+		public List<double> CoreDeltas { get; } = new();      // account-delta of the core leg carried into the next bar
+		public List<double> ShortDeltas { get; } = new();     // account-delta contributed by SHORT legs (signed, <= 0)
+		public List<double> Los { get; } = new();             // range low used on the bar
+		public List<double> His { get; } = new();             // range high used on the bar
+		public List<double> Resized { get; } = new();         // 1 if the position was resized on the bar
 		public int RangePutBars { get; set; }    // RangePutCall: bars held in put mode
 		public int RangeLeapBars { get; set; }   // RangePutCall: bars held in call-LEAP mode
 		public int RangeFlatBars { get; set; }   // RangePutCall: bars sitting out
@@ -269,6 +274,7 @@ namespace StockOdds
 				// account. Multiplying every quantity by acct = bankroll/S (and converting account-space targets into
 				// per-share space the same way) makes held delta a true fraction of the account. acct = 1 reproduces the
 				// old per-share sizing exactly, which is why AccountScaledSizing defaults to false.
+				double rngLo = double.NaN, rngHi = double.NaN; bool rngResized = false;
 				double acct = AccountScaledSizing && S > 1e-9 ? bankroll / S : 1.0;
 				if (acct <= 1e-9 || double.IsNaN(acct) || double.IsInfinity(acct)) acct = 1.0;
 				else foreach (var l in legs) { double v = LegValue(l, S, iv, date); if (double.IsNaN(v) || double.IsInfinity(v)) v = l.VPrev; pnl += l.Qty * (v - l.VPrev); l.VPrev = v; }
@@ -362,6 +368,23 @@ namespace StockOdds
 						{
 							foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 							legs.RemoveAll(l => !l.Core);
+							// RE-SCALE THE CORE TO THE ACCOUNT. The core is established once; its quantity is fixed at that
+							// bar's bankroll/S, so as the price moves its delta AS A FRACTION OF THE ACCOUNT drifts. On OPEN
+							// (which fell ~74 -> 0.73 and never exited) it decayed to 0.07, so no call was ever sold
+							// (coreD < mid) and the exit test could never fire -- the position sat vestigial through a 245%
+							// monthly rally. Short legs never had this problem because they are re-sold at the current scale
+							// on every resize. Charged at the traded increment.
+							if (core != null)
+							{
+								double wantQty = acct;
+								if (Math.Abs(wantQty - core.Qty) > 1e-9)
+								{
+									double cv = LegValue(core, S, iv, date);
+									friction += (core.Stock ? StockSpreadFrac : SpreadFraction) * Math.Abs(wantQty - core.Qty) * Math.Max(0, cv);
+									core.Qty = wantQty; core.VPrev = cv;
+									coreD = core.Qty * LegDelta(core, S, iv, date) / acct;
+								}
+							}
 							double Ts = ShortDteDays / 365.0; var expS = date.AddDays(ShortDteDays);
 							if (core != null)
 							{
@@ -384,9 +407,10 @@ namespace StockOdds
 							double cr = EnforceCashSecured(legs, S, iv, bankroll, date);
 							if (cr > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = cr;
 							foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
-							res.Rolls++;
+							res.Rolls++; rngResized = true;
 						}
 					}
+					rngLo = lo; rngHi = hi;
 					if (legs.Count == 0) res.RangeFlatBars++;
 					else if (legs.Any(l => l.Core)) res.RangeLeapBars++;
 					else res.RangePutBars++;
@@ -453,7 +477,7 @@ namespace StockOdds
 				}
 
 				// ruin (the diagnostic lists are kept the same length as Returns so they can be zipped)
-				if (bankroll <= 1e-6) { res.Returns.Add(-1.0); res.Dates.Add(date); res.FrictionFrac.Add(0); res.NetDeltas.Add(0); res.Targets.Add(0); break; }
+				if (bankroll <= 1e-6) { res.Returns.Add(-1.0); res.Dates.Add(date); res.FrictionFrac.Add(0); res.NetDeltas.Add(0); res.Targets.Add(0); res.CoreDeltas.Add(0); res.ShortDeltas.Add(0); res.Los.Add(double.NaN); res.His.Add(double.NaN); res.Resized.Add(0); break; }
 				double netPnl = pnl - friction;
 				double dr = netPnl / bankroll; if (double.IsNaN(dr) || double.IsInfinity(dr)) dr = 0;
 				res.FrictionFrac.Add(bankroll > 1e-9 ? friction / bankroll : 0.0);
@@ -462,6 +486,9 @@ namespace StockOdds
 					double curNet = Math.Abs(legs.Sum(l => l.Qty * LegDelta(l, S, iv, date))) / acct;
 					nBars++; if (curNet > 0.05) nInTrade++; sumExp += curNet;
 					res.NetDeltas.Add(curNet); res.Targets.Add(target);
+					res.CoreDeltas.Add(legs.Where(l => l.Core).Sum(l => l.Qty * LegDelta(l, S, iv, date)) / acct);
+					res.ShortDeltas.Add(legs.Where(l => !l.Core).Sum(l => l.Qty * LegDelta(l, S, iv, date)) / acct);
+					res.Los.Add(rngLo); res.His.Add(rngHi); res.Resized.Add(rngResized ? 1 : 0);
 			}
 
 			res.SharpeRatio = Sharpe(res.Returns);
