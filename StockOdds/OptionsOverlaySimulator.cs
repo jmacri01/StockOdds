@@ -167,6 +167,12 @@ namespace StockOdds
 		// LEAP can be cut to 0.30 by a 0.50d short call, a 1.00d stock only to 0.50 -- so the LEAP stays reachable
 		// (and therefore held) over a WIDER range of targets, which is a real difference, not a nuisance.
 		public static bool   RangeCoreStock     = true;
+		// Re-scale the core to the FULL ACCOUNT on every bar rather than only on a resize. "Use all the cash":
+		// core.Qty = bankroll/S makes the stock position worth exactly the bankroll, i.e. account delta 1.0, and the
+		// account only grows from premium sold. Doing it on resizes alone lets it drift in between (OPEN resizes on
+		// 287 of ~1240 bars). Stock friction is 5bp so daily re-scaling is cheap; an option core pays full spread,
+		// which is why this is a switch rather than unconditional.
+		public static bool   RangeRescaleEveryBar = false;
 		// NO SHORT CALLS in core mode (default). The core is then pure long delta -- stock is linear (zero gamma),
 		// a long LEAP is POSITIVE gamma -- so core mode pays no short-gamma cost at all, and there is nothing to
 		// rebalance: establish once, hold, exit. Entry is still "the put program cannot reach the range" (lo > 0.5,
@@ -302,6 +308,16 @@ namespace StockOdds
 					// range moves out of reach ABOVE the position (see RangeShortCalls).
 					double reachFloor = coreD - (RangeShortCalls ? RangeShortCallCap : 0.0);
 					bool unreachable = core != null && reachFloor > hi + 1e-9;
+					if (RangeRescaleEveryBar && core != null && Math.Abs(scale - core.Qty) > 1e-9)
+					{
+						// deploy the whole account: stock worth exactly the bankroll => account delta 1.0
+						double cv0 = LegValue(core, S, iv, date);
+						friction += (core.Stock ? StockSpreadFrac : SpreadFraction) * Math.Abs(scale - core.Qty) * Math.Max(0, cv0);
+						core.Qty = scale; core.VPrev = cv0;
+						coreD = core.Qty * LegDelta(core, S, iv, date) / scale;
+						held = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)) / scale;
+						reachFloor = coreD - (RangeShortCalls ? RangeShortCallCap : 0.0);
+					}
 					bool sitOut = core == null && hi <= RangeSitOut;
 
 					if (sitOut || unreachable)
