@@ -312,8 +312,14 @@ namespace StockOdds
 					{
 						// ENTER covered-stock mode when the range sits entirely above 0.5. HOLD it thereafter while
 						// it stays reachable (checked above) -- that hysteresis is what keeps turnover down.
-						// PREFER core mode: enter as soon as delta 1.0 sits inside the range (hi >= 1.0)
-						bool wantCore = !RangePutsOnly && hi >= RangeCoreEnter - 1e-9;
+						// ENTRY. RangeCoreEnter > 0: enter as soon as that delta sits inside the range (hi >= it).
+						// RangeCoreEnter == 0: enter when the PUT PROGRAM CAN NO LONGER REACH the range, i.e. lo exceeds the
+						// put cap. That derives the threshold from the cap instead of making it a free parameter, and it pairs
+						// with the exit test (reachFloor > hi) to give real hysteresis: with putCap 0.25 and callCap 0.25 entry
+						// fires at tgt > 0.55 and exit at tgt < 0.45, so the exit rule is live rather than preempted.
+						bool wantCore = !RangePutsOnly && (RangeCoreEnter > 0
+							? hi >= RangeCoreEnter - 1e-9
+							: lo > RangePutCap + 1e-9);
 						if (wantCore && core == null)
 						{
 							foreach (var l in legs) friction += Cost(l, l.VPrev);
