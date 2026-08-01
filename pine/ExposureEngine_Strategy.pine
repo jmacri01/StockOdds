@@ -34,6 +34,7 @@ strategy("Exposure Engine [Strategy]", overlay = true,
 grpSim = "Simulation"
 plotSynthetic = input.bool(true, "Plot synthetic exposure equity (exact C# mirror)", group = grpSim)
 plotBuyHold   = input.bool(true, "Plot buy & hold reference",                        group = grpSim)
+showDebug     = input.bool(false, "Show debug information",                          group = grpSim)
 // Base capital comes from the Strategy properties dialog (strategy.initial_capital)
 // so the synthetic curve and the Strategy Tester equity share the same base.
 
@@ -406,7 +407,7 @@ var table recon = table.new(position.bottom_right, 2, 3, border_width = 1, frame
 f_recon(row, k, v, col) =>
     table.cell(recon, 0, row, k, text_color = color.gray, text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
     table.cell(recon, 1, row, v, text_color = col,        text_halign = text.align_right, text_size = size.small, bgcolor = color.new(color.black, 70))
-if barstate.islast
+if showDebug and barstate.islast
     f_recon(0, "Synthetic (C# mirror)", str.tostring(synthRetPct, "#.#") + "%", synthRetPct >= 0 ? color.teal : color.red)
     f_recon(1, "Strategy (tester)",     str.tostring(stratRetPct, "#.#") + "%", stratRetPct >= 0 ? color.teal : color.red)
     f_recon(2, "Buy & hold",            str.tostring(bhRetPct,    "#.#") + "%", bhRetPct    >= 0 ? color.teal : color.red)
