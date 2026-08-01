@@ -173,6 +173,38 @@ namespace StockOdds
 		// 287 of ~1240 bars). Stock friction is 5bp so daily re-scaling is cheap; an option core pays full spread,
 		// which is why this is a switch rather than unconditional.
 		public static bool   RangeRescaleEveryBar = false;
+		// In CORE mode, sell short PUTS alongside the core to make up delta the core alone cannot supply. Only
+		// meaningful with short calls DISABLED and a core whose delta is below 1.0 -- i.e. a CallLeapDelta LEAP,
+		// which supplies ~0.80, so anything the range wants above that has to come from puts. With a stock core
+		// (delta 1.0) there is nothing to top up. Capped at RangePutCap and cash-secured from whatever the core
+		// did not consume (a 0.80d LEAP costs ~25% of the account, so ~75% remains to collateralise).
+		public static bool   RangeCoreAddPuts  = false;
+		// MINIMUM short-put delta in put mode. The midpoint can call for a very small put, and a 0.05-delta sale is
+		// nearly all friction and almost no premium. RangePutMin > 0 imposes a floor:
+		//   RangePutMinSkip = false -> raise the sale to the floor (always short at least this much delta)
+		//   RangePutMinSkip = true  -> sell NOTHING below the floor (sit in cash instead)
+		// 0 disables, i.e. sell whatever the midpoint implies however small.
+		// TARGET MODE. The range stops being a sizing device and becomes ONLY a no-trade band: while held delta sits
+		// within +/- DeadbandDelta of the target nothing happens, and when it leaves, the position is rebuilt to the
+		// ACTUAL target (not the range midpoint). Mode is then a single threshold:
+		//   target >  RangeModeSplit (0.50) -> COVERED STOCK: buy stock, sell a call of delta (1 - target) to trim
+		//   target <= RangeModeSplit        -> SHORT PUT at delta = target
+		// Because the mode is only re-evaluated on a rebalance, the band itself supplies the hysteresis -- no
+		// separate entry/exit thresholds and no unreachable test are needed. A stock core is KEPT (and re-scaled)
+		// across rebalances that stay above the split, so only the call is re-struck.
+		public static bool   RangeTargetMode   = false;
+		// Which quantity the sit-out test uses in target mode. true = the TARGET itself (fires often), false = the
+		// range HIGH, matching midpoint mode (fires almost never). Exposed so the sizing change can be measured
+		// separately from the flat-rule change -- they are otherwise confounded.
+		public static bool   RangeFlatOnTarget = true;
+		// Aim resizes at the ACTUAL target rather than the range midpoint, while keeping the shipped mode logic
+		// (entry lo > RangePutCap, exit reachFloor > hi, hysteresis). Isolates the sizing choice on its own: with lo
+		// clamped at zero, mid = (0 + tgt + band)/2 EXCEEDS tgt whenever tgt < band, so midpoint-aiming holds more
+		// delta in the low-target region and also parks nearer the centre of the no-trade band.
+		public static bool   RangeAimAtTarget  = false;
+		public static double RangeModeSplit    = 0.50;
+		public static double RangePutMin       = 0.0;
+		public static bool   RangePutMinSkip   = false;
 		// NO SHORT CALLS in core mode (default). The core is then pure long delta -- stock is linear (zero gamma),
 		// a long LEAP is POSITIVE gamma -- so core mode pays no short-gamma cost at all, and there is nothing to
 		// rebalance: establish once, hold, exit. Entry is still "the put program cannot reach the range" (lo > 0.5,
@@ -288,13 +320,80 @@ namespace StockOdds
 				bool flat = target <= FlatEps;
 				if (flat) flatCount++; else flatCount = 0;
 				bool doClose = flat && EffFlatHoldDays >= 0 && flatCount > EffFlatHoldDays;
-				if (Strategy == OverlayStrategy.RangePutCall)
+				if (Strategy == OverlayStrategy.RangePutCall && RangeTargetMode)
+				{
+					double bandT = (DeadbandStBull > 0 && k < engine.StState.Count && engine.StState[k] == ShortTermState.Bull)
+						? DeadbandStBull : DeadbandDelta;
+					double tgtC = Math.Max(0.0, Math.Min(EffMaxNetDelta, target));
+					double heldT = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)) / acct;
+					bool flatT = (RangeFlatOnTarget ? tgtC : tgtC + bandT) <= RangeSitOut;
+					bool expT = legs.Any(l => !l.Core && l.Exp != DateTime.MaxValue && (l.Exp - date).TotalDays <= ShortRollDte);
+					bool outT = heldT < tgtC - bandT - 1e-9 || heldT > tgtC + bandT + 1e-9;
+					bool wantStock = !RangePutsOnly && tgtC > RangeModeSplit;
+					var coreT = legs.FirstOrDefault(l => l.Core);
+					// The MODE IS ONLY RE-EVALUATED ON A FORCED REBALANCE. A position whose mode no longer matches the
+					// target is left alone while held delta stays inside the band -- the band is the sole hysteresis,
+					// so a target drifting across the 0.50 split does not by itself trigger a switch.
+					bool act = (legs.Count == 0 && !flatT) || outT || expT || (flatT && legs.Count > 0);
+					if (act)
+					{
+						double Ts = ShortDteDays / 365.0; var expS = date.AddDays(ShortDteDays);
+						// keep a correct-type stock core across rebalances; drop everything else
+						bool keepCore = wantStock && !flatT && coreT != null && coreT.Stock;
+						foreach (var l in legs.Where(l => !keepCore || !l.Core)) friction += Cost(l, l.VPrev);
+						legs.RemoveAll(l => !keepCore || !l.Core);
+						res.Rolls++;
+						if (!flatT)
+						{
+							if (wantStock)
+							{
+								var stk = legs.FirstOrDefault(l => l.Core);
+								if (stk == null)
+								{
+									stk = new Leg { Core = true, Stock = true, Qty = acct, Exp = DateTime.MaxValue };
+									stk.VPrev = S; friction += Cost(stk, S); legs.Add(stk); res.CoreEstablished++;
+								}
+								else if (Math.Abs(acct - stk.Qty) > 1e-9)
+								{
+									friction += StockSpreadFrac * Math.Abs(acct - stk.Qty) * S;
+									stk.Qty = acct; stk.VPrev = S;
+								}
+								double scD = Math.Min(RangeShortCallCap, Math.Max(0.0, 1.0 - tgtC));
+								if (scD > 1e-3)
+								{
+									var cl = new Leg { Call = true, Qty = -acct, K = StrikeForDelta(true, S, iv, Ts, scD), Exp = expS };
+									cl.VPrev = LegValue(cl, S, iv, date); cl.VOpen = cl.VPrev; friction += Cost(cl, cl.VPrev); legs.Add(cl);
+								}
+							}
+							else
+							{
+								double pd = Math.Min(RangePutCap, tgtC);
+								if (RangePutMin > 0 && pd < RangePutMin)
+									pd = RangePutMinSkip ? 0.0 : Math.Min(RangePutCap, RangePutMin);
+								if (pd > 1e-3)
+								{
+									var pt = new Leg { Call = false, Qty = -acct, K = StrikeForDelta(false, S, iv, Ts, pd), Exp = expS };
+									pt.VPrev = LegValue(pt, S, iv, date); pt.VOpen = pt.VPrev; friction += Cost(pt, pt.VPrev); legs.Add(pt);
+								}
+							}
+							EnforceNoNakedCalls(legs);
+							double crT = EnforceCashSecured(legs, S, iv, bankroll, date);
+							if (crT > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = crT;
+						}
+					}
+					rngLo = tgtC - bandT; rngHi = tgtC + bandT;
+					if (legs.Count == 0) res.RangeFlatBars++;
+					else if (legs.Any(l => l.Core)) res.RangeLeapBars++;
+					else res.RangePutBars++;
+				}
+				else if (Strategy == OverlayStrategy.RangePutCall)
 				{
 					double bandR = (DeadbandStBull > 0 && k < engine.StState.Count && engine.StState[k] == ShortTermState.Bull)
 						? DeadbandStBull : DeadbandDelta;
 					double lo = Math.Max(0.0, target - bandR);
 					double hi = Math.Min(EffMaxNetDelta, target + bandR);
 					double mid = 0.5 * (lo + hi);
+					double aim = RangeAimAtTarget ? Math.Max(0.0, Math.Min(EffMaxNetDelta, target)) : mid;
 					// per-share delta -> ACCOUNT delta. scale = bankroll/S, so a leg quantity of `scale` shares is
 					// exactly 100% of the account. Dividing per-share delta by scale gives the account fraction.
 					double scale = AccountScaledSizing && S > 1e-9 ? bankroll / S : 1.0;
@@ -376,10 +475,10 @@ namespace StockOdds
 
 						bool shortExp = legs.Any(l => !l.Core && l.Exp != DateTime.MaxValue && (l.Exp - date).TotalDays <= ShortRollDte);
 						// only meaningful when something can actually be traded to fix it
-						bool outside = (core == null || RangeShortCalls) && (held < lo - 1e-9 || held > hi + 1e-9);
+						bool outside = (core == null || RangeShortCalls || RangeCoreAddPuts) && (held < lo - 1e-9 || held > hi + 1e-9);
 						// under the no-short-calls rule a core-only position is COMPLETE, so "nothing sold" must not
 						// count as a reason to resize -- otherwise it would re-enter the resize block every bar
-						bool nothingSold = !legs.Any(l => !l.Core) && (core == null || RangeShortCalls);
+						bool nothingSold = !legs.Any(l => !l.Core) && (core == null || RangeShortCalls || RangeCoreAddPuts);
 						if (outside || shortExp || nothingSold)
 						{
 							foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
@@ -407,15 +506,21 @@ namespace StockOdds
 								// sell calls against the core toward the MIDPOINT, capped -- skipped entirely under
 								// the no-short-calls rule, which leaves core mode as pure long delta
 								double scD = RangeShortCalls
-									? Math.Min(RangeShortCallCap, Math.Max(0.0, coreD - mid)) : 0.0;
+									? Math.Min(RangeShortCallCap, Math.Max(0.0, coreD - aim)) : 0.0;
 								if (scD > 1e-3)
 									legs.Add(new Leg { Call = true, Qty = -scale, K = StrikeForDelta(true, S, iv, Ts, scD), Exp = expS });
+								// ...or ADD delta with short puts when the core alone falls short of the midpoint (LEAP core)
+								double spD = RangeCoreAddPuts ? Math.Min(RangePutCap, Math.Max(0.0, aim - coreD)) : 0.0;
+								if (spD > 1e-3)
+									legs.Add(new Leg { Call = false, Qty = -scale, K = StrikeForDelta(false, S, iv, Ts, spD), Exp = expS });
 							}
 							else
 							{
 								// PUT MODE: aim at the midpoint, with 0.5 as a cap (not a target)
 								double pd = RangePinHalf && lo <= 0.5 + 1e-9 && hi >= 0.5 - 1e-9
-									? 0.5 : Math.Min(RangePutCap, mid);
+									? 0.5 : Math.Min(RangePutCap, aim);
+								if (RangePutMin > 0 && pd < RangePutMin)
+									pd = RangePutMinSkip ? 0.0 : Math.Min(RangePutCap, RangePutMin);
 								if (pd > 1e-3)
 									legs.Add(new Leg { Call = false, Qty = -scale, K = StrikeForDelta(false, S, iv, Ts, pd), Exp = expS });
 							}
