@@ -237,7 +237,8 @@ namespace StockOdds
 		// at all to names under HV 50 (68% of the universe) and acts progressively on the high-vol tail: at HV 116
 		// the below-zone numerator goes 40 -> 68, at HV 199 it goes 40 -> 88, while the extended zone goes 40 -> 30.
 		//
-		// MEASURED (2,289 names, last 30% OOS, means; against the ExtCapPct = 0 baseline): Sharpe 0.379 -> 0.383 on
+		// MEASURED (2,289 names, last 30% OOS, means; against a baseline with the extension cap OFF, which is now
+		// its permanent state -- the cap was removed the same day, see the note below): Sharpe 0.379 -> 0.383 on
 		// 4 of 4 disjoint samples, excess ret/dd over a matched-exposure flat curve +0.005, walk-forward IN
 		// 0.157 -> 0.159, decliners -0.238 -> -0.230, violent 0.858 -> 0.863, steady 0.711 -> 0.713, curated basket
 		// 281 -> 309 with basket Sharpe 0.674 -> 0.685, at mean exposure 0.387 -> 0.389 (i.e. essentially UNCHANGED
@@ -296,26 +297,21 @@ namespace StockOdds
 		public static double KamaSmoothSlope     = 4.0;
 		public static double KamaSmoothMaxPeriod = 50.0;   // ceiling on the smoothing EMA period (floor = PositionSmoothPeriod)
 
-		// Blow-off / extension CAP (DEFAULT ON): when the decision close sits more than ExtCapPct% above its
-		// ExtMaPeriod-bar SMA (an acute parabolic extension) AND the candle is NOT ST-Bull, cap exposure at
-		// ExtCapCeil%. It only lowers the TOP (a min(): never raises exposure, never forces to cash), so it stops
-		// the engine chasing the vertical tail without selling the trend. The extended tail carries near-zero
-		// forward return but ~2x forward drawdown on the reverting cohort, so capping it is efficiency (return up
-		// + drawdown down), not de-risk; the cut is eased by the final position smoothing. The ST-Bull EXCLUSION
-		// is what makes it safe: the entire give-back lives in the non-ST-Bull states (a bull run's first crack
-		// while extended -- the state machine's BullNeutral); the still-pushing ST-Bull bars are continuation, so
-		// capping them only forfeits genuine-winner upside (a plain all-bars cap hurts the leveraged winners; the
-		// gate erases that cost). A 50-bar MA isolates ACUTE spikes (a slower MA flags sustained trends). 0 = off.
-		// DEFAULT OFF as of 2026-07-31. It was a genuine (if small) positive when it shipped, and it still is on the
-		// broad universe -- turning it off loses on 24 of 24 sample-comparisons across all three modes, and the
-		// violent/decliners/steady cohorts all prefer it in 6 of 6. But the margin is only 0.001-0.002 Sharpe, and it
-		// costs the concentrated high-vol basket 14-19 points of return (267 -> 281 shipped, 281 -> 294 with the KAMA
-		// trim adapter) plus real damage to the options expression (IREN PMCC+short-put 71 -> 44 when this layer is
-		// switched on in a layer-by-layer build). Disabled deliberately as a basket/overlay-focused trade: a
-		// broad-universe deployment should set this back to 55.
-		public static double ExtCapPct   = 0.0;
-		public static double ExtCapCeil  = 60.0;
-		public static int    ExtMaPeriod = 50;
+		// REMOVED 2026-07-31: the blow-off / extension CAP (pin exposure to a 60% ceiling when the close sat more
+		// than 55% above its 50-bar SMA and the candle was not ST-Bull). It had been default-off since earlier the
+		// same day and the feature is now deleted -- knobs ExtCapPct/ExtCapCeil/ExtMaPeriod and the rolling SMA that
+		// fed them are gone. NOT removed for being wrong: it was a small but consistent broad-universe positive
+		// (turning it off lost 24 of 24 sample-comparisons across all three modes, and the violent/decliners/steady
+		// cohorts each preferred it 6 of 6). It was removed because the margin was only 0.001-0.002 Sharpe while it
+		// cost the concentrated high-vol basket 14-19 points of return (267 -> 281 shipped, 281 -> 294 alongside the
+		// KAMA trim adapter) and materially damaged the options expression (IREN PMCC + short puts 71 -> 44 when the
+		// layer was switched on in a layer-by-layer build) -- a bad trade for a basket/overlay-focused deployment,
+		// and not worth carrying a dead code path for. Its original rationale still stands on its own terms and is
+		// preserved in git history: the acutely extended tail carries near-zero forward return but ~2x the forward
+		// drawdown on the reverting high-vol cohort, and the ST-Bull EXCLUSION was what made it safe (the give-back
+		// lives entirely in the non-ST-Bull states; capping still-pushing ST-Bull bars only forfeits winner upside).
+		// Do NOT confuse this with the shipped KAMA trim adapter (ExtTrimThreshold/ExtTrimCap/ExtTrimSlope above),
+		// which is a different mechanism on the same "extension" theme and remains DEFAULT ON.
 
 		// ============ Peak-age exposure scaler, BELOW THE KAMA ONLY (DEFAULT ON) ============
 		// Two trailing drawdowns of the decision close are measured against its own rolling highs:
@@ -545,9 +541,6 @@ namespace StockOdds
 			double posSmooth = double.NaN;
 			double kama = double.NaN;   // Kaufman adaptive MA of the decision close (uses curEr as the ER)
 
-			// rolling SMA window of the decision close, for the extension cap
-			var extMaWin = new Queue<double>(Math.Max(1, ExtMaPeriod));
-			double extMaSum = 0.0;
 			// rolling price efficiency ratio (Kaufman ER over PersistWindow), for corner smoothing
 			var erCloseWin = new Queue<double>(); var erDiffWin = new Queue<double>();
 			double erDiffSum = 0.0, erPrevClose = double.NaN, curEr = 1.0;
@@ -690,12 +683,6 @@ namespace StockOdds
 
 				UpdateHv(prevPrev, prev);   // rolling HV as of the decision bar
 
-				// extension % of the decision close above its SMA (no look-ahead: uses prev), for the extension cap
-				extMaWin.Enqueue(prev.Close); extMaSum += prev.Close;
-				while (extMaWin.Count > ExtMaPeriod) extMaSum -= extMaWin.Dequeue();
-				double extSma = extMaWin.Count > 0 ? extMaSum / extMaWin.Count : prev.Close;
-				double extPct = extSma > 0 ? (prev.Close / extSma - 1.0) * 100.0 : 0.0;
-
 				// rolling highs of the decision close (no look-ahead: uses prev) -> the two trailing drawdowns
 				{
 					int dw = Math.Max(2, DdWindow);
@@ -761,11 +748,6 @@ namespace StockOdds
 				// out-of-region when the raw exposure (ema) is bearish: 1=cash, 2=hold(B&H)
 				if (BearRegimeMode != 0 && ema < 0.0)
 					position = BearRegimeMode == 1 ? 0.0 : 1.0;
-				// extension cap: stop chasing the parabolic top -- lower (never raise) exposure to the ceiling when
-				// price is acutely extended above its SMA AND short-term momentum isn't bullish (ST != Bull).
-				// Applied before smoothing so the cut eases in/out.
-				if (ExtCapPct > 0 && extPct > ExtCapPct && st.Value != ShortTermState.Bull)
-					position = Math.Min(position, ExtCapCeil / 100.0);
 				// peak-age scaler, below the KAMA only: de-lever a fresh break down from a recent peak, lever a
 				// name grinding back toward a recent high that still sits under an older one.
 				double ddRatioMult = DdRatioMult(ddPct, ddShortPct);

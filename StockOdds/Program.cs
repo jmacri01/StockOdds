@@ -139,12 +139,6 @@ class Program
 		BankrollSimulator.KamaSmooth = true;              // KAMA-distance smoothing: smooth HARDER the further price is below its KAMA, light P5 at/above it
 		BankrollSimulator.KamaSmoothSlope = 4.0;          // ramp: smoothPer = clamp(P5 + slope*below*maxPer, P5, maxPer), below = max(0,(kama-close)/kama)
 		BankrollSimulator.KamaSmoothMaxPeriod = 50;       // smoothing-period ceiling (floor = PositionSmoothPeriod). KamaSmooth=false = flat P5
-		// Extension cap: DEFAULT OFF. Still a small positive on the broad universe (removing it loses 24 of 24
-		// sample-comparisons across all three modes) but it costs the high-vol basket 14-19 points of return and
-		// materially hurts the options expression. Set to 55 for a broad-universe deployment.
-		BankrollSimulator.ExtCapPct  = 0;                 // >this% above the ExtMaPeriod SMA AND not ST-Bull -> cap...
-		BankrollSimulator.ExtCapCeil = 60;                // ...exposure here (0 on ExtCapPct = off, which is the default)
-		BankrollSimulator.ExtMaPeriod = 50;               // SMA lookback the extension is measured against
 		// Peak-age scaler, BELOW THE KAMA ONLY: position *= clamp(K * dd60/dd30, min, max). dd60 >= dd30 always,
 		// and dd30 == dd60 exactly when the 60-bar peak falls inside the last 30 bars -- so the ratio reads PEAK
 		// AGE, not depth: ~1 on a fresh pullback from a recent high (scaled to K), large when the 60-bar peak is
