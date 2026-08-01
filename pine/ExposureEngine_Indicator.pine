@@ -30,7 +30,10 @@ indicator("Exposure Engine [Indicator]", overlay = false, max_labels_count = 500
 // =============================================================================
 grpUI   = "Display"
 showBackground = input.bool(true,  "Show background (LT regime)", group = grpUI)
-showTable      = input.bool(true,  "Show table (top-right)",      group = grpUI)
+showTable      = input.bool(true,  "Show table",                  group = grpUI)
+tblPos         = input.string("Middle Right", "Table position", group = grpUI,
+     options = ["Top Right", "Middle Right", "Bottom Right", "Top Left", "Middle Left", "Bottom Left"],
+     tooltip = "Default is Middle Right (halfway down) because the top-right corner collides with the chart legend and TradingView's own controls.")
 showDebug      = input.bool(false, "Show debug information",      group = grpUI)
 showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
@@ -442,7 +445,12 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+// Pine offers only top / middle / bottom anchors -- there is no percentage offset -- so "Middle Right" (50% down)
+// is the closest available to sitting a quarter-to-half way down, and it is the default because the top-right
+// corner collides with the chart legend and TradingView's own controls. Inlined rather than wrapped in a function:
+// calling a user-defined function inside a `var` initializer is a Pine gotcha.
+tblPosV = tblPos == "Top Right" ? position.top_right : tblPos == "Bottom Right" ? position.bottom_right : tblPos == "Top Left" ? position.top_left : tblPos == "Middle Left" ? position.middle_left : tblPos == "Bottom Left" ? position.bottom_left : position.middle_right
+var table tbl = table.new(tblPosV, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -470,8 +478,8 @@ if showTable and barstate.islast
     // band is the only source of hysteresis and switching on every crossing is what made this rule lose (broad OOS
     // Sharpe 0.466 switching every bar vs 0.557 switching only on a forced rebalance).
     ovTxt  = na(position) ? "—" :
-             position > 0.50 ? "covered stk (call " + str.tostring(1.0 - math.min(position, 1.0), "#.00") + "d)" :
-             position >= 0.20 ? "short put " + str.tostring(position, "#.00") + "d" : "cash / none"
+             position > 0.50 ? "stock + SHORT CALL " + str.tostring(1.0 - math.min(position, 1.0), "#.00") + "d" :
+             position >= 0.20 ? "SHORT PUT " + str.tostring(position, "#.00") + "d" : "cash / no position"
     ovCol  = na(position) ? color.gray : position > 0.50 ? colBull : position >= 0.20 ? colBullN : color.gray
     // Default view is deliberately minimal: the two rows that are ACTIONABLE -- what exposure to hold and which
     // structure to express it with. Everything else is diagnostic and appears only under "Show debug information".
