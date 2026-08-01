@@ -36,7 +36,7 @@ showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
 grpExp = "Exposure pane"
 showExposure = input.bool(true,  "Show exposure (position) line",  group = grpExp)
-showEma      = input.bool(true,  "Show exposure EMA line",         group = grpExp)
+showEma      = input.bool(false, "Show exposure EMA line",         group = grpExp)
 showBand     = input.bool(false, "Show rebalance band (EMA ± drift)", group = grpExp)
 showStValue  = input.bool(false, "Show ST-value stepline",         group = grpExp)
 showGuides   = input.bool(false, "Show 0 / ±0.5 / ±1 guide lines", group = grpExp)
@@ -442,7 +442,7 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // =============================================================================
 // 10. UI — TABLE (top-right)
 // =============================================================================
-var table tbl = table.new(position.top_right, 2, 12, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+var table tbl = table.new(position.top_right, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -460,20 +460,40 @@ if showTable and barstate.islast
     expLo = str.tostring(math.min(math.max(position - driftBand, loExp), hiExp), "#.##")
     expHi = str.tostring(math.min(math.max(position + driftBand, loExp), hiExp), "#.##")
     expTxt = na(position) ? "—" : atFull ? str.tostring(position, "#.##") : expLo + " – " + expHi
-    f_row(0,  "LT State",    f_ltName(ltState), ltCol)
-    f_row(1,  "ST State",    f_stName(stState), stCol)
-    f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
-    f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
-    f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
-    f_row(5,  "Exposure",    expTxt, posCol)
-    f_row(6,  "Bull Count",  str.tostring(ltBullCount), color.white)
-    f_row(7,  "Bear Count",  str.tostring(ltBearCount), color.white)
-    f_row(8,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
-    f_row(9,  "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
-    f_row(10, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
-    regionTxt = inRegion ? "IN region" : (regimeMode == 1 ? "OUT -> cash" : regimeMode == 2 ? "OUT -> hold" : "OUT (deploy)")
-    regionCol = inRegion ? colBull : colBear
-    f_row(11, "Region", regionTxt, regionCol)
+    // Recommended options overlay -- the SPLIT SWITCH. Read the traded exposure and pick one structure:
+    //   > 0.50        covered stock: buy stock with the whole account and sell a call of delta (1 - exposure)
+    //   0.20 - 0.50   short put at delta = exposure, cash-secured (collateral is the strike)
+    //   < 0.20        hold nothing
+    // NOTE this is the structure to hold AT THE NEXT FORCED REBALANCE -- i.e. when the held delta leaves the
+    // rebalance band or a short leg reaches expiry. It is deliberately NOT a signal to switch today: an exposure
+    // that drifts across 0.50 while the existing position is still inside the band should be left alone, since the
+    // band is the only source of hysteresis and switching on every crossing is what made this rule lose (broad OOS
+    // Sharpe 0.466 switching every bar vs 0.557 switching only on a forced rebalance).
+    ovTxt  = na(position) ? "—" :
+             position > 0.50 ? "covered stk (call " + str.tostring(1.0 - math.min(position, 1.0), "#.00") + "d)" :
+             position >= 0.20 ? "short put " + str.tostring(position, "#.00") + "d" : "cash / none"
+    ovCol  = na(position) ? color.gray : position > 0.50 ? colBull : position >= 0.20 ? colBullN : color.gray
+    // Default view is deliberately minimal: the two rows that are ACTIONABLE -- what exposure to hold and which
+    // structure to express it with. Everything else is diagnostic and appears only under "Show debug information".
+    if not showDebug
+        f_row(0, "Exposure", expTxt, posCol)
+        f_row(1, "Overlay (next rebal)", ovTxt, ovCol)
+    if showDebug
+        f_row(0,  "LT State",    f_ltName(ltState), ltCol)
+        f_row(1,  "ST State",    f_stName(stState), stCol)
+        f_row(2,  "ST Value",    na(target)   ? "—" : str.tostring(target, "#.##"),  stCol)
+        f_row(3,  "EMA",         na(emaExp)   ? "—" : str.tostring(emaExp, "#.##"),  color.white)
+        f_row(4,  "Adj EMA",     na(adjEma)   ? "—" : str.tostring(adjEma, "#.##"),  color.white)
+        f_row(5,  "Exposure",    expTxt, posCol)
+        f_row(6,  "Bull Count",  str.tostring(ltBullCount), color.white)
+        f_row(7,  "Bear Count",  str.tostring(ltBearCount), color.white)
+        f_row(8,  "Anchors B/S", (na(bullAnchor) ? "—" : str.tostring(bullAnchor, format.mintick)) + " / " + (na(bearAnchor) ? "—" : str.tostring(bearAnchor, format.mintick)), color.white)
+        f_row(9,  "Candle Type", f_candleName(candle), candle == 1 ? colBull : candle == -1 ? colBear : color.gray)
+        f_row(10, "Dyn LongBias", str.tostring(effLongBias, "#.##") + "  (z " + str.tostring(zTrait, "#.##") + ")", #FF6D00)
+        regionTxt = inRegion ? "IN region" : (regimeMode == 1 ? "OUT -> cash" : regimeMode == 2 ? "OUT -> hold" : "OUT (deploy)")
+        regionCol = inRegion ? colBull : colBear
+        f_row(11, "Region", regionTxt, regionCol)
+        f_row(12, "Overlay (next rebal)", ovTxt, ovCol)
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
