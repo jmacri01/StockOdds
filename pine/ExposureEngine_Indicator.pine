@@ -123,14 +123,6 @@ kamaSmoothSlope = input.float(4.0, "KAMA smoothing: slope", minval = 0, step = 0
 kamaSmoothMaxPeriod = input.int(50, "KAMA smoothing: max period", minval = 1, group = grpRsi,
      tooltip = "Ceiling on the smoothing EMA period (the floor is the default position-smoothing period). At/above the KAMA the period is the floor; it ramps toward this ceiling as the close falls below the KAMA.")
 
-grpExt = "Blow-off extension cap"
-extCapPct = input.float(0, "Extension cap trigger (% above SMA, 0 = off)", minval = 0, group = grpExt,
-     tooltip = "When the close sits more than this % above its extension MA (an acute parabolic run) AND the candle is not ST-Bull, cap exposure at the ceiling below. Only lowers the top (never raises, never forces to cash) -- it stops the engine chasing the vertical tail without selling the trend. The give-back lives entirely in the non-ST-Bull states (a bull run's first crack while extended); sparing the still-pushing ST-Bull bars protects genuine winners. Capping lifts return AND cuts drawdown. 0 disables.")
-extCapCeil = input.float(60, "Extension cap ceiling (exposure %)", minval = 0, group = grpExt,
-     tooltip = "Exposure % the position is pinned to when extended past the trigger. 60 bites (the extended tail averages ~72% exposure); a ceiling near/above 100 is nearly inert. Lower = more aggressive.")
-extMaPeriod = input.int(50, "Extension MA period", minval = 1, group = grpExt,
-     tooltip = "SMA lookback the extension is measured against. 50 isolates ACUTE spikes; a slower MA (100) flags sustained trends and caps genuine winners.")
-
 grpDd = "Peak-age scaler (below KAMA)"
 ddRatioMode = input.string("Ratio (K * dd60/dd30)", "Scaler form", options = ["Ratio (K * dd60/dd30)", "Recovered fraction", "Off"], group = grpDd,
      tooltip = "Multiplies the position by a PEAK-AGE reading. dd60/dd30 are the drawdowns from the rolling 60- and 30-bar highs of the close; a 60-bar high is always >= a 30-bar high, so dd30 equals dd60 exactly when the 60-bar peak falls INSIDE the last 30 bars. The ratio therefore reads peak AGE, not depth: ~1 on a fresh pullback from a recent high (scaled to K, the hardest de-lever, at any depth), and large when the 60-bar peak is older than 30 bars and price is grinding back toward a nearer high (up to the max). That reading is only useful BELOW the KAMA -- see the confinement setting. 'Recovered fraction' is the equivalent bounded form 1 + K*(2*rec - 1), rec = (dd60 - dd30)/dd60.")
@@ -354,12 +346,11 @@ rsiPos = (rsiOverlayPeriod > 0 and not na(posClamped) and not na(rsiVal) and rsi
 regimeMode  = bearRegimeMode == "Cash" ? 1 : bearRegimeMode == "Hold (buy & hold)" ? 2 : 0
 inRegion    = na(emaExp) or emaExp >= 0
 outOfRegion = regimeMode != 0 and not na(emaExp) and emaExp < 0
-rawPosPreCap = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : rsiPos)
-// Extension cap: lower (never raise) exposure to the ceiling when the close is acutely extended above its SMA
-// AND the candle is NOT ST-Bull (stState 3). Sparing ST-Bull continuation bars is what protects genuine winners.
-extSma = ta.sma(close, extMaPeriod)
-extPct = not na(extSma) and extSma > 0 ? (close / extSma - 1.0) * 100.0 : 0.0
-rawPosPreDd = (extCapPct > 0 and not na(rawPosPreCap) and extPct > extCapPct and stState != 3) ? math.min(rawPosPreCap, extCapCeil / 100.0) : rawPosPreCap
+// (The blow-off extension cap that used to sit here -- pin exposure to 60% when the close ran >55% above its
+// 50-bar SMA on a non-ST-Bull candle -- was REMOVED 2026-07-31. It was a small broad-universe positive, but it
+// cost the high-vol basket 14-19 points of return and hurt the options expression. Not to be confused with the
+// KAMA trim adapter above: different mechanism, same "extension" theme, still on.)
+rawPosPreDd = na(posClamped) ? na : (outOfRegion ? (regimeMode == 1 ? 0.0 : 1.0) : rsiPos)
 // Peak-age scaler: multiply the position by a peak-AGE reading. dd30 equals dd60 exactly when the 60-bar peak
 // falls inside the last 30 bars, so the ratio is ~1 on a fresh pullback from a recent high (scaled to K, the
 // hardest de-lever, at any depth) and large when the 60-bar peak is older than 30 bars and price is grinding
