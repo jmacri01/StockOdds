@@ -31,9 +31,11 @@ indicator("Exposure Engine [Indicator]", overlay = false, max_labels_count = 500
 grpUI   = "Display"
 showBackground = input.bool(true,  "Show background (LT regime)", group = grpUI)
 showTable      = input.bool(true,  "Show table",                  group = grpUI)
-tblPos         = input.string("Middle Right", "Table position", group = grpUI,
+tblPos         = input.string("Bottom Right", "Table position", group = grpUI,
      options = ["Top Right", "Middle Right", "Bottom Right", "Top Left", "Middle Left", "Bottom Left"],
-     tooltip = "Default is Middle Right (halfway down) because the top-right corner collides with the chart legend and TradingView's own controls.")
+     tooltip = "Anchor corner. Pine has no percentage anchor, so the bottom margin below is what actually sets the height off the bottom.")
+tblBottomPct   = input.float(10, "Table bottom margin (% of pane)", minval = 0, maxval = 40, step = 1, group = grpUI,
+     tooltip = "Height of a transparent spacer row placed BELOW the table content, as a percent of the pane. With the anchor at Bottom Right this lifts the bottom of the visible table that far off the bottom of the screen. Only applies to the bottom anchors.")
 showDebug      = input.bool(false, "Show debug information",      group = grpUI)
 showAnchors    = input.bool(false, "Show anchors",                group = grpUI)
 
@@ -450,7 +452,9 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // corner collides with the chart legend and TradingView's own controls. Inlined rather than wrapped in a function:
 // calling a user-defined function inside a `var` initializer is a Pine gotcha.
 tblPosV = tblPos == "Top Right" ? position.top_right : tblPos == "Bottom Right" ? position.bottom_right : tblPos == "Top Left" ? position.top_left : tblPos == "Middle Left" ? position.middle_left : tblPos == "Bottom Left" ? position.bottom_left : position.middle_right
-var table tbl = table.new(tblPosV, 2, 13, border_width = 1, frame_width = 1, frame_color = color.gray, force_overlay = true)
+// frame/border are OFF so the transparent spacer row below the content does not draw an empty box; the dark
+// per-cell backgrounds carry the visual instead. 14 rows = 13 content + 1 spacer.
+var table tbl = table.new(tblPosV, 2, 14, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -502,6 +506,13 @@ if showTable and barstate.islast
         regionCol = inRegion ? colBull : colBear
         f_row(11, "Region", regionTxt, regionCol)
         f_row(12, "Overlay (next rebal)", ovTxt, ovCol)
+    // Transparent spacer BELOW the content. With a bottom anchor this is what holds the visible table off the
+    // bottom of the pane -- table.cell's `height` is a percent of the pane, which is the only percentage control
+    // Pine gives for tables (the anchor itself is only top/middle/bottom).
+    if tblBottomPct > 0
+        spacerRow = showDebug ? 13 : 2
+        table.cell(tbl, 0, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
+        table.cell(tbl, 1, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
 
 // =============================================================================
 // 11. DEBUG — bar-by-bar values for comparison against the C# engine.
