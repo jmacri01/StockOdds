@@ -230,6 +230,15 @@ namespace StockOdds
 		// but those numbers are distorted, not merely differently scaled: the drift is name-specific and runs in
 		// BOTH directions, so it changed the RANKING of structures, not just their level.
 		public static bool   AccountScaledSizing = true;
+		// Size an OPTION core by CAPITAL rather than by share count. 0 = the default: the core holds the
+		// cash-equivalent share count (Qty = bankroll/S), so a 0.80d call costs only whatever that delta happens to
+		// cost -- roughly 6% of the account at 42 DTE, 25% at 365. Set > 0 to instead spend that FRACTION of the
+		// account on the core: Qty = frac * bankroll / premium. Re-computed on every establish AND every expiry roll
+		// off the CURRENT bankroll, so the position tracks the account rather than its size at inception.
+		// This is leverage: at 42 DTE a 0.80d call costs ~6% of spot, so spending 50% of the account buys ~8x the
+		// cash-equivalent share count and therefore many multiples of account delta, which the short calls then have
+		// to trim back to target. Stock cores are unaffected.
+		public static double CoreCapitalFrac = 0.0;
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
@@ -327,7 +336,10 @@ namespace StockOdds
 					double tgtC = Math.Max(0.0, Math.Min(EffMaxNetDelta, target));
 					double heldT = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date)) / acct;
 					bool flatT = (RangeFlatOnTarget ? tgtC : tgtC + bandT) <= RangeSitOut;
-					bool expT = legs.Any(l => !l.Core && l.Exp != DateTime.MaxValue && (l.Exp - date).TotalDays <= ShortRollDte);
+					// any dated leg near expiry forces a rebalance -- INCLUDING an option core. Stock carries Exp =
+					// DateTime.MaxValue so it is naturally excluded. Without this a short-dated core would never roll and
+					// would sit pinned at expiry (TimeToExp floors at 1/365), which is a pure modelling artifact.
+					bool expT = legs.Any(l => l.Exp != DateTime.MaxValue && (l.Exp - date).TotalDays <= ShortRollDte);
 					bool outT = heldT < tgtC - bandT - 1e-9 || heldT > tgtC + bandT + 1e-9;
 					bool wantStock = !RangePutsOnly && tgtC > RangeModeSplit;
 					var coreT = legs.FirstOrDefault(l => l.Core);
@@ -339,7 +351,8 @@ namespace StockOdds
 					{
 						double Ts = ShortDteDays / 365.0; var expS = date.AddDays(ShortDteDays);
 						// keep a correct-type stock core across rebalances; drop everything else
-						bool keepCore = wantStock && !flatT && coreT != null && coreT.Stock;
+						bool coreExpiring = coreT != null && !coreT.Stock && (coreT.Exp - date).TotalDays <= ShortRollDte;
+						bool keepCore = wantStock && !flatT && coreT != null && !coreExpiring;
 						foreach (var l in legs.Where(l => !keepCore || !l.Core)) friction += Cost(l, l.VPrev);
 						legs.RemoveAll(l => !keepCore || !l.Core);
 						res.Rolls++;
@@ -347,22 +360,38 @@ namespace StockOdds
 						{
 							if (wantStock)
 							{
-								var stk = legs.FirstOrDefault(l => l.Core);
-								if (stk == null)
+								// The core is STOCK by default; RangeCoreStock = false substitutes a CallLeapDelta call at
+								// LeapDteDays instead (e.g. a 6-week 0.80d call), which is rolled by the expiry trigger above.
+								var cc = legs.FirstOrDefault(l => l.Core);
+								if (cc == null)
 								{
-									stk = new Leg { Core = true, Stock = true, Qty = acct, Exp = DateTime.MaxValue };
-									stk.VPrev = S; friction += Cost(stk, S); legs.Add(stk); res.CoreEstablished++;
+									cc = RangeCoreStock
+										? new Leg { Core = true, Stock = true, Qty = acct, Exp = DateTime.MaxValue }
+										: new Leg { Core = true, Call = true, Qty = acct,
+											K = StrikeForDelta(true, S, iv, LeapDteDays / 365.0, CallLeapDelta), Exp = date.AddDays(LeapDteDays) };
+									cc.VPrev = LegValue(cc, S, iv, date); friction += Cost(cc, cc.VPrev);
+									legs.Add(cc); res.CoreEstablished++;
+									if (!cc.Stock) res.CorePremiumPaid += cc.Qty * cc.VPrev / Math.Max(1e-9, bankroll);
 								}
-								else if (Math.Abs(acct - stk.Qty) > 1e-9)
+								else if (Math.Abs(acct - cc.Qty) > 1e-9)
 								{
-									friction += StockSpreadFrac * Math.Abs(acct - stk.Qty) * S;
-									stk.Qty = acct; stk.VPrev = S;
+									double cv0 = LegValue(cc, S, iv, date);
+									friction += (cc.Stock ? StockSpreadFrac : SpreadFraction) * Math.Abs(acct - cc.Qty) * Math.Max(0, cv0);
+									cc.Qty = acct; cc.VPrev = cv0;
 								}
-								double scD = Math.Min(RangeShortCallCap, Math.Max(0.0, 1.0 - tgtC));
+								// trim / top up against the core's ACTUAL account delta -- a 0.80d call is not 1.0
+								double coreDA = cc.Qty * LegDelta(cc, S, iv, date) / acct;
+								double scD = Math.Min(RangeShortCallCap, Math.Max(0.0, coreDA - tgtC));
 								if (scD > 1e-3)
 								{
 									var cl = new Leg { Call = true, Qty = -acct, K = StrikeForDelta(true, S, iv, Ts, scD), Exp = expS };
 									cl.VPrev = LegValue(cl, S, iv, date); cl.VOpen = cl.VPrev; friction += Cost(cl, cl.VPrev); legs.Add(cl);
+								}
+								double spU = RangeCoreAddPuts ? Math.Min(RangePutCap, Math.Max(0.0, tgtC - coreDA)) : 0.0;
+								if (spU > 1e-3)
+								{
+									var pu = new Leg { Call = false, Qty = -acct, K = StrikeForDelta(false, S, iv, Ts, spU), Exp = expS };
+									pu.VPrev = LegValue(pu, S, iv, date); pu.VOpen = pu.VPrev; friction += Cost(pu, pu.VPrev); legs.Add(pu);
 								}
 							}
 							else
@@ -543,7 +572,7 @@ namespace StockOdds
 				else
 				{
 					if (HasCore(Strategy) && !legs.Any(l => l.Core))
-					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Core)) { l.Qty *= acct; l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+					{ EstablishCore(legs, S, iv, date); foreach (var l in legs.Where(l => l.Core)) { l.Qty = SizeCore(l, S, iv, date, acct, bankroll); l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
 					  res.CoreEstablished++; if (closedToCash) { res.CoreFlatCloses++; closedToCash = false; }
 					  res.CorePremiumPaid += legs.Where(l => l.Core && !l.Stock).Sum(l => l.Qty * l.VPrev) / Math.Max(1e-9, bankroll); }
 
@@ -552,7 +581,7 @@ namespace StockOdds
 					{
 						foreach (var l in legs.Where(l => l.Core && !l.Stock)) friction += Cost(l, l.VPrev);
 						legs.RemoveAll(l => l.Core && !l.Stock); EstablishCore(legs, S, iv, date);
-						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.Qty *= acct; l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => l.Core && !l.Stock)) { l.Qty = SizeCore(l, S, iv, date, acct, bankroll); l.VPrev = LegValue(l, S, iv, date); friction += Cost(l, l.VPrev); }
 						res.CoreEstablished++; res.CoreExpiryRolls++;
 						res.CorePremiumPaid += legs.Where(l => l.Core && !l.Stock).Sum(l => l.Qty * l.VPrev) / Math.Max(1e-9, bankroll);
 						// a core roll changes committed capital, so re-test the collateral of any live short puts
@@ -620,6 +649,15 @@ namespace StockOdds
 			return res;
 		}
 
+		// Quantity for a freshly established core leg. EstablishCore emits Qty = 1 (one unit on one share), so the
+		// default multiplies by acct = bankroll/S to hold the cash-equivalent share count.
+		private static double SizeCore(Leg l, double S, double iv, DateTime now, double acct, double bankroll)
+		{
+			if (CoreCapitalFrac <= 0 || l.Stock) return l.Qty * acct;
+			double v = LegValue(l, S, iv, now);
+			return v > 1e-9 ? l.Qty * CoreCapitalFrac * bankroll / v : 0.0;
+		}
+
 		private static bool HasCore(OverlayStrategy s) => s != OverlayStrategy.ShortPut && s != OverlayStrategy.SplitStockPut && s != OverlayStrategy.RangePutCall;
 
 		// SplitStockPut only: the structure must be rebuilt when the target crosses the 0.5 regime line
@@ -672,12 +710,21 @@ namespace StockOdds
 
 		// NO NAKED CALLS: reduce delta by `reduce` (>0) using at most ONE short call (covered 1:1 by the long core),
 		// routing any remainder beyond one call's ~0.95 delta into a LONG PUT instead of a second (naked) short call.
+		// ONE short call per unit of long cover -- a 1:1 DEFINED-RISK vertical. The quantity is pinned to the cover
+		// and the STRIKE is solved for, so `reduce` of delta is shed without ever going uncovered.
+		// Previously this sold a single contract (Qty = -1) with its delta capped at 0.95, regardless of how many
+		// units the core held and regardless of account scaling. Two consequences: a core larger than one unit was
+		// left with most of its delta un-trimmed (a 50%-of-account 42-day core showed net delta 2.5 instead of the
+		// ~0.25 target), and because -1 is not account-scaled it under-sold in every configuration once bankroll
+		// diverged from the share price. Only the residual beyond a 0.95-delta short call still needs a long put.
 		private static void AddCoveredShortCall(List<Leg> legs, double reduce, double S, double iv, double Ts, DateTime exp)
 		{
 			if (reduce <= 1e-4) return;
-			double cd = Math.Min(reduce, 0.95);
-			legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, cd), Exp = exp });
-			double rem = reduce - cd;
+			double cover = legs.Where(l => l.Qty > 0 && (l.Call || l.Stock)).Sum(l => l.Qty);
+			if (cover <= 1e-9) return;
+			double perUnit = Math.Min(0.95, reduce / cover);
+			legs.Add(new Leg { Call = true, Qty = -cover, K = StrikeForDelta(true, S, iv, Ts, perUnit), Exp = exp });
+			double rem = reduce - perUnit * cover;
 			if (rem > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, rem)), Exp = exp });
 		}
 		// ================= HARD INVARIANT 1: EVERY SHORT PUT IS CASH-SECURED, IN EVERY STRUCTURE =================
