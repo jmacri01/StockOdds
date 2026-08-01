@@ -520,6 +520,8 @@ Configure in `Program.cs`:
 ### TradingView
 The Pine scripts in `pine/` reproduce the C# engine bar-for-bar (the strategy plots a **synthetic-equity** line mirroring the C# `BankrollSimulator`). Defaults are kept in sync with `Program.cs`.
 
+The indicator's state table carries an **`Overlay (next rebal)`** row applying the [split switch](#the-preferred-structure-the-split-switch) to the current traded exposure: **`covered stk (call 0.28d)`** above 0.50, **`short put 0.35d`** between 0.20 and 0.50, **`cash / none`** below. It reports the structure to hold **at the next forced rebalance** — when held delta leaves the band or a short leg expires — and is deliberately *not* a signal to switch today. An exposure that drifts across 0.50 while the existing position is still inside the band should be left alone: the band is the only source of hysteresis, and switching on every crossing is what made the rule fail (broad OOS Sharpe **0.466** switching every bar against **0.557** switching only on a forced rebalance). The row shows the actionable delta alongside the structure — the short put's own delta, or the delta of the call to sell against the stock.
+
 ---
 
 ## Notes on tuning
