@@ -15,6 +15,9 @@ class Program
 	// combinations instead of running the usual single bankroll simulation.
 	static bool RUN_GRID_SEARCH = true;
 
+	// Run an ad-hoc research harness (MinCallSweep / BearBearCapSweep) instead of the grid search. Off = normal flow.
+	static bool RUN_RESEARCH_SWEEP = true;
+
 	// When RUN_GRID_SEARCH is on, pick one mode:
 	//   BiasSweep      -> 2-D sweep of BiasPeriod x BiasEmaPeriod (other knobs fixed) to find
 	//                     the smallest pair that maintains performance on the deployment set.
@@ -195,6 +198,15 @@ class Program
 		BankrollSimulator.BearBullNeutral = 0;
 		BankrollSimulator.BearBearNeutral = -0.5;
 		BankrollSimulator.BearBear = -1.0;
+
+		// TEMP HARNESS: min short-call delta A/B (MinCallSweep.cs). Set false to restore normal flow.
+		if (RUN_RESEARCH_SWEEP)
+		{
+			// MinCallSweep.Run = the full arm x structure x spread table;
+			// .Detail = per-symbol for one arm; .OneSymbol = one name across spreads (blow-up forensics).
+			await WingDteSweep.Run("SPY");
+			return;
+		}
 
 		// -------------------------
 		// 6. GRID SEARCH (optional) — sweep the smoothing knobs for the best Sharpe.
