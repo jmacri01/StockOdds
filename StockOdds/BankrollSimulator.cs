@@ -88,6 +88,19 @@ namespace StockOdds
 		public List<double>   KamaDist { get; set; } = new();
 		// The per-bar SHORT-TERM state, so a downstream consumer (the options overlay) can condition on it.
 		public List<ShortTermState> StState { get; set; } = new();
+		// The per-bar LONG-TERM state, so a harness can score a single (LT, ST) bucket without re-deriving it.
+		public List<LongTermState>  LtState { get; set; } = new();
+		// RESEARCH diagnostic: bars spent in the (Bear, Bear) bucket, and how many of those the
+		// BearBearMaxExposure ceiling actually bound on (position would have exceeded the cap).
+		public int BearBearBars { get; set; }
+		public int BearBearCapBound { get; set; }
+		// Mean position the engine held on (Bear, Bear) bars BEFORE the ceiling was applied.
+		public double BearBearMeanRaw { get; set; }
+		// RESEARCH diagnostic: bars whose decision candle closed below the PRIOR candle's low.
+		public int BearCandleBars { get; set; }
+		// RESEARCH diagnostic: mean smoothing period the SHIPPED depth ramp asks for on ST Bear bars, so a
+		// multiplier like "half smoothing" can be read in bars rather than as a ratio of an unknown.
+		public double StBearMeanPeriod { get; set; }
 	}
 
 	public static class BankrollSimulator
@@ -175,6 +188,93 @@ namespace StockOdds
 		// Chosen over an earlier trailing-persistence rule: cleaner (one condition, no tuned windows) and higher
 		// out-of-sample Cash Sharpe (0.22 vs 0.11 on a broad ~1300-name universe).
 		public static int    BearRegimeMode = 1;
+		// BUCKET CEILING: a hard cap on the FINAL traded position on candles in the (LT Bear, ST Bear) bucket --
+		// the most bearish cell of the map, whose raw target is -1.0. That target is already floored at 0 by
+		// MinExposurePercent, and BearRegimeMode sends the position to cash whenever the raw EMA is negative, so
+		// nothing here is about the STEADY state. What it targets is the LAG: on the bars just after a bullish run
+		// rolls into Bear/Bear, the exposure EMA is still positive and the KAMA smoother then blends the cash
+		// decision in gradually, so the engine is still carrying real exposure through the worst bucket. This caps
+		// what can be carried there, applied LAST so no later layer can lift it back.
+		// Percent of full exposure; < 0 = off (unbounded, the historical behaviour). 0 = fully flat in Bear/Bear.
+		public static double BearBearMaxExposure = -1.0;
+		// PER-ST-STATE ABLATION of the KAMA-distance smoother. When the current candle's ST state matches, the
+		// KAMA ramp is skipped and that bar smooths at the flat PositionSmoothPeriod floor instead. Isolates which
+		// short-term state the smoother is actually earning its keep in, one bucket at a time.
+		// ======== DURATION AXIS ON THE SMOOTHER ========
+		// The shipped KAMA ramp keys on DEPTH alone: smoothPer = clamp(P5 + slope*below*maxPer, P5, maxPer). A
+		// pullback two bars old and one forty bars old smooth identically at equal depth. This adds elapsed time
+		// as a second axis, in both directions, since it is not obvious which way it should run:
+		//   DurSlope > 0  start light and smooth HARDER the longer the episode runs (a pullback that won't
+		//                 resolve is more likely a real decline -- damp it)
+		//   DurSlope < 0  start fully smoothed and become MORE RESPONSIVE with age (the hold-through-the-dip
+		//                 case is strongest early; after that stop fighting the move)
+		//   DurMode  1 = duration REPLACES the distance ramp (is time a better axis than depth?)
+		//            2 = duration ADDS to it       (does time carry anything depth doesn't?)
+		//            3 = ST-BEAR STREAK, replace: on an ST Bear candle the period is set by how many CONSECUTIVE
+		//                ST Bear candles have run (streak resets on any non-Bear state); every other bar keeps the
+		//                shipped depth ramp untouched. Isolates the streak from the rest of the engine.
+		//            4 = ST-BEAR STREAK, dial the SHIPPED period: on an ST Bear candle, interpolate the depth
+		//                ramp's own period toward the base as the streak lengthens (negative slope) or toward the
+		//                ceiling (positive slope). Keeps the depth information and only dials it with streak age --
+		//                the most literal reading of "dial smoothing down with consecutive ST Bear candles".
+		//                Modes 3 and 4 ignore DurSource and always use the ST-Bear streak.
+		//   DurSource 0 = consecutive bars below the KAMA (resets at/above -- shipped behaviour is preserved above)
+		//             1 = consecutive bars in the current ST state
+		//   DurFull  = bars at which the duration effect saturates
+		public static int    DurMode   = 0;      // 0 = off
+		public static int    DurSource = 0;
+		public static double DurSlope  = 1.0;
+		public static double DurFull   = 20.0;
+		// HV-SCALED DECAY RATE: relax the smoothing FAST on high-vol names and SLOWLY on low-vol ones, off the
+		// engine's own rolling HV -- `curHvPct`, which is already HV(60) since HvWindow = 60, updated per bar with
+		// no look-ahead.  durFullEff = clamp(DurFull * (DurHvRef / hv)^DurHvExp, DurHvMin, DurHvMax)
+		// so a name sitting at DurHvRef behaves exactly as the flat rule does, and DurHvExp sets the direction:
+		//   +1  fast decay when volatile, slow when quiet   (the proposal)
+		//   -1  the opposite, kept as the sign control
+		// Motivated by the flat rule's bimodal basket result: it helped the high-vol compounders and hurt the
+		// steady names, so the decay rate may simply want to be per-name rather than global.
+		// DurHvRef = 0 turns the scaling off and DurFull applies flat to every name.
+		public static double DurHvRef = 0.0;
+		public static double DurHvExp = 1.0;
+		public static double DurHvMin = 5.0;
+		public static double DurHvMax = 250.0;
+
+		// SMOOTHING PERIOD APPLIED ON ST BEAR CANDLES, overriding the depth ramp on those bars only.
+		// This is the clean parameterisation of what the streak sweep actually found: the streak counter turned out
+		// to carry NOTHING (saturating it on the first bar scored identically to every streak-dependent variant, and
+		// adding streak dependence only degraded it), while the amount of smoothing applied on ST Bear candles
+		// mattered a lot and monotonically. Deliberately NOT clamped to KamaSmoothMaxPeriod so periods beyond the
+		// depth ramp's ceiling can be tested without moving the ceiling for every other bar.
+		//   0 = off (shipped depth ramp everywhere). PositionSmoothPeriod here == "skip smoothing on ST Bear".
+		public static double StBearSmoothPeriod = 0.0;
+		// MULTIPLIER on the depth ramp's own period, applied on ST Bear candles. 1.0 = off (shipped), 0.5 = "half
+		// smoothing", 2.0 = double. Multiplicative rather than absolute because the depth ramp already varies the
+		// period bar to bar (5..50 depending on how far below the KAMA price sits), so halving it preserves that
+		// shape instead of flattening it to one number the way StBearSmoothPeriod does. Floored at the base period.
+		public static double StBearSmoothMult = 1.0;
+
+		// SKIP THE KAMA RAMP ON A BEAR CANDLE -- a decision candle that CLOSES BELOW THE PREVIOUS CANDLE'S LOW.
+		// Not a state: one decisive down bar. On those bars the smoother drops to the base period so the position
+		// can react at once, on the theory that a close through the prior low is exactly the information heavy
+		// below-KAMA smoothing suppresses. Much rarer than ST Bear (~30% of bars), so the firing rate is reported
+		// alongside the result -- a null result on a rule that fires on 4% of bars means something different from
+		// a null result on one that fires on 30%.
+		//   0 = off | 1 = skip on bear candles | 2 = INVERSE CONTROL, skip on everything except bear candles
+		public static int KamaBearCandleMode = 0;
+
+		// BITMASK over ShortTermState (bit s = 1 << (int)state): 0 = off, i.e. KAMA smoothing everywhere (shipped).
+		// bit0 Bull, bit1 BullNeutral, bit2 BearNeutral, bit3 Bear. A mask lets combinations be tested too
+		// (e.g. 0b1001 = the two DIRECTIONAL states, 0b0110 = the two NEUTRAL ones).
+		public static int KamaSmoothOffMask = 0;
+		// The same bucket in the other direction: multiply the (Bear, Bear) position by this before the ceiling.
+		// Only worth testing because the ceiling measured WORSE than an exposure-matched flat haircut at every
+		// level, which says the exposure carried in that bucket is more productive than the average bar, not less.
+		// 1.0 = off.
+		public static double BearBearMult = 1.0;
+		// CONTROL ONLY (see the flat-haircut method): a signal-free constant multiplier on the final position.
+		// Any rule that reduces exposure moves return/drawdown by that fact alone, so a candidate must be scored
+		// against a haircut that holds the SAME mean exposure with no signal in it. 1.0 = off.
+		public static double FlatHaircut = 1.0;
 		// RSI overbought-trim overlay on the FINAL position: posB *= min(RsiMultNumerator/RSI(period), 1) each bar --
 		// trims when overbought and does NOTHING when oversold (capped at 1, never levers up). Applied after the drift
 		// band and the out-of-region rule. A clamp ablation showed the ENTIRE edge is the overbought trim (the oversold
@@ -398,6 +498,21 @@ namespace StockOdds
 		// insurance for anyone who sets DdRatioKamaMode = 0. Do NOT raise it far in that unconfined case:
 		// requiring a SUBSTANTIAL drawdown walks the feature back to a plain haircut. 0 disables the minimum.
 		public static double DdRatioMinDd = 1.0;
+		// ---- THIRD (MICRO) DRAWDOWN WINDOW ----
+		// The shipped scaler is a ratio of TWO trailing drawdowns, which reads PEAK AGE: dd30 == dd60 exactly when
+		// the 60-bar peak sits inside the last 30 bars. A third, shorter window reads the same thing at finer
+		// resolution -- dd15 == dd30 when the 30-bar peak sits inside the last 15 -- so it can distinguish "the
+		// peak is 20 bars old" from "the peak is 5 bars old", which dd60/dd30 alone cannot.
+		//   DdMicroMode 0 = off (shipped two-window form)
+		//               1 = SECOND STAGE: mult *= clamp(DdMicroK * dd30/dd15, DdRatioMin, DdRatioMax)
+		//                   -- the literal "add a 15-bar drawdown to the scaler"
+		//               2 = REPLACE the short window: the ratio becomes dd60/dd15
+		//               3 = REPLACE the long window:  the ratio becomes dd30/dd15
+		// Modes 2 and 3 are re-parameterisations of the existing form and overlap the earlier window re-sweep;
+		// mode 1 is the genuinely new shape, since it stacks two independent age reads.
+		public static int    DdMicroWindow = 15;
+		public static int    DdMicroMode   = 0;
+		public static double DdMicroK      = 1.0;
 		// ---- KAMA CONFINEMENT (DEFAULT 1 = below only) ----
 		// Restrict the scaler by position relative to the KAMA (the same KAMA the position smoother uses).
 		//   0 = everywhere, 1 = only when close < KAMA (DEFAULT), 2 = only when close >= KAMA
@@ -406,6 +521,20 @@ namespace StockOdds
 		public static int DdRatioKamaMode = 1;
 
 		// The scaler as a pure function of the two drawdowns, so a harness or the Pine port can reproduce it.
+		// Three-window form. dd15 is only consulted when DdMicroMode != 0, so the two-arg overload below still
+		// reproduces the shipped scaler exactly (and the Pine port keeps working).
+		public static double DdRatioMult(double dd60Pct, double dd30Pct, double dd15Pct)
+		{
+			if (DdMicroMode == 0) return DdRatioMult(dd60Pct, dd30Pct);
+			if (DdMicroMode == 2) return DdRatioMult(dd60Pct, dd15Pct);          // short window -> 15
+			if (DdMicroMode == 3) return DdRatioMult(dd30Pct, dd15Pct);          // both windows shortened
+			// mode 1: stack a second, finer age read on top of the shipped one
+			double stage1 = DdRatioMult(dd60Pct, dd30Pct);
+			if (DdRatioMinDd > 0 && dd15Pct < DdRatioMinDd) return stage1;       // no real drawdown on the micro window
+			double stage2 = Clamp(DdMicroK * dd30Pct / Math.Max(dd15Pct, DdRatioEps), DdRatioMin, DdRatioMax);
+			return Clamp(stage1 * stage2, DdRatioMin, DdRatioMax);
+		}
+
 		public static double DdRatioMult(double dd60Pct, double dd30Pct)
 		{
 			if (DdRatioMode == 0) return 1.0;
@@ -524,6 +653,14 @@ namespace StockOdds
 			var kamaAbove = new List<bool>();
 			var kamaDist = new List<double>();
 			var stStates = new List<ShortTermState>();
+			var ltStates = new List<LongTermState>();
+			int bbBars = 0, bbBound = 0; double bbRawSum = 0.0;   // (Bear, Bear) ceiling diagnostics
+			int bcBars = 0;                                       // bear candles (close < prior low)
+			double sbPerSum = 0; int sbPerN = 0;                  // shipped smoothing period on ST Bear bars
+			// run lengths for the duration axis: consecutive bars below the KAMA, and consecutive bars in the
+			// current ST state. Both count the bar being decided ON (so a fresh break reads 1, not 0).
+			int belowRun = 0, stRun = 0, stBearRun = 0;
+			ShortTermState? prevSt = null;
 			var stratReturns = new List<double>();
 			var bhReturns = new List<double>();
 			var returnDates = new List<DateTime>();
@@ -549,6 +686,7 @@ namespace StockOdds
 			// front is always the window max, so both drawdowns are O(1) per bar.
 			var ddWin = new LinkedList<(int Idx, double Close)>();        // DdWindow (long)
 			var ddShortWin = new LinkedList<(int Idx, double Close)>();   // DdShortWindow (short)
+			var ddMicroWin = new LinkedList<(int Idx, double Close)>();   // DdMicroWindow (third/finest)
 
 
 			// rolling LT-direction window for the dynamic long bias
@@ -701,6 +839,15 @@ namespace StockOdds
 				}
 				double ddShortHigh = ddShortWin.First!.Value.Close;
 				double ddShortPct = ddShortHigh > 0 ? (ddShortHigh - prev.Close) / ddShortHigh * 100.0 : 0.0;
+				// the third, finest window -- same monotonic-deque pattern
+				{
+					int mw = Math.Max(2, DdMicroWindow);
+					while (ddMicroWin.Count > 0 && ddMicroWin.Last!.Value.Close <= prev.Close) ddMicroWin.RemoveLast();
+					ddMicroWin.AddLast((i - 1, prev.Close));
+					while (ddMicroWin.First!.Value.Idx <= i - 1 - mw) ddMicroWin.RemoveFirst();
+				}
+				double ddMicroHigh = ddMicroWin.First!.Value.Close;
+				double ddMicroPct = ddMicroHigh > 0 ? (ddMicroHigh - prev.Close) / ddMicroHigh * 100.0 : 0.0;
 
 				// rolling price efficiency ratio (no look-ahead: uses prev)
 				if (!double.IsNaN(erPrevClose)) { double ed = Math.Abs(prev.Close - erPrevClose); erDiffWin.Enqueue(ed); erDiffSum += ed; while (erDiffWin.Count > PersistWindow) erDiffSum -= erDiffWin.Dequeue(); }
@@ -748,9 +895,16 @@ namespace StockOdds
 				// out-of-region when the raw exposure (ema) is bearish: 1=cash, 2=hold(B&H)
 				if (BearRegimeMode != 0 && ema < 0.0)
 					position = BearRegimeMode == 1 ? 0.0 : 1.0;
+				// run lengths, updated BEFORE the smoother reads them so the current bar is included
+				belowRun = (!double.IsNaN(kama) && kama > 0 && prev.Close < kama) ? belowRun + 1 : 0;
+				stRun = (prevSt != null && prevSt.Value == st.Value) ? stRun + 1 : 1;
+				// consecutive ST BEAR candles; resets to 0 on any non-Bear state
+				stBearRun = st.Value == ShortTermState.Bear ? stBearRun + 1 : 0;
+				prevSt = st.Value;
+
 				// peak-age scaler, below the KAMA only: de-lever a fresh break down from a recent peak, lever a
 				// name grinding back toward a recent high that still sits under an older one.
-				double ddRatioMult = DdRatioMult(ddPct, ddShortPct);
+				double ddRatioMult = DdRatioMult(ddPct, ddShortPct, ddMicroPct);
 				if (DdRatioKamaMode != 0 && !double.IsNaN(kama))
 				{
 					bool above = prev.Close >= kama;
@@ -761,12 +915,86 @@ namespace StockOdds
 					position = Clamp(position * ddRatioMult, minExp, maxExp);
 				// KAMA-distance smoothing: heavier the further price sits below its KAMA, light (P5) at/above it.
 				double smoothPer = PositionSmoothPeriod;
-				if (KamaSmooth && !double.IsNaN(kama) && kama > 0)
+				bool kamaOffHere = KamaSmoothOffMask != 0 && (KamaSmoothOffMask & (1 << (int)st.Value)) != 0;
+				// bear candle = the decision candle closed below the PRIOR candle's low
+				bool bearCandle = prev.Close < prevPrev.Low;
+				if (bearCandle) bcBars++;
+				if (KamaBearCandleMode == 1 && bearCandle) kamaOffHere = true;
+				if (KamaBearCandleMode == 2 && !bearCandle) kamaOffHere = true;
+				if (KamaSmooth && !kamaOffHere && !double.IsNaN(kama) && kama > 0)
 				{ double below = Math.Max(0.0, (kama - prev.Close) / kama);
 					smoothPer = Clamp(PositionSmoothPeriod + KamaSmoothSlope * below * KamaSmoothMaxPeriod, PositionSmoothPeriod, KamaSmoothMaxPeriod); }
+				// DURATION axis (see DurMode). The shipped ramp keys on DEPTH only, so a 2-bar-old pullback and a
+				// 40-bar-old one at the same depth smooth identically. This makes elapsed time a second axis.
+				if (DurMode != 0 && !kamaOffHere)
+				{
+					double dur = DurMode >= 3 ? stBearRun : (DurSource == 1 ? stRun : belowRun);
+					// per-name decay length off rolling HV(60), or the flat DurFull when scaling is off
+					double durFullEff = DurFull;
+					if (DurHvRef > 0 && curHvPct > 1e-6)
+						durFullEff = Clamp(DurFull * Math.Pow(DurHvRef / curHvPct, DurHvExp), DurHvMin, DurHvMax);
+					double durFrac = durFullEff > 0 ? Clamp(dur / durFullEff, 0.0, 1.0) : 0.0;
+					double travel = KamaSmoothMaxPeriod - PositionSmoothPeriod;
+					if (DurMode == 1)
+					{
+						// duration REPLACES the distance ramp. Positive slope starts at the base period and
+						// smooths harder the longer the episode runs; negative slope starts fully smoothed and
+						// becomes more responsive with age.
+						// OUTSIDE an episode (source 0, price at/above its KAMA) fall back to the base period --
+						// otherwise a negative slope would read durFrac = 0 as "maximum smoothing" and smooth
+						// hardest on exactly the trending bars the shipped rule keeps responsive, which turns
+						// this into a global heavy-smoothing change wearing a duration costume.
+						bool inEpisode = DurSource == 1 || belowRun > 0;
+						double start = DurSlope >= 0 ? PositionSmoothPeriod : KamaSmoothMaxPeriod;
+						smoothPer = inEpisode
+							? Clamp(start + DurSlope * durFrac * travel, PositionSmoothPeriod, KamaSmoothMaxPeriod)
+							: PositionSmoothPeriod;
+					}
+					else if (DurMode == 2)
+					{
+						// duration ADDS to the distance ramp -- tests whether time carries anything depth doesn't
+						smoothPer = Clamp(smoothPer + DurSlope * durFrac * travel, PositionSmoothPeriod, KamaSmoothMaxPeriod);
+					}
+					else if (stBearRun > 0)   // modes 3 and 4 act ONLY on ST Bear candles; all else keeps the shipped ramp
+					{
+						if (DurMode == 3)
+						{
+							double start = DurSlope >= 0 ? PositionSmoothPeriod : KamaSmoothMaxPeriod;
+							smoothPer = Clamp(start + DurSlope * durFrac * travel, PositionSmoothPeriod, KamaSmoothMaxPeriod);
+						}
+						else
+						{
+							// dial the depth ramp's OWN period with streak age, preserving the depth information
+							smoothPer = DurSlope >= 0
+								? smoothPer + (KamaSmoothMaxPeriod - smoothPer) * durFrac * DurSlope
+								: smoothPer - (smoothPer - PositionSmoothPeriod) * durFrac * (-DurSlope);
+							smoothPer = Clamp(smoothPer, PositionSmoothPeriod, KamaSmoothMaxPeriod);
+						}
+					}
+				}
+				// ST-Bear period override, applied last so it wins over the depth ramp and the duration modes
+				if (st.Value == ShortTermState.Bear)
+				{
+					sbPerSum += smoothPer; sbPerN++;    // what the shipped ramp actually asks for on these bars
+					if (StBearSmoothMult != 1.0)
+						smoothPer = Math.Max(PositionSmoothPeriod, smoothPer * StBearSmoothMult);
+					if (StBearSmoothPeriod > 0) smoothPer = StBearSmoothPeriod;
+				}
 				if (smoothPer > 0) { double aP = 2.0 / (smoothPer + 1); posSmooth = double.IsNaN(posSmooth) ? position : aP * position + (1.0 - aP) * posSmooth; position = posSmooth; }
 				if (DdRatioMode != 0 && DdRatioPostSmooth)
 					position = Clamp(position * ddRatioMult, minExp, maxExp);
+				// (Bear, Bear) ceiling -- applied LAST so nothing downstream can lift the position back over it.
+				if (lt == LongTermState.Bear && st.Value == ShortTermState.Bear)
+				{
+					bbBars++; bbRawSum += position;
+					if (BearBearMult != 1.0) position = Clamp(position * BearBearMult, minExp, maxExp);
+					if (BearBearMaxExposure >= 0.0)
+					{
+						double bbCap = BearBearMaxExposure / 100.0;
+						if (position > bbCap) { bbBound++; position = bbCap; }
+					}
+				}
+				if (FlatHaircut != 1.0) position *= FlatHaircut;   // exposure-matched control, no signal
 				var dir = position < 0 ? TradeDirection.Short : TradeDirection.Long;
 
 				// -------- ledger run boundary --------
@@ -799,6 +1027,7 @@ namespace StockOdds
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
 				stStates.Add(st.Value);
+				ltStates.Add(lt);
 
 				bankroll *= (1.0 + tradeReturn);
 
@@ -835,6 +1064,12 @@ namespace StockOdds
 			result.KamaAbove = kamaAbove;
 			result.KamaDist = kamaDist;
 			result.StState = stStates;
+			result.LtState = ltStates;
+			result.BearBearBars = bbBars;
+			result.BearBearCapBound = bbBound;
+			result.BearBearMeanRaw = bbBars > 0 ? bbRawSum / bbBars : 0.0;
+			result.BearCandleBars = bcBars;
+			result.StBearMeanPeriod = sbPerN > 0 ? sbPerSum / sbPerN : 0.0;
 			result.SharpeRatio = Sharpe(stratReturns, PeriodsPerYear);
 			result.BuyHoldSharpeRatio = Sharpe(bhReturns, PeriodsPerYear);
 			result.BuyHoldMaxDrawdownPct = MaxDrawdown(bhReturns);

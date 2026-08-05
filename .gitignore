@@ -56,3 +56,6 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# research data cache (universe + bar cache)
+data/

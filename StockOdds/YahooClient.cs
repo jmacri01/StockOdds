@@ -9,11 +9,17 @@ namespace StockOdds
 	public static class YahooClient
 	{
 		public static async Task<List<OhlcBar>> GetBarsAsync(string symbol, string interval)
+			=> await GetBarsAsync(symbol, interval, 5);
+
+		// yearsBack is parameterised because the 5-year window was a SELF-IMPOSED default, not a Yahoo limit:
+		// the daily endpoint serves 20+ years (SPY returns 5,430 bars back to 2005-01-03). That matters for any
+		// tail test -- a 5-year window starting 2021 contains no crash at all, while 2005+ contains 2008,
+		// March 2020 and 18 days worse than -5%.
+		public static async Task<List<OhlcBar>> GetBarsAsync(string symbol, string interval, int yearsBack)
 		{
-			// Rolling window: the last 5 years up to right now.
 			var now = DateTimeOffset.UtcNow;
 			long period2 = now.ToUnixTimeSeconds();
-			long period1 = now.AddYears(-5).ToUnixTimeSeconds();
+			long period1 = now.AddYears(-Math.Abs(yearsBack)).ToUnixTimeSeconds();
 
 			var url =
 				$"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(symbol)}" +

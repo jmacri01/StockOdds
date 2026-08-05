@@ -95,7 +95,17 @@ namespace StockOdds
 		public int CoreEstablished { get; set; }         // total times the core was (re)bought
 		public int CoreExpiryRolls { get; set; }         // of which: rolled because the LEAP reached expiry
 		public int CoreFlatCloses { get; set; }          // of which: re-bought after a flat-close liquidation
-		public double CorePremiumPaid { get; set; }      // cumulative core premium paid, in units of the initial bankroll
+		public double CorePremiumPaid { get; set; }
+		// Cumulative premium RECEIVED when opening short legs, as a multiple of the account at the time of sale.
+		// Compare against CorePremiumPaid: with a 14-day short leg rolled against a 42-day long core you sell three
+		// times per core purchase, so on ATM legs the short side should collect ~sqrt(42/14) = 1.73x what the core
+		// costs. If it does not, the reason is MONEYNESS, not tenor -- a deep-ITM short call is nearly all intrinsic
+		// and has little extrinsic value to harvest.
+		public double ShortPremiumTaken { get; set; }
+		public double ShortLegOpens { get; set; }      // cumulative core premium paid, in units of the initial bankroll
+		// ShortCallMin diagnostics: how many short-call sales were considered, and how many the floor caught.
+		public int ShortCallWanted { get; set; }
+		public int ShortCallBound { get; set; }
 	}
 
 	public static class OptionsOverlaySimulator
@@ -148,6 +158,16 @@ namespace StockOdds
 		// delta-only fiction in which PMCC + short puts and covered stock reached net delta > 1 on unfunded naked
 		// puts. Leave it true for anything you intend to trade.
 		public static bool   CashSecuredPut     = true;
+		// INTEREST ON UNINVESTED CASH. The model is mark-to-market equity with r = 0 and no cash ledger, so idle cash
+		// and posted put collateral both earn NOTHING. That is not neutral between structures: it silently subsidises
+		// the ones that SPEND their capital. Covered stock puts ~100% of the account into shares; a 0.80d LEAP core
+		// consumes only ~25% and leaves ~75% idle; a cash-secured put holds ~100% as collateral. Crediting
+		// (bankroll - long-leg capital) * rate/252 per bar prices that difference. Collateral is INCLUDED because it
+		// is the account's own cash held as a reserve, not money paid away -- only premium and shares actually
+		// purchased are excluded. Default 0 reproduces every published number.
+		// NOTE when reading results: Sharpe() is mean/sd with rf hardcoded to 0, so crediting interest inflates the
+		// RAW figure by rf/sd for free. Only Sharpe computed on EXCESS returns (mean - rf) is a fair comparison.
+		public static double CashRate           = 0.0;
 		// RangePutCall knobs (see the enum note). RangeSitOut is the range-high below which nothing is held.
 		// RangeShortCallCap is the hard ceiling on the short CALL delta in LEAP mode, and it is what makes the
 		// range unreachable (forcing an exit) once the LEAP delta runs too far above the target.
@@ -239,12 +259,37 @@ namespace StockOdds
 		// cash-equivalent share count and therefore many multiples of account delta, which the short calls then have
 		// to trim back to target. Stock cores are unaffected.
 		public static double CoreCapitalFrac = 0.0;
+		// LEVERAGE ON SHARE-SIZING: Qty = c * bankroll/S. Keeps share-sizing's constant-DELTA property (unlike
+		// CoreCapitalFrac, which fixes the COST and therefore lets contract count swing inversely with the option
+		// price -- an unintentional vol-timing bet that measured ~2x worse at matched capital and matched exposure).
+		// c = 1 is the default share-sized core. Because Sharpe is invariant to a pure exposure change, a clean
+		// leverage dial should leave Sharpe roughly FLAT across c; any decay is friction, premium drag or path cost.
+		public static double CoreShareMult = 1.0;
+		// Scale the DELTA TARGET with CoreShareMult as well as the core quantity, so the trim is effectively
+		// POSITION-relative rather than account-relative. Without this, raising c only adds gross size: the short
+		// calls trim net delta straight back to the account target, so netD measured 0.184 at c = 0.25 and 0.189 at
+		// c = 8 -- flat across a 32x range -- and c was never a leverage knob at all, only a friction multiplier.
+		// With it, net delta becomes c * engineTarget and c is genuine leverage.
+		// NOTE the core must still be AFFORDABLE: c long calls cost c * (premium per unit). corePaid/coreBuys shows
+		// the per-purchase cost as a fraction of the account; above 1.0 the position is unfunded.
+		public static bool   CoreLevScalesTarget = false;
 		public static double ShortDteDays      = 14;   // calendar DTE for the rolled short legs. Shorter harvests
 		                                               // more theta (universal across strategies, robust to 2% spread);
 		                                               // ~14 is the sweet spot — below it you mostly add gamma/gap risk.
 		public static double LeapDteDays        = 365;  // calendar DTE for the long LEAP core (rolled at expiry)
 		public static double ShortLegDelta     = 0.30; // delta magnitude at which short calls/puts are sold
 		public static double ShortCallCap      = 0.50; // PmccPutFloor: cap on the delta reduction from short calls; remainder via a long put
+		// GLOBAL MINIMUM SHORT-CALL DELTA -- the call-side mirror of RangePutMin. When the target sits just under the
+		// core's delta the solved short call can be a 0.02-delta contract: it sheds the delta the target asked for but
+		// collects almost no premium, while still paying SpreadFraction twice (open + the next roll's close) on every
+		// 14-day cycle. Below the floor:
+		//   ShortCallMinSkip = false -> raise the sale TO the floor (sheds MORE delta than asked; more premium)
+		//   ShortCallMinSkip = true  -> sell no call at all       (holds MORE delta than asked; no premium, no cost)
+		// Both deliberately miss the delta target, in opposite directions, so they are separate arms -- not one dial.
+		// 0 = off (the historical behaviour: sell whatever delta the target implies, however small).
+		// Does NOT apply to PmccStrangle, whose always-on leg already has its own floor (StrangleMinDelta).
+		public static double ShortCallMin      = 0.0;
+		public static bool   ShortCallMinSkip  = false;
 		// CoveredStock COLLAR: reduce the stock's delta via a collar (1 long put + 1 short call) instead of piling on
 		// short calls. Long put delta = min(reduction, CoveredPutDelta); short call delta = remainder. At target 0 the
 		// two sum to 1.0 (full hedge). CoveredCollar=false keeps the legacy multi-short-call reduction.
@@ -256,6 +301,11 @@ namespace StockOdds
 		public static double ShortPutCap        = 0.50; // ShortPut: cap the short put at ~ATM (0.50Δ = peak theta, least directional risk). Deeper puts harvest less theta and carry more downside — 0.50 dominates 0.75/0.95 on every universe.
 		public static double ShortPutTargetFrac = 1.0;  // ShortPut: fraction of the engine target to express (put delta = min(frac*target, cap)); 0.5 = run at half exposure
 		public static double ShortPutProtDelta  = 0.0;  // ShortPut: if >0, buy a long put at this delta (same expiry) -> bull put spread; the short put deepens by this so net delta still = the cap
+		// ENTRY threshold, used only when there is NO position. Below this the structure stays in cash rather than
+		// opening. Defaults to 0 = disabled, i.e. entry is governed by FlatEps alone (the historical behaviour).
+		// Raising it above FlatEps gives entry/exit hysteresis; the natural candidate is DeadbandDelta, since below
+		// that target the deadband's lower edge is negative and zero delta is already inside tolerance.
+		public static double EntryEps           = 0.0;
 		public static double FlatEps            = 0.20; // target <= this is treated as "flat" -- don't express weak signals.
 		// 0.20 (swept optimum) beats 0.05: a sub-0.20 target isn't worth expressing. For the SHORT-PUT this is a pure
 		// EXPRESSION FLOOR (it simply won't sell a put below a 0.20 target -- holds cash; the timer below is moot since
@@ -295,6 +345,7 @@ namespace StockOdds
 		public static OverlayResult Run(IReadOnlyList<OhlcBar> bars, BankrollResult engine, DateTime startDate)
 		{
 			var res = new OverlayResult();
+			_callWanted = _callBound = 0;
 			if (bars == null || bars.Count < HvWindow + 2 || engine.Positions.Count == 0) return res;
 
 			// close + trailing HV indexed by date
@@ -326,7 +377,15 @@ namespace StockOdds
 				if (acct <= 1e-9 || double.IsNaN(acct) || double.IsInfinity(acct)) acct = 1.0;
 				else foreach (var l in legs) { double v = LegValue(l, S, iv, date); if (double.IsNaN(v) || double.IsInfinity(v)) v = l.VPrev; pnl += l.Qty * (v - l.VPrev); l.VPrev = v; }
 
-				bool flat = target <= FlatEps;
+				// ENTRY vs EXIT threshold. With nothing on, entry needs target > EntryEps; once a position exists the
+				// looser FlatEps governs when it counts as flat. Setting EntryEps above FlatEps therefore buys real
+				// hysteresis instead of one shared line.
+				// The motivating argument is internal consistency with the deadband: the resize band is
+				// DeadbandDelta (0.30) wide, so the tolerated range around a target is [target-0.30, target+0.30].
+				// Below a 0.30 target that lower edge is NEGATIVE -- zero net delta already sits inside the band, i.e.
+				// the engine's own tolerance says holding nothing is an acceptable expression of the signal. Opening a
+				// position there pays entry cost for delta the band would let decay straight back to zero.
+				bool flat = target <= (legs.Count == 0 ? Math.Max(FlatEps, EntryEps) : FlatEps);
 				if (flat) flatCount++; else flatCount = 0;
 				bool doClose = flat && EffFlatHoldDays >= 0 && flatCount > EffFlatHoldDays;
 				if (Strategy == OverlayStrategy.RangePutCall && RangeTargetMode)
@@ -381,7 +440,7 @@ namespace StockOdds
 								}
 								// trim / top up against the core's ACTUAL account delta -- a 0.80d call is not 1.0
 								double coreDA = cc.Qty * LegDelta(cc, S, iv, date) / acct;
-								double scD = Math.Min(RangeShortCallCap, Math.Max(0.0, coreDA - tgtC));
+								double scD = ApplyShortCallMin(Math.Min(RangeShortCallCap, Math.Max(0.0, coreDA - tgtC)));
 								if (scD > 1e-3)
 								{
 									var cl = new Leg { Call = true, Qty = -acct, K = StrikeForDelta(true, S, iv, Ts, scD), Exp = expS };
@@ -535,7 +594,7 @@ namespace StockOdds
 								// sell calls against the core toward the MIDPOINT, capped -- skipped entirely under
 								// the no-short-calls rule, which leaves core mode as pure long delta
 								double scD = RangeShortCalls
-									? Math.Min(RangeShortCallCap, Math.Max(0.0, coreD - aim)) : 0.0;
+									? ApplyShortCallMin(Math.Min(RangeShortCallCap, Math.Max(0.0, coreD - aim))) : 0.0;
 								if (scD > 1e-3)
 									legs.Add(new Leg { Call = true, Qty = -scale, K = StrikeForDelta(true, S, iv, Ts, scD), Exp = expS });
 								// ...or ADD delta with short puts when the core alone falls short of the midpoint (LEAP core)
@@ -557,6 +616,8 @@ namespace StockOdds
 							double cr = EnforceCashSecured(legs, S, iv, bankroll, date);
 							if (cr > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = cr;
 							foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => !l.Core && l.Qty < 0))
+						{ res.ShortPremiumTaken += -l.Qty * l.VPrev / Math.Max(1e-9, bankroll); res.ShortLegOpens++; }
 							res.Rolls++; rngResized = true;
 						}
 					}
@@ -590,7 +651,19 @@ namespace StockOdds
 
 					double net = legs.Sum(l => l.Qty * LegDelta(l, S, iv, date));
 					double spTgt = Math.Min(target * ShortPutTargetFrac, ShortPutCap);
-				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target;
+				// POSITION-RELATIVE TARGET. Derive the effective share-multiple from the core's ACTUAL account delta so it
+				// works for both sizing rules: share-sizing gives coreD/CallLeapDelta = CoreShareMult exactly, while
+				// capital-fraction sizing gives frac*S/V, which floats with the option price. Net delta then scales with
+				// the position instead of being trimmed back to a fixed account target.
+				double levMul = 1.0;
+				if (CoreLevScalesTarget)
+				{
+					var coreC = legs.FirstOrDefault(l => l.Core && l.Call);
+					levMul = (coreC != null && CallLeapDelta > 1e-9)
+						? Math.Max(0.0, coreC.Qty * LegDelta(coreC, S, iv, date) / acct) / CallLeapDelta
+						: CoreShareMult;
+				}
+				double tnet = Strategy == OverlayStrategy.ShortPut ? (spTgt > FlatEps ? spTgt : 0.0) : target * levMul;
 					double band = (DeadbandStBull > 0 && k < engine.StState.Count && engine.StState[k] == ShortTermState.Bull)
 						? DeadbandStBull : DeadbandDelta;
 					bool shortExpiring = legs.Any(l => !l.Core && (l.Exp - date).TotalDays <= ShortRollDte);
@@ -616,19 +689,27 @@ namespace StockOdds
 					{
 						foreach (var l in legs.Where(l => !l.Core)) friction += Cost(l, l.VPrev);
 						// ResizeShorts works in per-share delta space, so the account target is scaled in
-						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target + RebalanceEdge * band)) * acct, date);
+						ResizeShorts(legs, S, iv, Math.Max(0.0, Math.Min(EffMaxNetDelta, target * levMul + RebalanceEdge * band)) * acct, date);
 						// the two invariants, applied to EVERY structure (see the definitions above)
 						EnforceNoNakedCalls(legs);
 						double collRatio = EnforceCashSecured(legs, S, iv, bankroll, date);
 						if (collRatio > res.MaxShortPutCollateralRatio) res.MaxShortPutCollateralRatio = collRatio;
 						foreach (var l in legs.Where(l => !l.Core)) { l.VPrev = LegValue(l, S, iv, date); l.VOpen = l.VPrev; friction += Cost(l, l.VPrev); }
+						foreach (var l in legs.Where(l => !l.Core && l.Qty < 0))
+						{ res.ShortPremiumTaken += -l.Qty * l.VPrev / Math.Max(1e-9, bankroll); res.ShortLegOpens++; }
 						res.Rolls++;
 					}
 				}
 
 				// ruin (the diagnostic lists are kept the same length as Returns so they can be zipped)
 				if (bankroll <= 1e-6) { res.Returns.Add(-1.0); res.Dates.Add(date); res.FrictionFrac.Add(0); res.NetDeltas.Add(0); res.Targets.Add(0); res.CoreDeltas.Add(0); res.ShortDeltas.Add(0); res.Los.Add(double.NaN); res.His.Add(double.NaN); res.Resized.Add(0); break; }
-				double netPnl = pnl - friction;
+				double interest = 0;
+				if (CashRate > 0 && bankroll > 0)
+				{
+					double longCap = legs.Where(l => l.Qty > 0).Sum(l => l.Qty * (l.Stock ? S : Math.Max(0.0, l.VPrev)));
+					interest = Math.Max(0.0, bankroll - longCap) * CashRate / 252.0;
+				}
+				double netPnl = pnl - friction + interest;
 				double dr = netPnl / bankroll; if (double.IsNaN(dr) || double.IsInfinity(dr)) dr = 0;
 				res.FrictionFrac.Add(bankroll > 1e-9 ? friction / bankroll : 0.0);
 				bankroll += netPnl; res.Returns.Add(dr); res.Dates.Add(date);
@@ -644,6 +725,7 @@ namespace StockOdds
 			res.SharpeRatio = Sharpe(res.Returns);
 			res.MaxDrawdownPct = MaxDrawdown(res.Returns);
 			res.TotalReturnPct = TotalReturn(res.Returns);
+			res.ShortCallWanted = _callWanted; res.ShortCallBound = _callBound;
 			res.TimeInTradePct = nBars > 0 ? 100.0 * nInTrade / nBars : 0;
 			res.MeanExposure = nBars > 0 ? sumExp / nBars : 0;
 			return res;
@@ -653,7 +735,7 @@ namespace StockOdds
 		// default multiplies by acct = bankroll/S to hold the cash-equivalent share count.
 		private static double SizeCore(Leg l, double S, double iv, DateTime now, double acct, double bankroll)
 		{
-			if (CoreCapitalFrac <= 0 || l.Stock) return l.Qty * acct;
+			if (CoreCapitalFrac <= 0 || l.Stock) return l.Qty * acct * CoreShareMult;
 			double v = LegValue(l, S, iv, now);
 			return v > 1e-9 ? l.Qty * CoreCapitalFrac * bankroll / v : 0.0;
 		}
@@ -722,10 +804,26 @@ namespace StockOdds
 			if (reduce <= 1e-4) return;
 			double cover = legs.Where(l => l.Qty > 0 && (l.Call || l.Stock)).Sum(l => l.Qty);
 			if (cover <= 1e-9) return;
-			double perUnit = Math.Min(0.95, reduce / cover);
+			double perUnit = ApplyShortCallMin(Math.Min(0.95, reduce / cover));
+			// skip mode below the floor: sell nothing and DON'T re-route into a long put. The long put here is an
+			// overflow valve for a reduction past one 0.95-delta call, not a substitute for a call we chose to skip.
+			if (perUnit <= 0.0) return;
 			legs.Add(new Leg { Call = true, Qty = -cover, K = StrikeForDelta(true, S, iv, Ts, perUnit), Exp = exp });
 			double rem = reduce - perUnit * cover;
 			if (rem > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, rem)), Exp = exp });
+		}
+
+		// Short-call delta floor (see ShortCallMin). Returns the delta to sell; 0 means sell nothing.
+		// Counts how often the rule is CONSULTED vs how often it BINDS, so a null result can be read as
+		// "the rule does nothing" rather than "the rule does nothing useful".
+		private static int _callWanted, _callBound;
+		private static double ApplyShortCallMin(double d)
+		{
+			if (d < 1e-3) return d;                     // no call was going to be sold anyway
+			_callWanted++;
+			if (ShortCallMin <= 0 || d >= ShortCallMin) return d;
+			_callBound++;
+			return ShortCallMinSkip ? 0.0 : ShortCallMin;
 		}
 		// ================= HARD INVARIANT 1: EVERY SHORT PUT IS CASH-SECURED, IN EVERY STRUCTURE =================
 		// A short put must post its collateral in cash. Available cash is the bankroll MINUS capital already
@@ -794,8 +892,11 @@ namespace StockOdds
 				double coreD = coreL.Qty * LegDelta(coreL, S, iv, now);
 				double reduction = coreD - target;            // >0 when we must cut delta down to target
 				if (reduction <= 1e-4) return;                // target >= core delta: hold the call alone (capped)
-				double scRed = Math.Min(reduction, ShortCallCap);
-				legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, Math.Min(0.95, scRed)), Exp = exp }); // ONE covered short call (delta=scRed)
+				// floor applies here too; in SKIP mode scRed goes to 0 and the structure's own long put absorbs the
+				// whole reduction (that put is integral to PmccPutFloor, unlike the overflow put in AddCoveredShortCall)
+				double scRed = ApplyShortCallMin(Math.Min(reduction, ShortCallCap));
+				if (scRed > 0)
+					legs.Add(new Leg { Call = true, Qty = -1, K = StrikeForDelta(true, S, iv, Ts, Math.Min(0.95, scRed)), Exp = exp }); // ONE covered short call (delta=scRed)
 				double putRed = reduction - scRed;            // remainder handled by a long put
 				if (putRed > 1e-3) legs.Add(new Leg { Call = false, Qty = 1, K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.90, putRed)), Exp = exp });
 				return;
@@ -838,7 +939,7 @@ namespace StockOdds
 				var core = legs.FirstOrDefault(l => l.Qty > 0);
 				if (core == null) return;
 				double coreD = core.Qty * LegDelta(core, S, iv, now);
-				double sd = coreD - target;
+				double sd = ApplyShortCallMin(coreD - target);
 				if (sd > 1e-3) { double Kc = StrikeForDelta(true, S, iv, TimeToExp(core, now), Math.Min(0.95, sd)); legs.Add(new Leg { Call = true, Qty = -1, K = Kc, Exp = core.Exp }); }
 				return;
 			}
@@ -871,7 +972,7 @@ namespace StockOdds
 				// collar: 1 long put + 1 short call, deltas summing to the reduction R (= 1 - target at core delta 1).
 				double R = -needed;
 				double pd = Math.Min(R, CoveredPutDelta);
-				double cd = R - pd;
+				double cd = ApplyShortCallMin(R - pd);
 				if (pd > 1e-3) legs.Add(new Leg { Call = false, Qty = 1,  K = StrikeForDelta(false, S, iv, Ts, Math.Min(0.95, pd)), Exp = exp }); // long put
 				if (cd > 1e-3) legs.Add(new Leg { Call = true,  Qty = -1, K = StrikeForDelta(true,  S, iv, Ts, Math.Min(0.95, cd)), Exp = exp }); // short call
 				return;
