@@ -10,6 +10,18 @@
 // The engine section below is byte-for-byte identical to the one in
 // ExposureEngine_Strategy.pine so the strategy runs the *exact same* engine.
 //
+// OPTIONS OVERLAY (table only -- neither mode changes the exposure the engine computes):
+//   Wheel (default)  the shipped split switch. Covered stock + short call above 0.50
+//                    exposure, cash-secured short put 0.20-0.50, cash below. Read at the
+//                    next FORCED REBALANCE, not on every crossing.
+//   SPX 0DTE         same-session put credit spread: long the wing-delta put, short the
+//                    (exposure + wing) put, both expiring at today's close. Traded only
+//                    inside the exposure band and only when dealer gamma is positive.
+//                    A fresh trade each session, entered at the OPEN -- so the reading on
+//                    the last closed daily bar is the instruction for the NEXT open.
+//                    Requires a DAILY chart; the gamma gate is a MANUAL input because Pine
+//                    has no gamma-exposure feed.
+//
 // Per-bar mapping to the C# loop (Program.cs / BankrollSimulator.Run):
 //   C# calls Update(bars[i-2], bars[i-1]) => the state is evaluated with
 //   `current = bars[i-1]` and `prev = bars[i-2]`, i.e. candle type comes from
@@ -148,6 +160,20 @@ ddRatioEps = input.float(1.0, "dd30 floor (%)", minval = 0.01, step = 0.1, group
      tooltip = "Keeps the ratio finite when price is at a fresh high (dd30 -> 0).")
 ddRatioMinDd = input.float(1.0, "Require both drawdowns above (%)", minval = 0, step = 0.5, group = grpDd,
      tooltip = "The scaler stays neutral unless BOTH dd60 and dd30 exceed this. It guards a corner where dd60 -> 0 makes the raw ratio 0, which clamps to the MINIMUM -- the hardest de-lever at a fresh high. Redundant while confined below the KAMA (a bar at a fresh high is above its KAMA by construction), so excess is flat from 0 to 5; it matters only if you set 'Apply where' to Everywhere.")
+
+grpOverlay = "Options overlay"
+overlayMode = input.string("Wheel", "Overlay", options = ["Wheel", "SPX 0DTE put credit spread (GEX > 0)"], group = grpOverlay,
+     tooltip = "Which options structure the table recommends for expressing the engine's exposure.\n\nWheel (default) = the shipped split switch: covered stock + short call above 0.50 exposure, cash-secured short put from 0.20 to 0.50, cash below.\n\nSPX 0DTE = a same-session put credit spread: buy the wing-delta put, sell the (exposure + wing) put, both expiring at today's close. Only trades inside the exposure band and only when dealer gamma is positive.")
+zdteWing = input.float(0.15, "0DTE: long put delta (wing)", minval = 0.01, maxval = 0.50, step = 0.01, group = grpOverlay,
+     tooltip = "The protective long put. Fixed at 0.15 in testing. Keep both legs on the SAME expiry -- pushing the wing out to 7-42 DTE turns this into a diagonal whose apparent advantage is a bet on implied vol exceeding realised (it inverts once that premium falls below ~0.95), and it raises margin roughly 11x.")
+zdteLo = input.float(0.10, "0DTE: trade only when exposure >=", minval = 0, maxval = 1, step = 0.05, group = grpOverlay)
+zdteHi = input.float(0.50, "0DTE: ...and exposure <", minval = 0, maxval = 2, step = 0.05, group = grpOverlay,
+     tooltip = "[0.10, 0.50) is the band the backtest was run over, on SPY daily bars filtered to dates where a same-day expiry actually existed. Why the edge concentrates there was not separately established, so treat the bounds as the tested configuration rather than a fitted optimum. Note the engine's exposure runs to 1.5, so a large fraction of bars sits above this band.")
+zdteMaxShort = input.float(0.95, "0DTE: short put delta cap", minval = 0.10, maxval = 0.99, step = 0.01, group = grpOverlay,
+     tooltip = "Ceiling on the short leg's delta. Inert inside the default band (0.50 + 0.15 = 0.65), and only binds if the band's upper bound is raised.")
+gexState = input.string("Unknown / not set", "0DTE: dealer gamma today (MANUAL)",
+     options = ["Positive (GEX > 0)", "Negative (GEX < 0)", "Unknown / not set"], group = grpOverlay,
+     tooltip = "PINE HAS NO GAMMA-EXPOSURE DATA FEED, so this cannot be sourced automatically -- it must be set by hand each session from whatever GEX source you use.\n\nNegative blocks the recommendation. Unknown still shows the structure but flags the gate as unverified, because the ungated version of this trade also tested positive, just less so (+0.716%/trade ungated vs +0.796% gated).")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -453,8 +479,9 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // calling a user-defined function inside a `var` initializer is a Pine gotcha.
 tblPosV = tblPos == "Top Right" ? position.top_right : tblPos == "Bottom Right" ? position.bottom_right : tblPos == "Top Left" ? position.top_left : tblPos == "Middle Left" ? position.middle_left : tblPos == "Bottom Left" ? position.bottom_left : position.middle_right
 // frame/border are OFF so the transparent spacer row below the content does not draw an empty box; the dark
-// per-cell backgrounds carry the visual instead. 14 rows = 13 content + 1 spacer.
-var table tbl = table.new(tblPosV, 2, 14, force_overlay = true)
+// per-cell backgrounds carry the visual instead. 17 rows covers the widest layout: debug + the 0DTE
+// overlay = 16 content rows (0..15) plus the spacer at 16.
+var table tbl = table.new(tblPosV, 2, 17, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -485,11 +512,52 @@ if showTable and barstate.islast
              position > 0.50 ? "stock + SHORT CALL " + str.tostring(1.0 - math.min(position, 1.0), "#.00") + "d" :
              position >= 0.20 ? "SHORT PUT " + str.tostring(position, "#.00") + "d" : "cash / no position"
     ovCol  = na(position) ? color.gray : position > 0.50 ? colBull : position >= 0.20 ? colBullN : color.gray
+
+    // ---------------------------------------------------------------------------------------------
+    // SPX 0DTE PUT CREDIT SPREAD. Both legs expire at TODAY's close, so unlike the Wheel this is a
+    // fresh trade every session entered at the OPEN -- not a structure carried to the next forced
+    // rebalance. The exposure shown on the last closed daily bar is the signal for the NEXT open,
+    // which is exactly how it was backtested (signal from close t, position opened at open t+1).
+    //
+    //   long  put at zdteWing delta            (fixed protective wing)
+    //   short put at (exposure + zdteWing)     -> net delta at entry = exposure
+    //
+    // Three things can block the trade, and they are reported separately because they mean different
+    // things: exposure outside the band (no edge there), gamma negative (the tested gate), and a
+    // non-daily chart (the whole open->close mapping only holds on daily bars).
+    // ---------------------------------------------------------------------------------------------
+    // nz() rather than a na-guarded ternary: the ternary form makes Pine infer the type from `na` and
+    // the value is only ever displayed when zTrade is true, which already requires a non-na position.
+    zShort   = math.min(zdteMaxShort, nz(position) + zdteWing)
+    zInBand  = not na(position) and position >= zdteLo and position < zdteHi
+    zGexOk   = gexState != "Negative (GEX < 0)"
+    zGexSet  = gexState == "Positive (GEX > 0)"
+    zTfOk    = timeframe.isdaily
+    zTrade   = zInBand and zGexOk and zTfOk
+    zLongTxt  = zTrade ? "BUY  " + str.tostring(zdteWing, "#.00") + "d  (0 DTE)" : "—"
+    zShortTxt = zTrade ? "SELL " + str.tostring(zShort,   "#.00") + "d  (0 DTE)" : "—"
+    zGateTxt = na(position)  ? "—" :
+               not zTfOk     ? "NEEDS DAILY CHART (tf is " + timeframe.period + ")" :
+               not zInBand   ? "NO TRADE — exp " + str.tostring(position, "#.00") + " outside [" + str.tostring(zdteLo, "#.00") + ", " + str.tostring(zdteHi, "#.00") + ")" :
+               not zGexOk    ? "NO TRADE — dealer gamma negative" :
+               not zGexSet   ? "TRADE, gate UNVERIFIED (set gamma)" :
+                               "TRADE — gamma positive, exp in band"
+    zGateCol = na(position) ? color.gray : not zTrade ? color.gray : zGexSet ? colBull : colBearN
+    zLegCol  = zTrade ? colBull : color.gray
+    // Net delta the spread carries at entry, for cross-checking against the exposure row.
+    zNetTxt  = zTrade ? str.tostring(zShort - zdteWing, "#.00") + "d net" : "—"
+
+    isZdte = overlayMode == "SPX 0DTE put credit spread (GEX > 0)"
     // Default view is deliberately minimal: the two rows that are ACTIONABLE -- what exposure to hold and which
     // structure to express it with. Everything else is diagnostic and appears only under "Show debug information".
-    if not showDebug
+    if not showDebug and not isZdte
         f_row(0, "Exposure", expTxt, posCol)
         f_row(1, "Overlay (next rebal)", ovTxt, ovCol)
+    if not showDebug and isZdte
+        f_row(0, "Exposure", expTxt, posCol)
+        f_row(1, "0DTE long put",  zLongTxt,  zLegCol)
+        f_row(2, "0DTE short put", zShortTxt, zLegCol)
+        f_row(3, "Status (next open)", zGateTxt, zGateCol)
     if showDebug
         f_row(0,  "LT State",    f_ltName(ltState), ltCol)
         f_row(1,  "ST State",    f_stName(stState), stCol)
@@ -505,12 +573,18 @@ if showTable and barstate.islast
         regionTxt = inRegion ? "IN region" : (regimeMode == 1 ? "OUT -> cash" : regimeMode == 2 ? "OUT -> hold" : "OUT (deploy)")
         regionCol = inRegion ? colBull : colBear
         f_row(11, "Region", regionTxt, regionCol)
-        f_row(12, "Overlay (next rebal)", ovTxt, ovCol)
+        if not isZdte
+            f_row(12, "Overlay (next rebal)", ovTxt, ovCol)
+        if isZdte
+            f_row(12, "0DTE long put",  zLongTxt,  zLegCol)
+            f_row(13, "0DTE short put", zShortTxt, zLegCol)
+            f_row(14, "0DTE net delta", zNetTxt, zLegCol)
+            f_row(15, "Status (next open)", zGateTxt, zGateCol)
     // Transparent spacer BELOW the content. With a bottom anchor this is what holds the visible table off the
     // bottom of the pane -- table.cell's `height` is a percent of the pane, which is the only percentage control
     // Pine gives for tables (the anchor itself is only top/middle/bottom).
     if tblBottomPct > 0
-        spacerRow = showDebug ? 13 : 2
+        spacerRow = showDebug ? (isZdte ? 16 : 13) : (isZdte ? 4 : 2)
         table.cell(tbl, 0, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
         table.cell(tbl, 1, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
 
