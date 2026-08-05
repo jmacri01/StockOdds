@@ -25,20 +25,57 @@ namespace StockOdds
 		public static int    YearsBack = 21;
 		public static double Risk = 0.05;
 		public static double[] RiskLevels = { 0.05, 0.10, 0.15, 0.20 };
-		public static double TargetLo = 0.10, TargetHi = 0.50;
+		// SHIPPED CONFIGURATION (matches the Pine indicator's 0DTE overlay):
+		//   net delta FIXED at 0.25 -- the engine target is worthless as a strike input (paired t = -4.79
+		//   against flat 0.25 on the same sessions) but valuable as a day filter, so it gates only.
+		//   TargetHi = 0 means NO upper cap; the old 0.50 cap was strictly dominated.
+		public static double FixedNetDelta = 0.25;   // <= 0 restores the old "net delta = target" behaviour
+		public static double TargetLo = 0.10, TargetHi = 0;
 
 		// SPY EXPIRY-AVAILABILITY CALENDAR (approximate, documented).
 		// A 0-DTE trade requires an expiry that LANDS on the trade date. Daily SPY expiries are recent: the sample
 		// starts with Friday-only weeklys, and Tue/Thu did not exist until 2022. Every "0 DTE every session" result
 		// prior to these dates is therefore not a trade that could have been placed. Cutoffs are approximate to
 		// within a few weeks, which is why a Friday-only arm is carried as the conservative bound.
-		public static DateTime WedFrom = new DateTime(2016, 2, 23);   // Wednesday weeklys
-		public static DateTime MonFrom = new DateTime(2016, 8, 15);   // Monday weeklys
-		public static DateTime TueThuFrom = new DateTime(2022, 11, 14); // Tue/Thu -> daily expiries
+		// Before weeklys existed on a given name, the ONLY expiry was the monthly third Friday -- roughly 12 dates
+		// a year, not 250. That distinction barely matters for SPY (weeklys from ~2005, the start of the sample)
+		// but is material for IWM, whose weeklys came years later.
+		public static DateTime WeeklyFriFrom = new DateTime(2005, 1, 1);   // Friday weeklys
+		public static DateTime WedFrom = new DateTime(2016, 2, 23);        // Wednesday weeklys
+		public static DateTime MonFrom = new DateTime(2016, 8, 15);        // Monday weeklys
+		public static DateTime TueThuFrom = new DateTime(2022, 11, 14);    // Tue/Thu -> daily expiries
+
+		// Per-symbol rollout. THESE DATES ARE APPROXIMATE -- good to a few weeks for SPY, and less certain for the
+		// others, where I am confident about the ORDER (Friday weeklys, then Mon/Wed, then Tue/Thu daily) and about
+		// daily expiries being a 2022-23 phenomenon, but not the exact announcements. The Fridays-only arm is
+		// carried in every run precisely because it does not depend on any of these guesses.
+		public static void UseCalendar(string symbol)
+		{
+			switch (symbol.ToUpperInvariant())
+			{
+				case "SPY":
+					WeeklyFriFrom = new DateTime(2005, 1, 1);
+					WedFrom = new DateTime(2016, 2, 23); MonFrom = new DateTime(2016, 8, 15);
+					TueThuFrom = new DateTime(2022, 11, 14);
+					break;
+				case "IWM":
+				case "QQQ":
+					WeeklyFriFrom = new DateTime(2010, 6, 4);      // ETF weeklys rolled out ~2010, well after SPY
+					WedFrom = new DateTime(2016, 8, 15); MonFrom = new DateTime(2016, 8, 15);
+					TueThuFrom = new DateTime(2023, 4, 3);         // daily expiries reached IWM/QQQ after SPY
+					break;
+				default:                                            // unknown name: assume monthly-only, most conservative
+					WeeklyFriFrom = new DateTime(2100, 1, 1);
+					WedFrom = MonFrom = TueThuFrom = new DateTime(2100, 1, 1);
+					break;
+			}
+		}
+
 		// Holiday shifts (a Friday holiday moving expiry to Thursday) are NOT modelled; that is a handful of days.
+		private static bool IsThirdFriday(DateTime d) => d.DayOfWeek == DayOfWeek.Friday && d.Day >= 15 && d.Day <= 21;
 		public static bool HasSameDayExpiry(DateTime d) => d.DayOfWeek switch
 		{
-			DayOfWeek.Friday => true,
+			DayOfWeek.Friday => d >= WeeklyFriFrom || IsThirdFriday(d),
 			DayOfWeek.Wednesday => d >= WedFrom,
 			DayOfWeek.Monday => d >= MonFrom,
 			DayOfWeek.Tuesday or DayOfWeek.Thursday => d >= TueThuFrom,
@@ -49,6 +86,7 @@ namespace StockOdds
 
 		public static async Task Run(string symbol = "SPY")
 		{
+			UseCalendar(symbol);
 			var bars = await YahooClient.GetBarsAsync(symbol, "1d", YearsBack);
 			var gex = await GexClient.ByDateAsync();
 			var eng = BankrollSimulator.Run(bars, 10_000.0);
@@ -82,12 +120,14 @@ namespace StockOdds
 				var dSig = bars[i].Date;
 				if (!hv.TryGetValue(dSig, out double sig)) continue;
 				if (!posByDate.TryGetValue(dSig.Date, out double target)) continue;
-				if (target < TargetLo || target >= TargetHi) continue;              // the band
+				if (target < TargetLo) continue;                                    // the floor
+				if (TargetHi > 0 && target >= TargetHi) continue;                   // optional cap (off by default)
 				double S = bars[i + 1].Open, ST = bars[i + 1].Close;
 				if (S <= 0 || ST <= 0) continue;
 
 				double iv = sig * VolRiskPremium;
-				double shortMag = Math.Min(MaxShortDelta, target + WingDelta);
+				double netDWanted = FixedNetDelta > 0 ? FixedNetDelta : target;
+				double shortMag = Math.Min(MaxShortDelta, netDWanted + WingDelta);
 				double netD = shortMag - WingDelta;
 				if (netD <= 1e-9) continue;
 				double kShort = StrikeForPutDelta(S, iv, T, shortMag);
@@ -106,8 +146,11 @@ namespace StockOdds
 			var gexEra = tr.Where(t => t.HasGex).ToList();
 			DateTime gexStart = gexEra.Count > 0 ? gexEra.First().D : bars[^1].Date;
 
-			Console.WriteLine($"\n===== {symbol}: RISK {100 * Risk:0.#}%/TRADE, TARGET IN [{TargetLo:0.00}, {TargetHi:0.00}), 0 DTE =====");
-			Console.WriteLine($"structure: long {WingDelta:0.00}d put / short (target + {WingDelta:0.00})d put, open -> same close");
+			Console.WriteLine($"\n===== {symbol}: RISK {100 * Risk:0.#}%/TRADE, EXPOSURE >= {TargetLo:0.00}" +
+				(TargetHi > 0 ? $" and < {TargetHi:0.00}" : " (no upper cap)") + ", 0 DTE =====");
+			Console.WriteLine($"structure: long {WingDelta:0.00}d put / short " +
+				(FixedNetDelta > 0 ? $"{FixedNetDelta + WingDelta:0.00}d put (FIXED {FixedNetDelta:0.00} net delta, exposure gates only)"
+				                   : $"(target + {WingDelta:0.00})d put (net delta = target)") + ", open -> same close");
 			Console.WriteLine($"{tr.Count} qualifying trades of {bars.Count} bars | full range {tr.First().D:yyyy-MM-dd} -> {tr.Last().D:yyyy-MM-dd}");
 			Console.WriteLine($"band selects {100.0 * tr.Count / bars.Count:0.0}% of days | mean implied net delta at {100 * Risk:0.#}% risk: " +
 				$"{100 * Risk * tr.Average(t => t.DeltaPerRisk):0.0}% of account | margin used = {100 * Risk:0.#}% of account");
@@ -161,7 +204,7 @@ namespace StockOdds
 				// EXPIRY REALISM: keep only dates where an expiry actually landed on the trade date.
 				var real = tr.Where(t => HasSameDayExpiry(t.D)).ToList();
 				var realGex = real.Where(t => t.HasGex).ToList();
-				var fri = tr.Where(t => t.D.DayOfWeek == DayOfWeek.Friday).ToList();
+				var fri = tr.Where(t => t.D.DayOfWeek == DayOfWeek.Friday && HasSameDayExpiry(t.D)).ToList();
 				var daily = tr.Where(t => t.D >= TueThuFrom).ToList();
 				if (real.Count >= 5)
 				{
