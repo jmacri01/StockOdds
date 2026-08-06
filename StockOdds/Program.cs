@@ -46,8 +46,23 @@ class Program
 	// here means "use everything available" — which includes the 2022 bear market.
 	static DateTime GRID_START_DATE = new DateTime(2020, 1, 1);
 
-	static async Task Main()
+	static async Task Main(string[] args)
 	{
+		// COLLECTOR MODE: `dotnet run -- collect`. Kept as an argument rather than a flag in this file so an OS
+		// scheduler can drive it without anyone editing source. These three feeds are SNAPSHOTS -- none of them
+		// backfills, so a day not collected is a day lost forever. Run once per session, shortly after the close.
+		if (args.Length > 0 && args[0].Equals("collect", StringComparison.OrdinalIgnoreCase))
+		{
+			Console.WriteLine($"[collect] {DateTime.Now:yyyy-MM-dd HH:mm}");
+			try { var g = await GexClient.GetAsync(refresh: true); Console.WriteLine($"[collect] SqueezeMetrics GEX: {g.Count} days -> {g[^1].Date:yyyy-MM-dd}"); }
+			catch (Exception ex) { Console.WriteLine($"[collect] GexClient FAILED: {ex.Message}"); }
+			try { await CboeGexSnapshot.Run("_SPX", "SPX"); }
+			catch (Exception ex) { Console.WriteLine($"[collect] CboeGexSnapshot FAILED: {ex.Message}"); }
+			try { await CreditSpreadQuoteValidator.Run(); }
+			catch (Exception ex) { Console.WriteLine($"[collect] CreditSpreadQuoteValidator FAILED: {ex.Message}"); }
+			return;
+		}
+
 		// -------------------------
 		// 1. FETCH DATA
 		// -------------------------
