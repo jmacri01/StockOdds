@@ -23,7 +23,10 @@ namespace StockOdds
 		public static double WingDelta = 0.15;
 		public static double MaxShortDelta = 0.95;
 		public static int    YearsBack = 21;
-		public static double Risk = 0.05;
+		// Shipped sizing: a full loss costs 10% of the account. Margin equals max loss on a defined-risk spread,
+		// so this is the margin too. SPY 228% CAGR / 36.9% DD; IWM 107% / 35.5%. Max losing streak is 4, and four
+		// full losses compounds to -34%, i.e. nearly the whole drawdown -- 5% halves both if that is too much.
+		public static double Risk = 0.10;
 		public static double[] RiskLevels = { 0.05, 0.10, 0.15, 0.20 };
 		// SHIPPED CONFIGURATION (matches the Pine indicator's 0DTE overlay):
 		//   net delta FIXED at 0.25 -- the engine target is worthless as a strike input (paired t = -4.79

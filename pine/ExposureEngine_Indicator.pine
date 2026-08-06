@@ -179,6 +179,12 @@ zdteHi = input.float(0, "0DTE: upper exposure cap (0 = none)", minval = 0, maxva
      tooltip = "0 = no upper bound, which is the shipped setting. An earlier version capped at 0.50; removing that cap was STRICTLY dominant -- better mean/trade (+0.783 vs +0.752), IR (0.371 vs 0.352), drawdown (27.8 vs 29.1) and CAGR (95.8 vs 76.6). High-target sessions are good days to trade, they just should not be traded with more delta.")
 zdteMaxShort = input.float(0.95, "0DTE: short put delta cap", minval = 0.10, maxval = 0.99, step = 0.01, group = grpOverlay,
      tooltip = "Ceiling on the short leg's delta. Inert inside the default band (0.50 + 0.15 = 0.65), and only binds if the band's upper bound is raised.")
+zdteRisk = input.float(10, "0DTE: risk % of bankroll per trade", minval = 0.5, maxval = 25, step = 0.5, group = grpOverlay,
+     tooltip = "Size the spread so a FULL LOSS costs this much of the bankroll. For a defined-risk credit spread the broker requirement IS the max loss, so this is both the risk and the margin: contracts = (risk% x bankroll) / (width - credit) per contract.
+
+SPY at 10%: 228% CAGR, 36.9% max drawdown. At 5%: 84% CAGR, 19.7%. IWM at 10%: 107% / 35.5%; at 5%: 46% / 18.9%. Doubling risk gives roughly 2.7x the CAGR for 1.9x the drawdown -- sub-linear, so still left of the Kelly peak, but 37% drawdown is a real sit.
+
+Max losing streak is 4, and four full losses at 10% compounds to -34% -- essentially the whole observed drawdown. Set 5 if that streak is not survivable for you.")
 zdteSkipStBear = input.bool(true, "0DTE: skip ST Bear candles", group = grpOverlay,
      tooltip = "ST Bear is the one genuinely bad short-term state for this trade, and it is isolated -- BearNeutral behaves like BullNeutral, not like Bear.
 
@@ -493,9 +499,9 @@ fill(pPos, pZero, color = na(position) ? na : color.new(posColor, 82), title = "
 // calling a user-defined function inside a `var` initializer is a Pine gotcha.
 tblPosV = tblPos == "Top Right" ? position.top_right : tblPos == "Bottom Right" ? position.bottom_right : tblPos == "Top Left" ? position.top_left : tblPos == "Middle Left" ? position.middle_left : tblPos == "Bottom Left" ? position.bottom_left : position.middle_right
 // frame/border are OFF so the transparent spacer row below the content does not draw an empty box; the dark
-// per-cell backgrounds carry the visual instead. 17 rows covers the widest layout: debug + the 0DTE
-// overlay = 16 content rows (0..15) plus the spacer at 16.
-var table tbl = table.new(tblPosV, 2, 17, force_overlay = true)
+// per-cell backgrounds carry the visual instead. 18 rows covers the widest layout: debug + the 0DTE
+// overlay = 17 content rows (0..16) plus the spacer at 17.
+var table tbl = table.new(tblPosV, 2, 18, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -568,6 +574,9 @@ if showTable and barstate.islast
     // Net delta the spread carries at entry. Constant by design -- it does NOT track the exposure row,
     // and the two being unequal is the point rather than a bug.
     zNetTxt  = zTrade ? str.tostring(zShort - zdteWing, "#.00") + "d net (fixed)" : "—"
+    // Size is stated as a RULE, not a contract count: the indicator has no option prices, so it cannot know
+    // the max loss per contract. Margin equals max loss for a defined-risk spread, so this is also the margin.
+    zSizeTxt = zTrade ? str.tostring(zdteRisk, "#.#") + "% of bankroll (max loss)" : "—"
 
     isZdte = overlayMode == "SPX 0DTE put credit spread (GEX > 0)"
     // Default view is deliberately minimal: the two rows that are ACTIONABLE -- what exposure to hold and which
@@ -579,7 +588,8 @@ if showTable and barstate.islast
         f_row(0, "Exposure", expTxt, posCol)
         f_row(1, "0DTE long put",  zLongTxt,  zLegCol)
         f_row(2, "0DTE short put", zShortTxt, zLegCol)
-        f_row(3, "Status (next open)", zGateTxt, zGateCol)
+        f_row(3, "Size", zSizeTxt, zLegCol)
+        f_row(4, "Status (next open)", zGateTxt, zGateCol)
     if showDebug
         f_row(0,  "LT State",    f_ltName(ltState), ltCol)
         f_row(1,  "ST State",    f_stName(stState), stCol)
@@ -601,12 +611,13 @@ if showTable and barstate.islast
             f_row(12, "0DTE long put",  zLongTxt,  zLegCol)
             f_row(13, "0DTE short put", zShortTxt, zLegCol)
             f_row(14, "0DTE net delta", zNetTxt, zLegCol)
-            f_row(15, "Status (next open)", zGateTxt, zGateCol)
+            f_row(15, "Size", zSizeTxt, zLegCol)
+            f_row(16, "Status (next open)", zGateTxt, zGateCol)
     // Transparent spacer BELOW the content. With a bottom anchor this is what holds the visible table off the
     // bottom of the pane -- table.cell's `height` is a percent of the pane, which is the only percentage control
     // Pine gives for tables (the anchor itself is only top/middle/bottom).
     if tblBottomPct > 0
-        spacerRow = showDebug ? (isZdte ? 16 : 13) : (isZdte ? 4 : 2)
+        spacerRow = showDebug ? (isZdte ? 17 : 13) : (isZdte ? 5 : 2)
         table.cell(tbl, 0, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
         table.cell(tbl, 1, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
 
