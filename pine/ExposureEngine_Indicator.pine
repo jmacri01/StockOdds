@@ -14,9 +14,10 @@
 //   Wheel (default)  the shipped split switch. Covered stock + short call above 0.50
 //                    exposure, cash-secured short put 0.20-0.50, cash below. Read at the
 //                    next FORCED REBALANCE, not on every crossing.
-//   SPX 0DTE         same-session put credit spread: long the 0.15 put, short the 0.40 put
-//                    (a FIXED 0.25 net delta), both expiring at today's close. Traded only
-//                    when exposure is at or above 0.10 and dealer gamma is positive.
+//   SPX 0DTE         same-session put credit spread: long the 0.15 put, short the 0.35 put
+//                    (a FIXED 0.20 net delta), both expiring at today's close. Traded only
+//                    when exposure is at or above 0.10, the candle is not ST Bear, and
+//                    dealer gamma is positive.
 //                    The exposure decides WHETHER to trade, never how much delta to carry:
 //                    it predicts session quality but is actively harmful as a strike input.
 //                    A fresh trade each session, entered at the OPEN -- so the reading on
@@ -165,17 +166,25 @@ ddRatioMinDd = input.float(1.0, "Require both drawdowns above (%)", minval = 0, 
 
 grpOverlay = "Options overlay"
 overlayMode = input.string("Wheel", "Overlay", options = ["Wheel", "SPX 0DTE put credit spread (GEX > 0)"], group = grpOverlay,
-     tooltip = "Which options structure the table recommends for expressing the engine's exposure.\n\nWheel (default) = the shipped split switch: covered stock + short call above 0.50 exposure, cash-secured short put from 0.20 to 0.50, cash below.\n\nSPX 0DTE = a same-session put credit spread: buy the 0.15 put, sell the 0.40 put -- a FIXED 0.25 net delta -- both expiring at today's close. Trades only when exposure is at or above the floor and dealer gamma is positive. The exposure gates the trade; it does not set the strike.")
+     tooltip = "Which options structure the table recommends for expressing the engine's exposure.\n\nWheel (default) = the shipped split switch: covered stock + short call above 0.50 exposure, cash-secured short put from 0.20 to 0.50, cash below.\n\nSPX 0DTE = a same-session put credit spread: buy the 0.15 put, sell the 0.35 put -- a FIXED 0.20 net delta -- both expiring at today's close. Trades only when exposure is at or above the floor, the candle is not ST Bear, and dealer gamma is positive. The exposure gates the trade; it does not set the strike.")
 zdteWing = input.float(0.15, "0DTE: long put delta (wing)", minval = 0.01, maxval = 0.50, step = 0.01, group = grpOverlay,
      tooltip = "The protective long put. Fixed at 0.15 in testing. Keep both legs on the SAME expiry -- pushing the wing out to 7-42 DTE turns this into a diagonal whose apparent advantage is a bet on implied vol exceeding realised (it inverts once that premium falls below ~0.95), and it raises margin roughly 11x.")
-zdteNetDelta = input.float(0.25, "0DTE: net delta (FIXED, not from exposure)", minval = 0.05, maxval = 1.0, step = 0.05, group = grpOverlay,
-     tooltip = "The spread's net delta, held CONSTANT rather than read off the engine target.\n\nAn ablation on 1,837 real-expiry SPY sessions found the target is worthless as a strike input: a flat 0.25 beat passing it through on return, IR, drawdown and CAGR, and a paired test on the same sessions put the passthrough at -0.093%/trade, t = -4.79. Letting the target influence the delta even partially -- max(target - shift, 0.25) -- degraded results monotonically with how often the shift bound.\n\nThe delta itself matters a lot: quality peaks around 0.20-0.25 and collapses by 0.50 (IR 0.371 -> 0.216) and 0.65 (0.087). Do not raise this expecting more return.")
+zdteNetDelta = input.float(0.20, "0DTE: net delta (FIXED, not from exposure)", minval = 0.05, maxval = 1.0, step = 0.05, group = grpOverlay,
+     tooltip = "The spread's net delta, held CONSTANT rather than read off the engine target.\n\nAn ablation on 1,837 real-expiry SPY sessions found the target is worthless as a strike input: a flat 0.25 beat passing it through on return, IR, drawdown and CAGR, and a paired test on the same sessions put the passthrough at -0.093%/trade, t = -4.79. Letting the target influence the delta even partially -- max(target - shift, 0.25) -- degraded results monotonically with how often the shift bound.\n\nThe delta itself matters a lot: quality peaks around 0.20-0.25 and collapses by 0.50 (IR 0.371 -> 0.216) and 0.65 (0.087). Do not raise this expecting more return.
+
+Lowered 0.25 -> 0.20 once the ST-Bear filter went in: removing those sessions moved SPY's optimum down to 0.15-0.20, where IWM already sat. First parameter this line has found that both instruments agree on.")
 zdteLo = input.float(0.10, "0DTE: trade only when exposure >=", minval = 0, maxval = 1, step = 0.05, group = grpOverlay,
      tooltip = "The floor is where the exposure signal EARNS its keep. With the strike held constant, per-trade IR rises monotonically with the target (0.169 below 0.10, up to 0.414 in the 0.19-0.31 bucket), so the target predicts which sessions suit short premium even though it should not set the strike. Imposing this floor cuts max drawdown from 41.5 to 27.8 while raising per-trade edge.")
 zdteHi = input.float(0, "0DTE: upper exposure cap (0 = none)", minval = 0, maxval = 2, step = 0.05, group = grpOverlay,
      tooltip = "0 = no upper bound, which is the shipped setting. An earlier version capped at 0.50; removing that cap was STRICTLY dominant -- better mean/trade (+0.783 vs +0.752), IR (0.371 vs 0.352), drawdown (27.8 vs 29.1) and CAGR (95.8 vs 76.6). High-target sessions are good days to trade, they just should not be traded with more delta.")
 zdteMaxShort = input.float(0.95, "0DTE: short put delta cap", minval = 0.10, maxval = 0.99, step = 0.01, group = grpOverlay,
      tooltip = "Ceiling on the short leg's delta. Inert inside the default band (0.50 + 0.15 = 0.65), and only binds if the band's upper bound is raised.")
+zdteSkipStBear = input.bool(true, "0DTE: skip ST Bear candles", group = grpOverlay,
+     tooltip = "ST Bear is the one genuinely bad short-term state for this trade, and it is isolated -- BearNeutral behaves like BullNeutral, not like Bear.
+
+SPY: ST Bear sessions earn +0.29%/trade at IR 0.113 (vs 0.526 in ST Bull) and carry 35% drawdown on their own. Skipping them drops 17% of trades and cuts max drawdown 27.8 -> 19.0 while RAISING Sharpe. IWM: 36.1 -> 19.8. Replicates on both instruments.
+
+Do NOT extend this to BearNeutral -- that lowers Sharpe on SPY and worsens drawdown on IWM.")
 gexState = input.string("Unknown / not set", "0DTE: dealer gamma today (MANUAL)",
      options = ["Positive (GEX > 0)", "Negative (GEX < 0)", "Unknown / not set"], group = grpOverlay,
      tooltip = "PINE HAS NO GAMMA-EXPOSURE DATA FEED, so this cannot be sourced automatically -- it must be set by hand each session from whatever GEX source you use.\n\nNegative blocks the recommendation. Unknown still shows the structure but flags the gate as unverified, because the ungated version of this trade also tested positive, just less so (+0.716%/trade ungated vs +0.796% gated).")
@@ -542,16 +551,18 @@ if showTable and barstate.islast
     zGexOk   = gexState != "Negative (GEX < 0)"
     zGexSet  = gexState == "Positive (GEX > 0)"
     zTfOk    = timeframe.isdaily
-    zTrade   = zInBand and zGexOk and zTfOk
+    zStOk    = not zdteSkipStBear or na(stState) or stState != 0        // 0 = ST Bear
+    zTrade   = zInBand and zGexOk and zTfOk and zStOk
     zLongTxt  = zTrade ? "BUY  " + str.tostring(zdteWing, "#.00") + "d  (0 DTE)" : "—"
     zShortTxt = zTrade ? "SELL " + str.tostring(zShort,   "#.00") + "d  (0 DTE)" : "—"
     zGateTxt = na(position)  ? "—" :
                not zTfOk     ? "NEEDS DAILY CHART (tf is " + timeframe.period + ")" :
                position < zdteLo ? "NO TRADE — exp " + str.tostring(position, "#.00") + " below " + str.tostring(zdteLo, "#.00") + " floor" :
                not zInBand   ? "NO TRADE — exp " + str.tostring(position, "#.00") + " above " + str.tostring(zdteHi, "#.00") + " cap" :
+               not zStOk     ? "NO TRADE — ST Bear candle" :
                not zGexOk    ? "NO TRADE — dealer gamma negative" :
                not zGexSet   ? "TRADE, gate UNVERIFIED (set gamma)" :
-                               "TRADE — gamma positive, above floor"
+                               "TRADE — gamma positive, above floor, not ST Bear"
     zGateCol = na(position) ? color.gray : not zTrade ? color.gray : zGexSet ? colBull : colBearN
     zLegCol  = zTrade ? colBull : color.gray
     // Net delta the spread carries at entry. Constant by design -- it does NOT track the exposure row,

@@ -29,7 +29,26 @@ namespace StockOdds
 		//   net delta FIXED at 0.25 -- the engine target is worthless as a strike input (paired t = -4.79
 		//   against flat 0.25 on the same sessions) but valuable as a day filter, so it gates only.
 		//   TargetHi = 0 means NO upper cap; the old 0.50 cap was strictly dominated.
-		public static double FixedNetDelta = 0.25;   // <= 0 restores the old "net delta = target" behaviour
+		public static double FixedNetDelta = 0.20;   // <= 0 restores the old "net delta = target" behaviour
+		// Skip ST Bear candles: the one bad short-term state (SPY IR 0.113 there vs 0.526 in ST Bull), and cutting
+		// it drops max drawdown 27.8 -> 19.0 on SPY and 36.1 -> 19.8 on IWM while raising Sharpe on both.
+		public static bool SkipStBear = true;
+
+		// ENTRY TIMING.
+		//   false (default)  signal at close t -> OPEN the position at the OPEN of t+1 -> settles at close t+1.
+		//                    One intraday session, no overnight exposure.
+		//   true             signal at close t -> OPEN the position AT THAT CLOSE -> settles at close t+1.
+		//                    Now a 1-session overnight hold: it picks up the gap, in both directions.
+		//
+		// Two things change with it that are easy to miss:
+		//   PRICING GETS MORE HONEST. T = 1/252 is exact for close-to-close, but overstates an open-to-close
+		//   hold of ~6.5 hours, so the default arm is priced with slightly too much time and collects slightly
+		//   too much credit. Close entry removes that.
+		//   THE GEX GATE MUST SHIFT BACK A DAY. The vendor's day-t print is published AFTER day t's close, so
+		//   it cannot gate an order executed AT that close. Close entry therefore reads gex[t-1]. The gate that
+		//   would actually suit this entry -- gamma of the expiry landing tomorrow, computable at the close from
+		//   standing OI -- is exactly the series that cannot be reconstructed historically.
+		public static bool EntryAtPrevClose = false;
 		public static double TargetLo = 0.10, TargetHi = 0;
 
 		// SPY EXPIRY-AVAILABILITY CALENDAR (approximate, documented).
@@ -94,6 +113,9 @@ namespace StockOdds
 			var posByDate = new Dictionary<DateTime, double>();
 			for (int k = 0; k < eng.Positions.Count && k < eng.ReturnDates.Count; k++)
 				posByDate[eng.ReturnDates[k].Date] = eng.Positions[k];
+			var stByDate = new Dictionary<DateTime, ShortTermState>();
+			for (int k = 0; k < eng.StState.Count && k < eng.ReturnDates.Count; k++)
+				stByDate[eng.ReturnDates[k].Date] = eng.StState[k];
 
 			var hv = new Dictionary<DateTime, double>();
 			for (int i = 1; i < bars.Count; i++)
@@ -122,7 +144,10 @@ namespace StockOdds
 				if (!posByDate.TryGetValue(dSig.Date, out double target)) continue;
 				if (target < TargetLo) continue;                                    // the floor
 				if (TargetHi > 0 && target >= TargetHi) continue;                   // optional cap (off by default)
-				double S = bars[i + 1].Open, ST = bars[i + 1].Close;
+				if (SkipStBear && stByDate.TryGetValue(dSig.Date, out var stv)
+					&& stv == ShortTermState.Bear) continue;                        // the one bad ST state
+				double S = EntryAtPrevClose ? bars[i].Close : bars[i + 1].Open;
+				double ST = bars[i + 1].Close;
 				if (S <= 0 || ST <= 0) continue;
 
 				double iv = sig * VolRiskPremium;
@@ -136,8 +161,12 @@ namespace StockOdds
 				double risk = width - cr;
 				if (cr <= 1e-9 || risk <= 1e-9) continue;
 				double payoff = -Math.Max(0, kShort - ST) + Math.Max(0, kLong - ST);
-				bool hasGex = gex.TryGetValue(dSig.Date, out var g);                 // prior day: tradeable
-				bool hasSame = gex.TryGetValue(bars[i + 1].Date.Date, out var g2);   // trade day: LOOK-AHEAD
+				// tradeable gate: the newest GEX print that exists BEFORE the order goes in. Entering at the
+				// open of t+1 that is day t's print; entering at the close of t it is only day t-1's.
+				var dGate = EntryAtPrevClose ? bars[i - 1].Date : bars[i].Date;
+				bool hasGex = gex.TryGetValue(dGate.Date, out var g);
+				// LOOK-AHEAD reference: the print from the session the position is actually exposed to.
+				bool hasSame = gex.TryGetValue((EntryAtPrevClose ? bars[i].Date : bars[i + 1].Date).Date, out var g2);
 				tr.Add(new Tr(bars[i + 1].Date, (cr + payoff) / risk, target, netD * S / risk,
 					(ST - S) / S, hasGex ? g!.Gex : double.NaN, hasGex,
 					hasSame ? g2!.Gex : double.NaN, hasSame));
@@ -148,6 +177,7 @@ namespace StockOdds
 
 			Console.WriteLine($"\n===== {symbol}: RISK {100 * Risk:0.#}%/TRADE, EXPOSURE >= {TargetLo:0.00}" +
 				(TargetHi > 0 ? $" and < {TargetHi:0.00}" : " (no upper cap)") + ", 0 DTE =====");
+			Console.WriteLine($"entry: {(EntryAtPrevClose ? "AT THE PRIOR CLOSE (overnight hold, gate lagged to t-1)" : "at the next OPEN (intraday only)")}");
 			Console.WriteLine($"structure: long {WingDelta:0.00}d put / short " +
 				(FixedNetDelta > 0 ? $"{FixedNetDelta + WingDelta:0.00}d put (FIXED {FixedNetDelta:0.00} net delta, exposure gates only)"
 				                   : $"(target + {WingDelta:0.00})d put (net delta = target)") + ", open -> same close");
