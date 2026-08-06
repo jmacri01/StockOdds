@@ -37,7 +37,7 @@ namespace StockOdds
 		public static double TargetLo = 0.10, TargetHi = 0.50;
 		public static double[] FixedDeltas = { 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.65 };
 
-		private sealed record Tr(DateTime D, double R, double DeltaPerRisk, double Target, double NetD, double Gex, bool HasGex);
+		private sealed record Tr(DateTime D, double R, double DeltaPerRisk, double Target, double NetD, double WidthPctS, double CrPctMl, double Under, ShortTermState St, double Gex, bool HasGex);
 
 		public static async Task Run(string symbol = "SPY")
 		{
@@ -49,6 +49,9 @@ namespace StockOdds
 			var posByDate = new Dictionary<DateTime, double>();
 			for (int k = 0; k < eng.Positions.Count && k < eng.ReturnDates.Count; k++)
 				posByDate[eng.ReturnDates[k].Date] = eng.Positions[k];
+			var stByDate = new Dictionary<DateTime, ShortTermState>();
+			for (int k = 0; k < eng.StState.Count && k < eng.ReturnDates.Count; k++)
+				stByDate[eng.ReturnDates[k].Date] = eng.StState[k];
 
 			var hv = new Dictionary<DateTime, double>();
 			for (int i = 1; i < bars.Count; i++)
@@ -99,6 +102,8 @@ namespace StockOdds
 					double payoff = -Math.Max(0, kShort - ST) + Math.Max(0, kLong - ST);
 					bool hasGex = gex.TryGetValue(dSig.Date, out var g);
 					tr.Add(new Tr(bars[i + 1].Date, (cr + payoff) / risk, netD * S / risk, target, netD,
+						100.0 * width / S, 100.0 * cr / risk, (ST - S) / S,
+						stByDate.TryGetValue(dSig.Date, out var stv) ? stv : ShortTermState.BearNeutral,
 						hasGex ? g!.Gex : double.NaN, hasGex));
 				}
 				return tr;
@@ -276,6 +281,256 @@ namespace StockOdds
 
 			Console.WriteLine("onFloor% is the share of trades where the rule collapsed to the constant. The higher it is,");
 			Console.WriteLine("the less the scaling tail can possibly be contributing either way.");
+
+			// -------------------------------------------------------------------------------------------------
+			// WING SWEEP. Net delta is pinned, so every row carries the SAME directional exposure and the wing
+			// only decides WHERE the spread sits and how wide it is. Raising the wing with net delta fixed drags
+			// both legs toward the money: at wing 0.25 with net 0.25 the short leg is a 0.50-delta ATM put.
+			// So this trades a narrower, richer spread against a much higher chance of the short being breached.
+			// Swept at the shipped net delta and at the lower one IWM prefers, since the two may not agree.
+			// -------------------------------------------------------------------------------------------------
+			double savedWing = WingDelta;
+			double bLo = TargetLo, bHi = TargetHi;
+			TargetLo = 0.10; TargetHi = 99;
+			foreach (double net in new[] { 0.25, 0.15 })
+			{
+				Console.WriteLine($"\n--- WING sweep at FIXED net delta {net:0.00}, exposure >= 0.10 ---");
+				Console.WriteLine($"{"wing",8} {"short",8} {"trades",7} {"width%S",9} {"cr%maxLoss",11} {"impDelta%",10} " +
+					$"{"mean/tr%",10} {"win%",7} {"IR/tr",8} {"maxDD%",8} {"CAGR%",9}");
+				foreach (double w in new[] { 0.05, 0.10, 0.15, 0.20, 0.25, 0.30 })
+				{
+					WingDelta = w;
+					var t = BuildRule(_ => net, true, false);
+					if (t.Count < 20) { Console.WriteLine($"{w,8:0.00} {net + w,8:0.00} {t.Count,7}  (too few)"); continue; }
+					var r = t.Select(x => Risk * x.R).ToList();
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					double yrs = Math.Max(1.0, (t.Last().D - t.First().D).TotalDays / 365.25);
+					var (final, dd) = Curve(r);
+					double cagr = final > -100 ? (Math.Pow(1 + final / 100.0, 1 / yrs) - 1) * 100 : double.NaN;
+					Console.WriteLine($"{w,8:0.00} {net + w,8:0.00} {t.Count,7} {t.Average(x => x.WidthPctS),9:0.00} " +
+						$"{t.Average(x => x.CrPctMl),11:0.0} {100 * Risk * t.Average(x => x.DeltaPerRisk),10:0.0} " +
+						$"{100 * m,10:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+						$"{(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00} {cagr,9:0.0}");
+				}
+			}
+			WingDelta = savedWing; TargetLo = bLo; TargetHi = bHi;
+			Console.WriteLine("Delta is identical down each block, so this ranks WHERE the spread sits, not how much it carries.");
+
+			// -------------------------------------------------------------------------------------------------
+			// WIN RATE BY EXPOSURE BUCKET. Structure is the SHIPPED one and identical in every row (0.15 wing,
+			// 0.40 short, net 0.25), so nothing about the trade changes across buckets -- only which sessions
+			// land in them. Any spread in win rate is therefore the exposure signal, not a different position.
+			//
+			// No band here: every session with a real expiry is included so the sub-0.10 region the shipped rule
+			// DISCARDS is visible alongside the region it keeps. Underlying columns are carried because a short
+			// put wins when the market does not fall far, so the win rate should track the session's drift.
+			// -------------------------------------------------------------------------------------------------
+			double wSaved = WingDelta;
+			WingDelta = 0.15;
+			var all = BuildRule(_ => 0.25, false, false);
+			Console.WriteLine($"\n--- WIN RATE BY EXPOSURE BUCKET (shipped structure, every real-expiry session) ---");
+			Console.WriteLine($"{"exposure",16} {"trades",7} {"% of days",10} {"win%",8} {"mean/tr%",10} {"IR/tr",8} " +
+				$"{"undMean%",10} {"und up%",9} {"worst%",8}");
+			(string L, double A, double B)[] bins =
+			{
+				("0.00 (flat)", -1e-9, 1e-6), ("0.00 - 0.05", 1e-6, 0.05), ("0.05 - 0.10", 0.05, 0.10),
+				("0.10 - 0.15", 0.10, 0.15), ("0.15 - 0.20", 0.15, 0.20), ("0.20 - 0.30", 0.20, 0.30),
+				("0.30 - 0.40", 0.30, 0.40), ("0.40 - 0.50", 0.40, 0.50), ("0.50 - 0.75", 0.50, 0.75),
+				("0.75 - 1.00", 0.75, 1.00), ("1.00 - 1.50", 1.00, 1.50), (">= 1.50", 1.50, 99),
+			};
+			foreach (var (L, a, b) in bins)
+			{
+				var sub = all.Where(x => x.Target >= a && x.Target < b).ToList();
+				if (sub.Count < 15) { Console.WriteLine($"{L,16} {sub.Count,7}  (too few)"); continue; }
+				var r = sub.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / Math.Max(1, r.Count - 1));
+				Console.WriteLine($"{L,16} {sub.Count,7} {100.0 * sub.Count / all.Count,10:0.0} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,8:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {100 * sub.Average(x => x.Under),10:+0.000;-0.000} " +
+					$"{100.0 * sub.Count(x => x.Under > 0) / sub.Count,9:0.0} {100 * r.Min(),8:0.00}");
+			}
+			var kept = all.Where(x => x.Target >= 0.10).ToList();
+			var cut  = all.Where(x => x.Target <  0.10).ToList();
+			Console.WriteLine($"{"KEPT (>= 0.10)",16} {kept.Count,7} {100.0 * kept.Count / all.Count,10:0.0} " +
+				$"{100.0 * kept.Count(x => x.R > 0) / kept.Count,8:0.0}");
+			Console.WriteLine($"{"CUT (< 0.10)",16} {cut.Count,7} {100.0 * cut.Count / all.Count,10:0.0} " +
+				$"{100.0 * cut.Count(x => x.R > 0) / cut.Count,8:0.0}");
+			WingDelta = wSaved;
+
+			// -------------------------------------------------------------------------------------------------
+			// TIERED SIZING: risk 5% when exposure <= threshold, 10% above it. A THIRD job for the signal --
+			// not which days to trade, not where to strike, but how much to stake.
+			//
+			// THE CONTROL THAT MATTERS: tiering upward takes more total risk than flat 5%, so beating flat 5% is
+			// meaningless -- any rule that stakes more will. The honest benchmark is a FLAT rule at the same
+			// AVERAGE risk (rbar), which holds total capital-at-risk constant and asks only whether putting it in
+			// the right places helps. An inverted tier (10% low / 5% high) is carried as a sign control: if the
+			// signal is real the inversion must LOSE by roughly as much as the tier wins.
+			//
+			// The paired difference against matched-flat is exactly cov(risk_i, R_i), so its t-stat is a direct
+			// test of whether the stake lands on the better trades.
+			// -------------------------------------------------------------------------------------------------
+			double tw = WingDelta; WingDelta = 0.15;
+			double tLo = TargetLo, tHi = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			var tier = BuildRule(_ => 0.25, true, false);
+			Console.WriteLine($"\n--- TIERED SIZING by exposure (shipped structure, exposure >= 0.10) ---");
+			Console.WriteLine($"{"rule",34} {"trades",7} {"%hi tier",9} {"avgRisk%",9} {"mean/tr%",10} " +
+				$"{"Sharpe",8} {"maxDD%",8} {"CAGR%",9} {"vs matched t",13}");
+
+			void Sized(string label, Func<double, double> riskOf, Func<double, double>? baseline = null)
+			{
+				var r = tier.Select(x => riskOf(x.Target) * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double yrs = Math.Max(1.0, (tier.Last().D - tier.First().D).TotalDays / 365.25);
+				var (final, dd) = Curve(r);
+				double cagr = final > -100 ? (Math.Pow(1 + final / 100.0, 1 / yrs) - 1) * 100 : double.NaN;
+				string tstat = "";
+				if (baseline != null)
+				{
+					var d = tier.Select(x => (riskOf(x.Target) - baseline(x.Target)) * x.R).ToList();
+					double dm = d.Average();
+					double dsd = Math.Sqrt(d.Sum(z => (z - dm) * (z - dm)) / (d.Count - 1));
+					tstat = dsd > 0 ? $"{dm / (dsd / Math.Sqrt(d.Count)):+0.00;-0.00}" : "";
+				}
+				Console.WriteLine($"{label,34} {tier.Count,7} " +
+					$"{100.0 * tier.Count(x => riskOf(x.Target) > 0.05) / tier.Count,9:0.0} " +
+					$"{100 * tier.Average(x => riskOf(x.Target)),9:0.00} {100 * m,10:+0.0000;-0.0000} " +
+					$"{(sd > 0 ? m / sd * Math.Sqrt(tier.Count / yrs) : 0),8:0.000} {dd,8:0.00} {cagr,9:0.0} {tstat,13}");
+			}
+
+			foreach (double thr in new[] { 0.50, 0.40, 0.60, 0.75 })
+			{
+				Func<double, double> tiered = t => t > thr ? 0.10 : 0.05;
+				double rbar = tier.Average(x => tiered(x.Target));
+				Console.WriteLine($"  threshold {thr:0.00}  (matched-flat control = {100 * rbar:0.00}% on every trade)");
+				Sized($"    flat {100 * rbar:0.00}% [MATCHED CONTROL]", _ => rbar);
+				Sized($"    TIERED 5/10 at {thr:0.00}", tiered, _ => rbar);
+				// A valid sign control must hold AVERAGE RISK constant, so it cannot simply swap the comparison.
+				// Instead give the 10% stake to the SAME NUMBER of trades, chosen from the LOWEST exposures --
+				// same stake multiset, opposite allocation. If the tier's gain is real this must lose by a
+				// comparable margin; if both win, the gain was concentration rather than the signal.
+				int nHi = tier.Count(x => x.Target > thr);
+				var asc = tier.Select(x => x.Target).OrderBy(v => v).ToList();
+				double loThr = nHi > 0 && nHi <= asc.Count ? asc[nHi - 1] : -1;
+				Sized($"    INVERTED (lowest {nHi} get 10%)", t => t <= loThr ? 0.10 : 0.05, _ => rbar);
+			}
+			Console.WriteLine("  reference points:");
+			Sized("    flat 5%", _ => 0.05);
+			Sized("    flat 10%", _ => 0.10);
+			WingDelta = tw; TargetLo = tLo; TargetHi = tHi;
+			Console.WriteLine("The t-column is paired against that block's matched-flat control -- it is cov(stake, outcome),");
+			Console.WriteLine("so it isolates whether the extra size lands on better trades rather than just being more size.");
+
+			// -------------------------------------------------------------------------------------------------
+			// SKIP ST BEAR. A second SELECTION filter, orthogonal to the exposure floor: the ST state machine is
+			// a different read on the same bar, so it may cut sessions the floor keeps.
+			//
+			// Two things to hold in mind. Dropping trades ALWAYS costs CAGR through lost compounding, so a filter
+			// that raises per-trade quality can still lower terminal wealth -- IR/tr and drawdown are what say
+			// whether the filter is any good, CAGR says what it costs. And the four ST states are shown separately
+			// rather than just Bear/not-Bear, because "skip Bear" is only the right rule if Bear is actually the
+			// bad state; if BearNeutral is worse the filter is aimed at the wrong thing.
+			// -------------------------------------------------------------------------------------------------
+			double sw = WingDelta; WingDelta = 0.15;
+			double sLo2 = TargetLo, sHi2 = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			var stAll = BuildRule(_ => 0.25, true, false);
+			Console.WriteLine($"\n--- BY ST STATE (shipped structure, exposure >= 0.10) ---");
+			Console.WriteLine($"{"ST state",22} {"trades",7} {"% of days",10} {"win%",8} {"mean/tr%",10} {"IR/tr",8} " +
+				$"{"undMean%",10} {"worst%",8}");
+			foreach (var st in new[] { ShortTermState.Bull, ShortTermState.BullNeutral,
+			                           ShortTermState.BearNeutral, ShortTermState.Bear })
+			{
+				var sub = stAll.Where(x => x.St == st).ToList();
+				if (sub.Count < 15) { Console.WriteLine($"{st,22} {sub.Count,7}  (too few)"); continue; }
+				var r = sub.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / Math.Max(1, r.Count - 1));
+				Console.WriteLine($"{st,22} {sub.Count,7} {100.0 * sub.Count / stAll.Count,10:0.0} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,8:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {100 * sub.Average(x => x.Under),10:+0.000;-0.000} {100 * r.Min(),8:0.00}");
+			}
+
+			Console.WriteLine($"\n--- FILTERED VARIANTS ---");
+			Console.WriteLine($"{"filter",30} {"trades",7} {"kept%",7} {"mean/tr%",10} {"win%",7} {"IR/tr",8} " +
+				$"{"Sharpe",8} {"maxDD%",8} {"CAGR%",9}");
+			void StRow(string label, Func<Tr, bool> keep)
+			{
+				var t = stAll.Where(keep).ToList();
+				if (t.Count < 20) { Console.WriteLine($"{label,30} {t.Count,7}  (too few)"); return; }
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double yrs = Math.Max(1.0, (t.Last().D - t.First().D).TotalDays / 365.25);
+				var (final, dd) = Curve(r);
+				double cagr = final > -100 ? (Math.Pow(1 + final / 100.0, 1 / yrs) - 1) * 100 : double.NaN;
+				Console.WriteLine($"{label,30} {t.Count,7} {100.0 * t.Count / stAll.Count,7:0.0} " +
+					$"{100 * m,10:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {(sd > 0 ? m / sd * Math.Sqrt(t.Count / yrs) : 0),8:0.000} " +
+					$"{dd,8:0.00} {cagr,9:0.0}");
+			}
+			StRow("no ST filter [SHIPPED]", _ => true);
+			StRow("skip ST Bear", x => x.St != ShortTermState.Bear);
+			StRow("skip ST Bear + BearNeutral", x => x.St != ShortTermState.Bear && x.St != ShortTermState.BearNeutral);
+			StRow("skip ST BearNeutral only", x => x.St != ShortTermState.BearNeutral);
+			StRow("ONLY ST Bear (inverse)", x => x.St == ShortTermState.Bear);
+			WingDelta = sw; TargetLo = sLo2; TargetHi = sHi2;
+			Console.WriteLine("Dropping trades costs CAGR by construction, so judge the filter on IR/tr and drawdown.");
+
+			// -------------------------------------------------------------------------------------------------
+			// RE-VALIDATION AFTER THE ST-BEAR FILTER.
+			//
+			// The exposure floor and the ST-Bear filter are NOT independent -- ST Bear days skew low-exposure, so
+			// the two rules overlap and each was tuned in the other's absence. Once Bear is removed the floor may
+			// be cutting sessions that are no longer bad, and the delta optimum may have moved because the
+			// surviving population is different. Both are therefore re-swept CONDITIONAL on the filter rather
+			// than assumed to carry over.
+			// -------------------------------------------------------------------------------------------------
+			double rw = WingDelta; WingDelta = 0.15;
+			double rLo = TargetLo, rHi = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			var uni = BuildRule(_ => 0.25, false, false);   // every real-expiry session, shipped structure
+
+			void Reval(string label, List<Tr> t, int denom)
+			{
+				if (t.Count < 20) { Console.WriteLine($"{label,32} {t.Count,7}  (too few)"); return; }
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double yrs = Math.Max(1.0, (t.Last().D - t.First().D).TotalDays / 365.25);
+				var (final, dd) = Curve(r);
+				double cagr = final > -100 ? (Math.Pow(1 + final / 100.0, 1 / yrs) - 1) * 100 : double.NaN;
+				Console.WriteLine($"{label,32} {t.Count,7} {100.0 * t.Count / denom,7:0.0} " +
+					$"{100 * m,10:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {(sd > 0 ? m / sd * Math.Sqrt(t.Count / yrs) : 0),8:0.000} " +
+					$"{dd,8:0.00} {cagr,9:0.0}");
+			}
+
+			Console.WriteLine("");
+			Console.WriteLine("--- FLOOR re-swept WITH ST Bear skipped (delta 0.25) ---");
+			Console.WriteLine($"{"floor",32} {"trades",7} {"kept%",7} {"mean/tr%",10} {"win%",7} {"IR/tr",8} " +
+				$"{"Sharpe",8} {"maxDD%",8} {"CAGR%",9}");
+			var noBear = uni.Where(x => x.St != ShortTermState.Bear).ToList();
+			foreach (double f in new[] { -1.0, 0.0, 0.05, 0.10, 0.15, 0.20, 0.30 })
+				Reval(f < 0 ? "  no floor (all non-Bear)" : $"  exposure >= {f:0.00}",
+					noBear.Where(x => f < 0 || x.Target >= f).ToList(), uni.Count);
+			Console.WriteLine("  for contrast, floor WITHOUT the ST filter:");
+			foreach (double f in new[] { -1.0, 0.10, 0.20 })
+				Reval(f < 0 ? "  no floor, no ST filter" : $"  exposure >= {f:0.00}, no ST filter",
+					uni.Where(x => f < 0 || x.Target >= f).ToList(), uni.Count);
+
+			Console.WriteLine("");
+			Console.WriteLine("--- NET DELTA re-swept WITH ST Bear skipped (floor 0.10) ---");
+			Console.WriteLine($"{"net delta",32} {"trades",7} {"kept%",7} {"mean/tr%",10} {"win%",7} {"IR/tr",8} " +
+				$"{"Sharpe",8} {"maxDD%",8} {"CAGR%",9}");
+			foreach (double d in new[] { 0.15, 0.20, 0.25, 0.30, 0.35, 0.40 })
+			{
+				var t = BuildRule(_ => d, false, false)
+					.Where(x => x.St != ShortTermState.Bear && x.Target >= 0.10).ToList();
+				Reval($"  net delta {d:0.00}", t, t.Count);
+			}
+			WingDelta = rw; TargetLo = rLo; TargetHi = rHi;
 
 			Console.WriteLine("Strike is identical in every bucket here, so any spread across rows is the TARGET carrying");
 			Console.WriteLine("information about the session ahead -- not an artifact of trading a different structure.");
