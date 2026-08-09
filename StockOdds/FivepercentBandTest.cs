@@ -86,6 +86,14 @@ namespace StockOdds
 					WedFrom = new DateTime(2016, 8, 15); MonFrom = new DateTime(2016, 8, 15);
 					TueThuFrom = new DateTime(2023, 4, 3);         // daily expiries reached IWM/QQQ after SPY
 					break;
+				case "GLD":
+					// VERIFIED against CBOE's listed expiries 2026-08: GLD lists Mon/Wed/Fri only -- no Tuesday or
+					// Thursday, so it has NO daily expiries and tops out at 3 tradeable sessions a week. SPY and
+					// IWM list all five. This is a structural limit on the strategy, not a tuning detail.
+					WeeklyFriFrom = new DateTime(2011, 1, 3);
+					WedFrom = new DateTime(2016, 8, 15); MonFrom = new DateTime(2016, 8, 15);
+					TueThuFrom = new DateTime(2100, 1, 1);         // never listed
+					break;
 				default:                                            // unknown name: assume monthly-only, most conservative
 					WeeklyFriFrom = new DateTime(2100, 1, 1);
 					WedFrom = MonFrom = TueThuFrom = new DateTime(2100, 1, 1);

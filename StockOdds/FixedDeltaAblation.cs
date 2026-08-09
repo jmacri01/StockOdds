@@ -36,8 +36,12 @@ namespace StockOdds
 		public static double Risk = 0.05;
 		public static double TargetLo = 0.10, TargetHi = 0.50;
 		public static double[] FixedDeltas = { 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.65 };
+		// Per-ST-state optima fitted by the most recent run, and a map imported from a DIFFERENT symbol. The
+		// second is the only honest score: a map fitted on the same data it is graded on is a maximum over noise.
+		public static Dictionary<ShortTermState, double> FittedSt = new();
+		public static Dictionary<ShortTermState, double> ImportedSt = new();
 
-		private sealed record Tr(DateTime D, double R, double DeltaPerRisk, double Target, double NetD, double WidthPctS, double CrPctMl, double Under, ShortTermState St, double Gex, bool HasGex);
+		private sealed record Tr(DateTime D, double R, double DeltaPerRisk, double Target, double NetD, double WidthPctS, double CrPctMl, double Under, ShortTermState St, int Candle, double Gex, bool HasGex);
 
 		public static async Task Run(string symbol = "SPY")
 		{
@@ -52,6 +56,9 @@ namespace StockOdds
 			var stByDate = new Dictionary<DateTime, ShortTermState>();
 			for (int k = 0; k < eng.StState.Count && k < eng.ReturnDates.Count; k++)
 				stByDate[eng.ReturnDates[k].Date] = eng.StState[k];
+			var cdByDate = new Dictionary<DateTime, int>();
+			for (int k = 0; k < eng.CandleType.Count && k < eng.ReturnDates.Count; k++)
+				cdByDate[eng.ReturnDates[k].Date] = eng.CandleType[k];
 
 			var hv = new Dictionary<DateTime, double>();
 			for (int i = 1; i < bars.Count; i++)
@@ -104,6 +111,7 @@ namespace StockOdds
 					tr.Add(new Tr(bars[i + 1].Date, (cr + payoff) / risk, netD * S / risk, target, netD,
 						100.0 * width / S, 100.0 * cr / risk, (ST - S) / S,
 						stByDate.TryGetValue(dSig.Date, out var stv) ? stv : ShortTermState.BearNeutral,
+						cdByDate.TryGetValue(dSig.Date, out var cdv) ? cdv : 0,
 						hasGex ? g!.Gex : double.NaN, hasGex));
 				}
 				return tr;
@@ -531,6 +539,297 @@ namespace StockOdds
 				Reval($"  net delta {d:0.00}", t, t.Count);
 			}
 			WingDelta = rw; TargetLo = rLo; TargetHi = rHi;
+
+			// -------------------------------------------------------------------------------------------------
+			// CANDLE TYPE. A different read on the same bar from the ST state: the DECISION candle is Bull if it
+			// closed above the prior candle's HIGH, Bear if below its LOW, Neutral if it stayed inside the range.
+			// The ST state counts runs of these, so the two are related but not the same -- an ST Bear run can
+			// contain Neutral candles, and a single Bear candle need not put the ST state into Bear.
+			//
+			// Structure is the shipped one and identical in every row, so differences are the candle, not the trade.
+			// Skipping a bucket always costs CAGR through lost compounding; judge on IR and drawdown.
+			// -------------------------------------------------------------------------------------------------
+			double cw = WingDelta; WingDelta = 0.15;
+			double cLo = TargetLo, cHi = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			var cAll = BuildRule(_ => 0.20, true, false);
+			Console.WriteLine("");
+			Console.WriteLine("--- BY CANDLE TYPE (shipped structure, exposure >= 0.10, ST Bear NOT filtered) ---");
+			Console.WriteLine($"{"candle",22} {"trades",7} {"% of days",10} {"win%",8} {"mean/tr%",10} {"IR/tr",8} " +
+				$"{"undMean%",10} {"worst%",8}");
+			(string L, int C)[] cts = { ("Bull (> prior high)", 1), ("Neutral (inside)", 0), ("Bear (< prior low)", -1) };
+			foreach (var (L, c) in cts)
+			{
+				var sub = cAll.Where(x => x.Candle == c).ToList();
+				if (sub.Count < 15) { Console.WriteLine($"{L,22} {sub.Count,7}  (too few)"); continue; }
+				var r = sub.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / Math.Max(1, r.Count - 1));
+				Console.WriteLine($"{L,22} {sub.Count,7} {100.0 * sub.Count / cAll.Count,10:0.0} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,8:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {100 * sub.Average(x => x.Under),10:+0.000;-0.000} {100 * r.Min(),8:0.00}");
+			}
+
+			Console.WriteLine("");
+			Console.WriteLine("--- SKIPPING EACH, and stacked on the shipped ST-Bear filter ---");
+			Console.WriteLine($"{"filter",34} {"trades",7} {"kept%",7} {"mean/tr%",10} {"win%",7} {"IR/tr",8} " +
+				$"{"Sharpe",8} {"maxDD%",8} {"CAGR%",9}");
+			void CdRow(string label, Func<Tr, bool> keep)
+			{
+				var t = cAll.Where(keep).ToList();
+				if (t.Count < 20) { Console.WriteLine($"{label,34} {t.Count,7}  (too few)"); return; }
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double yrs = Math.Max(1.0, (t.Last().D - t.First().D).TotalDays / 365.25);
+				var (final, dd) = Curve(r);
+				double cagr = final > -100 ? (Math.Pow(1 + final / 100.0, 1 / yrs) - 1) * 100 : double.NaN;
+				Console.WriteLine($"{label,34} {t.Count,7} {100.0 * t.Count / cAll.Count,7:0.0} " +
+					$"{100 * m,10:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {(sd > 0 ? m / sd * Math.Sqrt(t.Count / yrs) : 0),8:0.000} " +
+					$"{dd,8:0.00} {cagr,9:0.0}");
+			}
+			bool NotStBear(Tr x) => x.St != ShortTermState.Bear;
+			CdRow("no filter at all", _ => true);
+			CdRow("skip BULL candles", x => x.Candle != 1);
+			CdRow("skip NEUTRAL candles", x => x.Candle != 0);
+			CdRow("skip BEAR candles", x => x.Candle != -1);
+			Console.WriteLine("  stacked on the shipped ST-Bear filter:");
+			CdRow("  ST-Bear only [SHIPPED]", NotStBear);
+			CdRow("  + skip BULL candles", x => NotStBear(x) && x.Candle != 1);
+			CdRow("  + skip NEUTRAL candles", x => NotStBear(x) && x.Candle != 0);
+			CdRow("  + skip BEAR candles", x => NotStBear(x) && x.Candle != -1);
+			WingDelta = cw; TargetLo = cLo; TargetHi = cHi;
+
+			// -------------------------------------------------------------------------------------------------
+			// CONDITIONAL NET DELTA: should the delta depend on the candle type or the ST state?
+			//
+			// Per-state parameter conditioning has failed repeatedly in this repo, so the grid below is NOT the
+			// test -- picking each bucket's best of 7 deltas is a maximum over noise and will always look good
+			// in sample. The test is the CROSS-FIT at the bottom: fit each bucket's optimum on ONE instrument,
+			// apply it unchanged to the OTHER, and see whether it beats a flat delta there. That is the exact
+			// check every parameter in this line has failed today.
+			// -------------------------------------------------------------------------------------------------
+			double kw = WingDelta; WingDelta = 0.15;
+			double kLo = TargetLo, kHi = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			double[] grid = { 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40 };
+			var byDelta = grid.ToDictionary(dd => dd, dd => BuildRule(_ => dd, true, false));
+
+			double IrOf(List<Tr> t)
+			{
+				if (t.Count < 25) return double.NaN;
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				return sd > 0 ? m / sd : 0;
+			}
+
+			void Grid(string title, (string L, Func<Tr, bool> P)[] buckets)
+			{
+				Console.WriteLine("");
+				Console.WriteLine(title);
+				Console.Write($"{"bucket",22} {"n",6}");
+				foreach (double dd in grid) Console.Write($" {dd,7:0.00}");
+				Console.WriteLine($" {"best",7} {"flat .20",9}");
+				foreach (var (L, P) in buckets)
+				{
+					int n = byDelta[0.20].Count(P);
+					Console.Write($"{L,22} {n,6}");
+					double best = double.NegativeInfinity, bestD = double.NaN;
+					foreach (double dd in grid)
+					{
+						double ir = IrOf(byDelta[dd].Where(P).ToList());
+						Console.Write(double.IsNaN(ir) ? $" {"-",7}" : $" {ir,7:0.000}");
+						if (!double.IsNaN(ir) && ir > best) { best = ir; bestD = dd; }
+					}
+					double flat = IrOf(byDelta[0.20].Where(P).ToList());
+					Console.WriteLine($" {bestD,7:0.00} {flat,9:0.000}");
+				}
+			}
+
+			Grid("--- IR by CANDLE TYPE x net delta (exposure >= 0.10, no ST filter) ---", new (string, Func<Tr, bool>)[]
+			{
+				("Bull candle", x => x.Candle == 1),
+				("Neutral candle", x => x.Candle == 0),
+				("Bear candle", x => x.Candle == -1),
+			});
+			Grid("--- IR by ST STATE x net delta ---", new (string, Func<Tr, bool>)[]
+			{
+				("ST Bull", x => x.St == ShortTermState.Bull),
+				("ST BullNeutral", x => x.St == ShortTermState.BullNeutral),
+				("ST BearNeutral", x => x.St == ShortTermState.BearNeutral),
+				("ST Bear", x => x.St == ShortTermState.Bear),
+			});
+
+			// expose the per-bucket optima so the other instrument's run can be scored against them
+			Console.WriteLine("");
+			Console.Write($"FITTED-HERE ST optima: ");
+			var stKeys = new[] { ShortTermState.Bull, ShortTermState.BullNeutral, ShortTermState.BearNeutral, ShortTermState.Bear };
+			foreach (var k in stKeys)
+			{
+				double best = double.NegativeInfinity, bd = 0.20;
+				foreach (double dd in grid)
+				{
+					double ir = IrOf(byDelta[dd].Where(x => x.St == k).ToList());
+					if (!double.IsNaN(ir) && ir > best) { best = ir; bd = dd; }
+				}
+				FittedSt[k] = bd;
+				Console.Write($"{k}={bd:0.00}  ");
+			}
+			Console.WriteLine();
+
+			// Apply a conditional rule and compare against flat. Both the SELF-fitted (in-sample, optimistic) and
+			// any externally supplied map are scored, because the gap between them IS the overfit.
+			void Cond(string label, Dictionary<ShortTermState, double> map)
+			{
+				var t = BuildRule(_ => 0.20, true, false);   // membership only; each trade re-priced below
+				var legs = new List<double>();
+				foreach (var st in stKeys)
+				{
+					double dd = map.TryGetValue(st, out var v) ? v : 0.20;
+					legs.AddRange(byDelta[dd].Where(x => x.St == st).Select(x => Risk * x.R));
+				}
+				if (legs.Count < 50) { Console.WriteLine($"{label,40} (too few)"); return; }
+				double m = legs.Average();
+				double sd = Math.Sqrt(legs.Sum(z => (z - m) * (z - m)) / (legs.Count - 1));
+				Console.WriteLine($"{label,40} {legs.Count,7} {100 * m,10:+0.0000;-0.0000} " +
+					$"{100.0 * legs.Count(z => z > 0) / legs.Count,7:0.0} {(sd > 0 ? m / sd : 0),8:0.000}");
+			}
+			Console.WriteLine($"{"rule",40} {"trades",7} {"mean/tr%",10} {"win%",7} {"IR/tr",8}");
+			Cond("flat 0.20 everywhere", new Dictionary<ShortTermState, double>());
+			Cond("conditional, fitted ON THIS SYMBOL", new Dictionary<ShortTermState, double>(FittedSt));
+			if (ImportedSt.Count > 0)
+				Cond("conditional, fitted on the OTHER symbol", new Dictionary<ShortTermState, double>(ImportedSt));
+			WingDelta = kw; TargetLo = kLo; TargetHi = kHi;
+
+			// -------------------------------------------------------------------------------------------------
+			// GEX x NET DELTA. Dealer gamma is a claim about how the market will MOVE -- high positive gamma is
+			// associated with suppressed realised vol -- so unlike the ST state (a filter that shifts levels but
+			// not optima) it has a mechanism for wanting a different strike. Worth checking rather than assuming.
+			//
+			// Buckets are the sign plus terciles WITHIN positive gamma, because the shipped gate already keeps only
+			// gex > 0 and the interesting question is whether that surviving population is homogeneous.
+			//
+			// Note the vendor series is SPX gamma, so this is properly a SPY question; on IWM it is a market-wide
+			// proxy rather than that name's own dealer positioning. Split-half is the validation here, since the
+			// cross-instrument check is compromised by that mismatch.
+			// -------------------------------------------------------------------------------------------------
+			double gw = WingDelta; WingDelta = 0.15;
+			double gLo = TargetLo, gHi = TargetHi; TargetLo = 0.10; TargetHi = 99;
+			double[] gGrid = { 0.10, 0.15, 0.20, 0.25, 0.30, 0.35 };
+			var gByDelta = gGrid.ToDictionary(dd => dd,
+				dd => BuildRule(_ => dd, true, false).Where(x => x.HasGex && x.St != ShortTermState.Bear).ToList());
+
+			double GIr(List<Tr> t)
+			{
+				if (t.Count < 25) return double.NaN;
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				return sd > 0 ? m / sd : 0;
+			}
+
+			var posG = gByDelta[0.20].Where(x => x.Gex > 0).Select(x => x.Gex).OrderBy(v => v).ToList();
+			double t1 = posG[(int)(posG.Count * 0.3333)], t2 = posG[(int)(posG.Count * 0.6667)];
+			(string L, Func<Tr, bool> P)[] gb =
+			{
+				("gex < 0", x => x.Gex < 0),
+				($"gex 0 - {t1 / 1e9:0.0}B", x => x.Gex >= 0 && x.Gex < t1),
+				($"gex {t1 / 1e9:0.0} - {t2 / 1e9:0.0}B", x => x.Gex >= t1 && x.Gex < t2),
+				($"gex > {t2 / 1e9:0.0}B", x => x.Gex >= t2),
+			};
+
+			Console.WriteLine("");
+			Console.WriteLine("--- IR by GEX bucket x net delta (shipped filters: exposure >= 0.10, ST Bear skipped) ---");
+			Console.Write($"{"bucket",20} {"n",6}");
+			foreach (double dd in gGrid) Console.Write($" {dd,7:0.00}");
+			Console.WriteLine($" {"best",7}");
+			foreach (var (L, P) in gb)
+			{
+				Console.Write($"{L,20} {gByDelta[0.20].Count(P),6}");
+				double best = double.NegativeInfinity, bd = double.NaN;
+				foreach (double dd in gGrid)
+				{
+					double ir = GIr(gByDelta[dd].Where(P).ToList());
+					Console.Write(double.IsNaN(ir) ? $" {"-",7}" : $" {ir,7:0.000}");
+					if (!double.IsNaN(ir) && ir > best) { best = ir; bd = dd; }
+				}
+				Console.WriteLine($" {bd,7:0.00}");
+			}
+
+			// SPLIT-HALF on the same grid: an optimum that moves between halves is a regime, not a rule.
+			Console.WriteLine("");
+			Console.WriteLine("--- same grid, split-half (best delta per bucket in each half) ---");
+			var allG = gByDelta[0.20].OrderBy(x => x.D).ToList();
+			DateTime gmid = allG[allG.Count / 2].D;
+			Console.WriteLine($"{"bucket",20} {"first half",24} {"second half",24}");
+			foreach (var (L, P) in gb)
+			{
+				string Best(Func<Tr, bool> half)
+				{
+					double best = double.NegativeInfinity, bd = double.NaN; int n = 0;
+					foreach (double dd in gGrid)
+					{
+						var sub = gByDelta[dd].Where(x => P(x) && half(x)).ToList();
+						double ir = GIr(sub);
+						if (!double.IsNaN(ir) && ir > best) { best = ir; bd = dd; n = sub.Count; }
+					}
+					return double.IsNaN(bd) ? "(too few)" : $"{bd:0.00} (IR {best:0.000}, n {n})";
+				}
+				Console.WriteLine($"{L,20} {Best(x => x.D < gmid),24} {Best(x => x.D >= gmid),24}");
+			}
+			WingDelta = gw; TargetLo = gLo; TargetHi = gHi;
+
+			// CONFOUND CHECK. Absolute GEX levels DRIFT upward over the years, so a tercile cut on the raw level is
+			// partly a cut on TIME -- the top bucket lands 114 trades in the first half against 323 in the second.
+			// Any "high gamma prefers X" then risks being "the recent era prefers X". Re-bucketing on each day's
+			// percentile within a TRAILING window removes the drift and leaves only the cross-sectional signal.
+			Console.WriteLine("");
+			Console.WriteLine("--- same grid, GEX as a TRAILING-252d PERCENTILE (removes level drift) ---");
+			var ordered = gByDelta[0.20].OrderBy(x => x.D).ToList();
+			var gexSeries = ordered.Select(x => x.Gex).ToList();
+			var pct = new Dictionary<DateTime, double>();
+			for (int i = 0; i < ordered.Count; i++)
+			{
+				int lo = Math.Max(0, i - 252);
+				int cnt = i - lo;
+				if (cnt < 60) continue;                              // need a window before a percentile means anything
+				int below = 0;
+				for (int j = lo; j < i; j++) if (gexSeries[j] < gexSeries[i]) below++;
+				pct[ordered[i].D] = (double)below / cnt;
+			}
+			(string L, Func<Tr, bool> P)[] pb =
+			{
+				("pctile 0-33", x => pct.TryGetValue(x.D, out var v) && v < 0.3333),
+				("pctile 33-67", x => pct.TryGetValue(x.D, out var v) && v >= 0.3333 && v < 0.6667),
+				("pctile 67-100", x => pct.TryGetValue(x.D, out var v) && v >= 0.6667),
+			};
+			Console.Write($"{"bucket",20} {"n",6}");
+			foreach (double dd in gGrid) Console.Write($" {dd,7:0.00}");
+			Console.WriteLine($" {"best",7} {"1st half",10} {"2nd half",10}");
+			foreach (var (L, P) in pb)
+			{
+				Console.Write($"{L,20} {gByDelta[0.20].Count(P),6}");
+				double best = double.NegativeInfinity, bd = double.NaN;
+				foreach (double dd in gGrid)
+				{
+					double ir = GIr(gByDelta[dd].Where(P).ToList());
+					Console.Write(double.IsNaN(ir) ? $" {"-",7}" : $" {ir,7:0.000}");
+					if (!double.IsNaN(ir) && ir > best) { best = ir; bd = dd; }
+				}
+				string Half(Func<Tr, bool> h)
+				{
+					double b2 = double.NegativeInfinity, d2 = double.NaN;
+					foreach (double dd in gGrid)
+					{
+						double ir = GIr(gByDelta[dd].Where(x => P(x) && h(x)).ToList());
+						if (!double.IsNaN(ir) && ir > b2) { b2 = ir; d2 = dd; }
+					}
+					return double.IsNaN(d2) ? "(few)" : $"{d2:0.00}";
+				}
+				Console.WriteLine($" {bd,7:0.00} {Half(x => x.D < gmid),10} {Half(x => x.D >= gmid),10}");
+			}
+			Console.WriteLine("If the optimum still separates here AND agrees across halves, it is cross-sectional gamma.");
+			Console.WriteLine("If it collapses, the raw-level version was reading the calendar.");
 
 			Console.WriteLine("Strike is identical in every bucket here, so any spread across rows is the TARGET carrying");
 			Console.WriteLine("information about the session ahead -- not an artifact of trading a different structure.");

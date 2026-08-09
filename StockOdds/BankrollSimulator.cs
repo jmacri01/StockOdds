@@ -88,6 +88,10 @@ namespace StockOdds
 		public List<double>   KamaDist { get; set; } = new();
 		// The per-bar SHORT-TERM state, so a downstream consumer (the options overlay) can condition on it.
 		public List<ShortTermState> StState { get; set; } = new();
+		// Candle type of the DECISION candle, on the same convention the engine itself uses
+		// (prev.Close vs prevPrev.High/Low): 1 = Bull, -1 = Bear, 0 = Neutral. Recorded in the
+		// same place as StState so the two are aligned bar-for-bar by construction.
+		public List<int> CandleType { get; set; } = new();
 		// The per-bar LONG-TERM state, so a harness can score a single (LT, ST) bucket without re-deriving it.
 		public List<LongTermState>  LtState { get; set; } = new();
 		// RESEARCH diagnostic: bars spent in the (Bear, Bear) bucket, and how many of those the
@@ -653,6 +657,7 @@ namespace StockOdds
 			var kamaAbove = new List<bool>();
 			var kamaDist = new List<double>();
 			var stStates = new List<ShortTermState>();
+			var candleTypes = new List<int>();
 			var ltStates = new List<LongTermState>();
 			int bbBars = 0, bbBound = 0; double bbRawSum = 0.0;   // (Bear, Bear) ceiling diagnostics
 			int bcBars = 0;                                       // bear candles (close < prior low)
@@ -1027,6 +1032,7 @@ namespace StockOdds
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
 				stStates.Add(st.Value);
+				candleTypes.Add(prev.Close > prevPrev.High ? 1 : prev.Close < prevPrev.Low ? -1 : 0);
 				ltStates.Add(lt);
 
 				bankroll *= (1.0 + tradeReturn);
@@ -1064,6 +1070,7 @@ namespace StockOdds
 			result.KamaAbove = kamaAbove;
 			result.KamaDist = kamaDist;
 			result.StState = stStates;
+			result.CandleType = candleTypes;
 			result.LtState = ltStates;
 			result.BearBearBars = bbBars;
 			result.BearBearCapBound = bbBound;
