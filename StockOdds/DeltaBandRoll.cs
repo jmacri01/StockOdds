@@ -39,6 +39,11 @@ namespace StockOdds
 		// state has never been given the rolling rule -- and rolling out of a winner early is plausibly worth more
 		// on the state whose problem is giving profits back.
 		public static bool SplitStBear = false;
+		// Optional gamma gate, applied to whichever sessions the run is looking at. ST Bear has now been attacked
+		// with strikes (no pair helps) and with the ratio under HOLD (no threshold helps with sample left). The one
+		// untested combination is the ratio gate AND the roll rule together.
+		public static double RatioMax = -1;                  // <= 0 disables
+		public static Dictionary<DateTime, double> Ratio = new();
 
 		private sealed record Sess(DateTime D, double Ret, int Rolls);
 
@@ -96,6 +101,7 @@ namespace StockOdds
 					bool isBear = stm.TryGetValue(dp, out var st) && st == ShortTermState.Bear;
 					if (SkipStBear && isBear) continue;
 					if (SplitStBear && !isBear) continue;        // isolate the state rather than excluding it
+					if (RatioMax > 0 && (!Ratio.TryGetValue(dp, out double rr) || rr >= RatioMax)) continue;
 					double iv = h * VolRiskPremium, S0 = bars[0].Open;
 					if (S0 <= 0) continue;
 
@@ -141,7 +147,7 @@ namespace StockOdds
 			}
 
 			Console.WriteLine($"\n{"rule",40} {"sess",6} {"rolls",7} {"mean/sess%",11} {"win%",7} {"IR",8} " +
-				$"{"Sharpe",8} {"maxDD%",8} {"worst%",8}");
+				$"{"Sharpe",8} {"CAGR%",11} {"maxDD%",8} {"worst%",8}");
 			void Show(string lbl, List<Sess> s)
 			{
 				if (s.Count < 30) { Console.WriteLine($"{lbl,40} {s.Count,6}  (too few)"); return; }
@@ -153,7 +159,8 @@ namespace StockOdds
 				double yrs = Math.Max(0.5, (s.Last().D - s.First().D).TotalDays / 365.25);
 				Console.WriteLine($"{lbl,40} {s.Count,6} {s.Average(x => (double)x.Rolls),7:0.00} {100 * m,11:+0.0000;-0.0000} " +
 					$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {(sd > 0 ? m / sd : 0),8:0.000} " +
-					$"{(sd > 0 ? m / sd * Math.Sqrt(s.Count / yrs) : 0),8:0.000} {dd,8:0.00} {100 * r.Min(),8:0.00}");
+					$"{(sd > 0 ? m / sd * Math.Sqrt(s.Count / yrs) : 0),8:0.000} " +
+					$"{(e > 0 ? (Math.Pow(e, 1 / yrs) - 1) * 100 : -100),11:0.0} {dd,8:0.00} {100 * r.Min(),8:0.00}");
 			}
 			// DIAGNOSTIC: a floor trip means net delta < 0.10, which happens BOTH when spot rallied away (won) and
 			// when spot collapsed through both strikes (both legs deep ITM, deltas -> 1, difference -> 0 = max
@@ -268,6 +275,51 @@ namespace StockOdds
 			SkipStBear = sk; SplitStBear = sp;
 			Console.WriteLine("--- shipped book, ST Bear skipped ---");
 
+			// ---- ST BEAR: ROLL RULE x GAMMA GATE ---------------------------------------------------------
+			Ratio = LoadRatioMap();
+			if (Ratio.Count > 0)
+			{
+				bool k0 = SkipStBear, s0 = SplitStBear; double r0 = RatioMax;
+				SkipStBear = false; SplitStBear = true;
+				Console.WriteLine("");
+				Console.WriteLine("--- ST BEAR: the two salvage levers TOGETHER (roll rule x ratio gate) ---");
+				foreach (double th in new[] { -1.0, 1.00, 0.90, 0.84 })
+				{
+					RatioMax = th;
+					string tag = th < 0 ? "no gate" : $"ratio<{th:0.00}";
+					Show($"  ST Bear {tag}: hold", Sim(-1, -1));
+					Show($"  ST Bear {tag}: floor QUALIFIED", Sim(0.10, -1, true));
+					Show($"  ST Bear {tag}: band QUALIFIED", Sim(0.10, 0.30, true));
+				}
+				RatioMax = r0; SkipStBear = k0; SplitStBear = s0;
+				Console.WriteLine("  (UW gamma starts 2022-03, so gated ST Bear rows are thin -- read the sess column)");
+			}
+
+			// ---- ARE THE GATE AND THE ROLL ADDITIVE OR REDUNDANT? ----------------------------------------
+			// The gate was measured on daily bars with hold-to-expiry; the roll was measured on 1h bars with no
+			// gate. They have never been run together, so it is unknown whether they remove the same bad outcomes.
+			// Both plausibly work by avoiding the sessions that go wrong -- the gate ex ante, the roll during --
+			// in which case stacking them buys much less than the two effects suggest separately.
+			if (Ratio.Count > 0)
+			{
+				double r0 = RatioMax;
+				Console.WriteLine("");
+				Console.WriteLine("--- GATE x ROLL on the full book (shipped filters, 1h window) ---");
+				// Floor-qualified swept finely: it is the variant that preserves the -10.08% defined-risk floor,
+				// so the only question is where the gate should sit under it. Hold-to-expiry is shown at each
+				// level as the do-nothing baseline for that same day-set.
+				foreach (double th in new[] { -1.0, 1.00, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70 })
+				{
+					RatioMax = th;
+					string tag = th < 0 ? "no gate " : $"ratio<{th:0.00}";
+					Show($"  {tag}: hold (baseline)", Sim(-1, -1));
+					Show($"  {tag}: FLOOR QUALIFIED", Sim(0.10, -1, true));
+				}
+				RatioMax = r0;
+				Console.WriteLine("  If the roll's gain SHRINKS as the gate tightens, they are redundant --");
+				Console.WriteLine("  both are removing the same losing sessions, just at different moments.");
+			}
+
 			Show("hold to expiry [SHIPPED]", Sim(-1, -1));
 			Show("band [0.10, 0.30]  (both sides)", Sim(0.10, 0.30));
 			Show("  floor only: roll if delta < 0.10", Sim(0.10, -1));
@@ -310,6 +362,30 @@ namespace StockOdds
 			}
 			Console.WriteLine("\nFloor-only is profit-taking; ceiling-only is rolling a loser. If the combined rule looks");
 			Console.WriteLine("acceptable while one side is clearly bad, the other side is carrying it.");
+		}
+
+		private static Dictionary<DateTime, double> LoadRatioMap()
+		{
+			var m = new Dictionary<DateTime, double>();
+			string p = System.IO.Path.Combine(System.IO.Path.GetFullPath(Universe.DataDir), "gex_uw_spx.csv");
+			if (!System.IO.File.Exists(p)) return m;
+			var lines = System.IO.File.ReadAllLines(p);
+			var h = lines[0].Split(',');
+			int di = Array.IndexOf(h, "date"), ci = Array.IndexOf(h, "call_gex"), pi = Array.IndexOf(h, "put_gex");
+            for (int i = 1; i < lines.Length; i++)
+			{
+				var f = lines[i].Split(',');
+				if (f.Length <= Math.Max(ci, pi)) continue;
+				if (DateTime.TryParse(f[di], System.Globalization.CultureInfo.InvariantCulture,
+						System.Globalization.DateTimeStyles.None, out var d)
+					&& double.TryParse(f[ci], System.Globalization.NumberStyles.Any,
+						System.Globalization.CultureInfo.InvariantCulture, out var cg)
+					&& double.TryParse(f[pi], System.Globalization.NumberStyles.Any,
+						System.Globalization.CultureInfo.InvariantCulture, out var pg)
+					&& cg > 0)
+					m[d.Date] = Math.Abs(pg) / cg;
+			}
+			return m;
 		}
 
 		private static double Nd(double x) => 0.5 * (1.0 + Erf(x / Math.Sqrt(2.0)));

@@ -492,6 +492,110 @@ namespace StockOdds
 			Console.WriteLine($"  trade counts: no gate {armNoGate.Count}, gated {armShipped.Count}, " +
 				$"Bull-exempt {armBullExempt.Count} (+{armBullExempt.Count - armShipped.Count} put-heavy Bull days let back in)");
 
+			// ---- FINE THRESHOLD SWEEP ON THE FULL BOOK ---------------------------------------------------
+			// The shipped gate sits at ratio 1.00 (equivalently net gamma > 0). This asks where it SHOULD sit.
+			// Each row carries its own split-half IRs, because a threshold that only works in one half is fitted
+			// to that half -- and with a dozen thresholds searched, the best single number is guaranteed to
+			// flatter itself. Stability across the halves is the thing to read, not the peak.
+			Console.WriteLine("");
+			Console.WriteLine($"--- RATIO THRESHOLD SWEEP, full book, {100 * Risk:0.#}% risk ---");
+			Console.WriteLine($"{"gate",22} {"n",6} {"%kept",7} {"mean/tr%",10} {"win%",7} {"IR",8} " +
+				$"{"maxDD%",8} {"CAGR%",10} {"IR 1stH",9} {"IR 2ndH",9}");
+			var univ = baseSet.Where(x => UwRatio.ContainsKey(x.Sig)).OrderBy(x => x.D).ToList();
+			DateTime tmid = univ[univ.Count / 2].D;
+			double IrOnly(List<Tr> t)
+			{
+				if (t.Count < 25) return double.NaN;
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				return sd > 0 ? m / sd : 0;
+			}
+            void ThrRow(string lbl, Func<Tr, bool> keep)
+			{
+				var t = univ.Where(keep).ToList();
+				if (t.Count < 25) { Console.WriteLine($"{lbl,22} {t.Count,6}  (too few)"); return; }
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				double yrs = Math.Max(1.0, (t.Last().D - t.First().D).TotalDays / 365.25);
+				double h1 = IrOnly(t.Where(x => x.D < tmid).ToList());
+				double h2 = IrOnly(t.Where(x => x.D >= tmid).ToList());
+				Console.WriteLine($"{lbl,22} {t.Count,6} {100.0 * t.Count / univ.Count,7:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00} " +
+					$"{(e > 0 ? (Math.Pow(e, 1 / yrs) - 1) * 100 : -100),10:0.0} " +
+					$"{(double.IsNaN(h1) ? "-" : h1.ToString("0.000")),9} {(double.IsNaN(h2) ? "-" : h2.ToString("0.000")),9}");
+			}
+			ThrRow("no gate", _ => true);
+			foreach (double th in new[] { 1.30, 1.20, 1.10, 1.05, 1.00, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60 })
+				ThrRow($"ratio < {th:0.00}" + (Math.Abs(th - 1.0) < 1e-9 ? "  [SHIPPED]" : ""), x => UwRatio[x.Sig] < th);
+			Console.WriteLine("Read the two split-half columns together: a threshold worth using should hold up in BOTH,");
+			Console.WriteLine("and the peak IR across a dozen searched thresholds is inflated by the search itself.");
+
+			// ---- SIZE ON THE RATIO INSTEAD OF GATING ON IT -----------------------------------------------
+			// A gate throws sessions away; sizing keeps them all and varies the stake. Shipped filters stay on,
+			// so this is purely about how much to risk given the ratio.
+			//
+			// THE CONTROL: any scheme that stakes more in total will beat flat 10% for trivial reasons, so every
+			// scheme is scored against a FLAT rule at its own AVERAGE risk. The paired difference against that
+			// control is exactly cov(stake, outcome) -- a direct test of whether the stake lands on better trades.
+			// An INVERTED scheme is carried as a sign control, matched on average risk, and must lose by roughly
+			// as much as the real one wins.
+			Console.WriteLine("");
+			Console.WriteLine("--- SIZING ON THE RATIO (shipped filters kept, no gate) ---");
+			var sz = baseSet.Where(x => UwRatio.ContainsKey(x.Sig)).OrderBy(x => x.D).ToList();
+			var rl = sz.Select(x => UwRatio[x.Sig]).OrderBy(v => v).ToList();
+			double p33 = rl[(int)(rl.Count * 0.3333)], p67 = rl[(int)(rl.Count * 0.6667)];
+			Console.WriteLine($"  ratio terciles: {p33:0.00} / {p67:0.00}");
+			Console.WriteLine($"{"scheme",34} {"avgRisk%",9} {"mean/tr%",10} {"win%",7} {"IR",8} {"Sharpe",8} " +
+				$"{"maxDD%",8} {"CAGR%",10} {"paired t",9}");
+
+			void Scheme(string lbl, Func<double, double> riskOf, Func<double, double>? baseline = null)
+			{
+				var r = sz.Select(x => riskOf(UwRatio[x.Sig]) * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				double yrs = Math.Max(1.0, (sz.Last().D - sz.First().D).TotalDays / 365.25);
+				string ts = "";
+				if (baseline != null)
+				{
+					var d = sz.Select(x => (riskOf(UwRatio[x.Sig]) - baseline(UwRatio[x.Sig])) * x.R).ToList();
+					double dm = d.Average();
+					double dsd = Math.Sqrt(d.Sum(z => (z - dm) * (z - dm)) / (d.Count - 1));
+					ts = dsd > 0 ? $"{dm / (dsd / Math.Sqrt(d.Count)):+0.00;-0.00}" : "";
+				}
+				Console.WriteLine($"{lbl,34} {100 * sz.Average(x => riskOf(UwRatio[x.Sig])),9:0.00} " +
+					$"{100 * m,10:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {(sd > 0 ? m / sd * Math.Sqrt(sz.Count / yrs) : 0),8:0.000} " +
+					$"{dd,8:0.00} {(e > 0 ? (Math.Pow(e, 1 / yrs) - 1) * 100 : -100),10:0.0} {ts,9}");
+			}
+
+			// tercile tiers: heavier when call gamma dominates (low ratio), lighter when puts do
+			Func<double, double> tier = v => v < p33 ? 0.15 : v < p67 ? 0.10 : 0.05;
+			Func<double, double> tierInv = v => v < p33 ? 0.05 : v < p67 ? 0.10 : 0.15;
+			double tbar = sz.Average(x => tier(UwRatio[x.Sig]));
+			// continuous: stake inversely proportional to the ratio, clamped so no single day dominates
+			Func<double, double> cont = v => Risk * Math.Min(2.0, Math.Max(0.5, 0.90 / Math.Max(0.35, v)));
+			Func<double, double> contInv = v => Risk * Math.Min(2.0, Math.Max(0.5, Math.Max(0.35, v) / 0.90));
+			double cbar = sz.Average(x => cont(UwRatio[x.Sig]));
+			double cibar = sz.Average(x => contInv(UwRatio[x.Sig]));
+
+			Scheme("flat 10% [SHIPPED]", _ => 0.10);
+			Console.WriteLine($"  -- tercile tiers 15/10/5, matched control {100 * tbar:0.00}% --");
+			Scheme("  flat, matched [CONTROL]", _ => tbar);
+			Scheme("  TIERED 15/10/5 by ratio", tier, _ => tbar);
+			Scheme("  INVERTED 5/10/15 (sign control)", tierInv, _ => tbar);
+			Console.WriteLine($"  -- continuous 0.90/ratio, matched control {100 * cbar:0.00}% --");
+			Scheme("  flat, matched [CONTROL]", _ => cbar);
+			Scheme("  CONTINUOUS 0.90/ratio", cont, _ => cbar);
+			Scheme("  flat, matched to inverse", _ => cibar);
+			Scheme("  INVERTED ratio/0.90 (sign control)", contInv, _ => cibar);
+			Console.WriteLine("  paired t is against that block's matched-risk control, i.e. cov(stake, outcome).");
+
 			// A gate that keeps most days cannot do much by construction; report what each one actually removes.
 			Console.WriteLine($"\nkept-fraction check -- SM keeps {100.0 * all.Count(SmPrev) / all.Count:0.0}%, " +
 				$"UW keeps {100.0 * all.Count(UwPrev) / all.Count:0.0}% of the same trades");
