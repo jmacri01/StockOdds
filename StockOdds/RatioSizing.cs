@@ -40,6 +40,10 @@ namespace StockOdds
 		public static bool   SkipStBear = true;
 		public static DateTime From = new DateTime(2022, 3, 30);
 		public static double Slope = 0.90, MinMult = 0.5, MaxMult = 2.0;
+		// Which UW gamma file to read. The ratio's LEVEL is instrument-specific -- median call/put is 1.19 on SPY,
+		// 1.70 on GLD and 0.60 on IWM -- so a rule with ABSOLUTE thresholds cannot transfer. Both the shipped
+		// absolute form and a percentile-normalised form are therefore scored.
+		public static string DataSym = "spx";
 
 		private sealed record Tr(DateTime D, double R, double Cp);
 
@@ -290,6 +294,236 @@ namespace StockOdds
 					c => BaseRisk * Math.Min(2.0, Math.Max(0.5, 2.2 - c)), _ => g.Average(x => BaseRisk * Math.Min(2.0, Math.Max(0.5, 2.2 - x.Cp))));
 			}
 
+			// ---- SAME-DAY vs PRIOR-DAY, ON THE ROWS WHERE PROVENANCE IS KNOWN ----------------------------
+			// Same-day gamma IS tradeable: open interest is fixed at the prior settlement, so today's gamma can be
+			// computed live from standing OI and current spot. The only real question is whether the HISTORICAL
+			// series supports the test. UW rows are live-captured (stamped 9:33 ET) from 2024-08-23; earlier rows
+			// were bulk-backfilled on one date from an unknown input.
+			//
+			// The ratio is persistent but NOT redundant -- lag-1 autocorrelation 0.798, and a median overnight
+			// move of 40% of one cross-sectional sd -- so if contemporaneous gamma matters, same-day should beat
+			// prior-day in BOTH blocks. It is tested separately in each, paired on identical sessions.
+			//
+			// NOTE the 3-minute caveat: a 9:33 stamp cannot size a 9:30 entry. Treat the same-day arm as requiring
+			// entry at ~9:35, which the earlier 1h work suggests costs nothing and may help.
+			var cpSame = LoadCallPutSameDay();
+			DateTime liveFrom = new DateTime(2024, 8, 23);
+			Console.WriteLine("");
+			Console.WriteLine("--- SAME-DAY vs PRIOR-DAY ratio, split on the backfill boundary ---");
+			Console.WriteLine($"{"block / scheme",38} {"n",6} {"avgRisk%",9} {"mean/tr%",10} {"IR",8} {"maxDD%",8} {"paired t",9}");
+			void Blk(string lbl, Func<Tr, bool> inBlock)
+			{
+				var g = tr.Where(x => inBlock(x) && cpSame.ContainsKey(x.D)).ToList();
+				if (g.Count < 40) { Console.WriteLine($"{lbl,38} {g.Count,6}  (too few)"); return; }
+				double RiskOf(double c) => BaseRisk * Math.Min(2.0, c);
+				var prior = g.Select(x => RiskOf(x.Cp) * x.R).ToList();
+				var same  = g.Select(x => RiskOf(cpSame[x.D]) * x.R).ToList();
+				void One(string tag, List<double> r, List<double> vs)
+				{
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					double e = 1, pk = 1, dd = 0;
+					foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+					string ts = "";
+					if (vs != null)
+					{
+						var d = r.Zip(vs, (a2, b2) => a2 - b2).ToList();
+						double dm = d.Average();
+						double dsd = Math.Sqrt(d.Sum(z => (z - dm) * (z - dm)) / (d.Count - 1));
+						ts = dsd > 0 ? $"{dm / (dsd / Math.Sqrt(d.Count)):+0.00;-0.00}" : "";
+					}
+					Console.WriteLine($"{tag,38} {r.Count,6} " +
+						$"{100 * (tag.Contains("same") ? g.Average(x => RiskOf(cpSame[x.D])) : g.Average(x => RiskOf(x.Cp))),9:0.00} " +
+						$"{100 * m,10:+0.0000;-0.0000} {(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00} {ts,9}");
+				}
+				One($"{lbl} prior-day", prior, null);
+				One($"{lbl} same-day", same, prior);
+			}
+			Blk("[BACKFILLED]", x => x.D < liveFrom);
+			Blk("[LIVE 9:33]", x => x.D >= liveFrom);
+			Blk("[ALL]", _ => true);
+			Console.WriteLine("  paired t is same-day minus prior-day on identical sessions. If same-day only wins in");
+			Console.WriteLine("  the backfilled block, that block's inputs are the explanation, not contemporaneous gamma.");
+
+			// ---- SWAP THE STRUCTURE ON HIGH-RATIO DAYS ---------------------------------------------------
+			// Use the ratio to choose the INSTRUMENT rather than the stake: put spread normally, long call when
+			// call gamma strongly dominates. Both sized to the SAME implied delta so the comparison is structural
+			// rather than a leverage difference -- a 0-DTE call bought at "10% risk" carries ~13x delta and rules
+			// itself out immediately, which is not the question here.
+			//
+			// The mechanism argues against it before the numbers do: high call gamma means dealers are LONG gamma,
+			// and dealer long gamma suppresses realised vol. A long call needs realised vol. So the ratio's good
+			// regime is precisely the wrong regime for buying premium, and the two effects should fight.
+			Console.WriteLine("");
+			Console.WriteLine("--- PUT SPREAD vs LONG CALL, by call/put bucket (delta-matched) ---");
+			var qs = tr.Select(x => x.Cp).OrderBy(v => v).ToList();
+			double b25 = qs[(int)(qs.Count * 0.25)], b50 = qs[(int)(qs.Count * 0.50)], b75 = qs[(int)(qs.Count * 0.75)];
+			Console.WriteLine($"{"bucket",22} {"n",5} {"PUT mean%",10} {"PUT IR",8} {"CALL .50 mean%",15} {"IR",8} " +
+				$"{"CALL .70 mean%",15} {"IR",8}");
+			double Tt = 1.0 / 252.0;
+			// per-session call P&L per unit of PREMIUM, at a given call delta
+			var callPnl = new Dictionary<double, Dictionary<DateTime, (double R, double Prem)>>();
+			foreach (double cd in new[] { 0.50, 0.70 })
+			{
+				var map = new Dictionary<DateTime, (double, double)>();
+				for (int i = 1; i + 1 < bars.Count; i++)
+				{
+					var dSig = bars[i].Date.Date; var dTr = bars[i + 1].Date.Date;
+					if (dTr < From) continue;
+					if (!hv.TryGetValue(dSig, out double h)) continue;
+					if (!pos.TryGetValue(dSig, out double tg) || tg < TargetLo) continue;
+					if (!FiveperecentBandTest.HasSameDayExpiry(dTr)) continue;
+					if (SkipStBear && stm.TryGetValue(dSig, out var st3) && st3 == ShortTermState.Bear) continue;
+					double S = bars[i + 1].Open, ST = bars[i + 1].Close;
+					if (S <= 0 || ST <= 0) continue;
+					double iv = h * VolRiskPremium;
+					double kC = StrikeForCallDelta(S, iv, Tt, cd);
+					double prem = CallPx(S, kC, iv, Tt);
+					if (prem <= 1e-9) continue;
+					map[dTr] = ((Math.Max(0, ST - kC) - prem) / prem, prem / S);
+				}
+				callPnl[cd] = map;
+			}
+			string Cell(List<Tr> g, double cd)
+			{
+				var rows = g.Where(x => callPnl[cd].ContainsKey(x.D)).ToList();
+				if (rows.Count < 20) return $"{"(few)",15} {"",8}";
+				// delta-match: outlay = targetDelta * prem/(cd*S); targetDelta uses the spread's implied delta
+				var r = rows.Select(x => BaseRisk * NetDelta / callPnl[cd][x.D].Prem / cd * callPnl[cd][x.D].Prem
+					* callPnl[cd][x.D].R * cd / cd).ToList();
+				// simplify: delta-matched outlay = BaseRisk * (spread impDelta) * prem/(cd*S) -- prem/S stored
+				r = rows.Select(x => BaseRisk * (NetDelta / 0.0) * 0.0).ToList();   // placeholder, replaced below
+				r = rows.Select(x => (BaseRisk * NetDelta / cd) * callPnl[cd][x.D].R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				return $"{100 * m,15:+0.0000;-0.0000} {(sd > 0 ? m / sd : 0),8:0.000}";
+			}
+			(string L, Func<Tr, bool> P)[] cbk =
+			{
+				($"cp < {b25:0.00}", x => x.Cp < b25),
+				($"{b25:0.00} - {b50:0.00}", x => x.Cp >= b25 && x.Cp < b50),
+				($"{b50:0.00} - {b75:0.00}", x => x.Cp >= b50 && x.Cp < b75),
+				($"cp > {b75:0.00} (best)", x => x.Cp >= b75),
+			};
+			foreach (var (L, P) in cbk)
+			{
+				var g = tr.Where(P).ToList();
+				var pr = g.Select(x => BaseRisk * x.R).ToList();
+				double pm = pr.Average();
+				double psd = Math.Sqrt(pr.Sum(z => (z - pm) * (z - pm)) / (pr.Count - 1));
+				Console.WriteLine($"{L,22} {g.Count,5} {100 * pm,10:+0.0000;-0.0000} {(psd > 0 ? pm / psd : 0),8:0.000} " +
+					$"{Cell(g, 0.50)} {Cell(g, 0.70)}");
+			}
+			Console.WriteLine("  calls are delta-matched to the spread, so this compares STRUCTURES, not leverage.");
+
+			// THE DEEP PUT-HEAVY TAIL. The buckets above lump mild and extreme together. Heavy put gamma means
+			// dealers are SHORT gamma, and short-gamma hedging is pro-cyclical -- it AMPLIFIES realised vol. That
+			// is the one regime where buying premium has a mechanism working for it, and it is also the regime the
+			// shipped gate throws away entirely. Sample counts are printed first because this is a distribution
+			// tail and the cells will be thin.
+			Console.WriteLine("");
+			Console.WriteLine("--- THE DEEP PUT-HEAVY TAIL (days the gate discards) ---");
+			Console.WriteLine($"  call/put range in sample: {tr.Min(x => x.Cp):0.00} to {tr.Max(x => x.Cp):0.00}");
+			Console.WriteLine($"{"bucket",22} {"n",5} {"undMove%",10} {"PUT mean%",10} {"PUT IR",8} " +
+				$"{"CALL .50 mean%",15} {"IR",8} {"CALL .70 mean%",15} {"IR",8}");
+			foreach (var (L, P) in new (string, Func<Tr, bool>)[]
+			{
+				("cp < 0.50", x => x.Cp < 0.50),
+				("cp < 0.60", x => x.Cp < 0.60),
+				("cp < 0.75", x => x.Cp < 0.75),
+				("cp < 0.85", x => x.Cp < 0.85),
+				("0.50 - 0.75", x => x.Cp >= 0.50 && x.Cp < 0.75),
+				("0.75 - 1.00", x => x.Cp >= 0.75 && x.Cp < 1.00),
+			})
+			{
+				var g = tr.Where(P).ToList();
+				if (g.Count < 12) { Console.WriteLine($"{L,22} {g.Count,5}  (too few)"); continue; }
+				var pr = g.Select(x => BaseRisk * x.R).ToList();
+				double pm = pr.Average();
+				double psd = Math.Sqrt(pr.Sum(z => (z - pm) * (z - pm)) / Math.Max(1, pr.Count - 1));
+				string flag = g.Count < 40 ? "  << thin" : "";
+				Console.WriteLine($"{L,22} {g.Count,5} {"",10} {100 * pm,10:+0.0000;-0.0000} " +
+					$"{(psd > 0 ? pm / psd : 0),8:0.000} {Cell(g, 0.50)} {Cell(g, 0.70)}{flag}");
+			}
+			Console.WriteLine("  a long call needs realised vol; if the short-gamma mechanism is real it should show HERE");
+			Console.WriteLine("  or nowhere. Watch the counts -- the deepest cells are a distribution tail.");
+
+			// ---- ABSOLUTE vs PERCENTILE-NORMALISED, the cross-instrument question ------------------------
+			// The shipped rule multiplies by the RAW ratio, which bakes in SPY's distribution. A percentile form
+			// asks only "is today call-heavy RELATIVE TO THIS NAME'S OWN HISTORY", using an expanding window so
+			// nothing is fitted. If the signal is real the percentile version should work on every instrument
+			// while the absolute version only works where its scale happens to fit.
+			Console.WriteLine($"\n--- ABSOLUTE (shipped) vs PERCENTILE-NORMALISED sizing ---");
+			var ordCp = tr.OrderBy(x => x.D).ToList();
+			var hist = new List<double>();
+			var pctOf = new Dictionary<DateTime, double>();
+			foreach (var x in ordCp)
+			{
+				if (hist.Count >= 120) pctOf[x.D] = (double)hist.Count(z => z < x.Cp) / hist.Count;
+				hist.Add(x.Cp);
+			}
+			var elig = ordCp.Where(x => pctOf.ContainsKey(x.D)).ToList();
+			Console.WriteLine($"  {elig.Count} sessions after a 120-day warm-up | median call/put {ordCp.OrderBy(x => x.Cp).ElementAt(ordCp.Count / 2).Cp:0.00}");
+			Console.WriteLine($"{"scheme",38} {"avgRisk%",9} {"mean/tr%",10} {"IR",8} {"maxDD%",8} {"CAGR%",10} {"paired t",9}");
+			void P2(string lbl, Func<Tr, double> riskOf, Func<Tr, double> baseline = null)
+			{
+				var r = elig.Select(x => riskOf(x) * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				double yrs = Math.Max(1.0, (elig.Last().D - elig.First().D).TotalDays / 365.25);
+				string ts = "";
+				if (baseline != null)
+				{
+					var d = elig.Select(x => (riskOf(x) - baseline(x)) * x.R).ToList();
+					double dm = d.Average();
+					double dsd = Math.Sqrt(d.Sum(z => (z - dm) * (z - dm)) / (d.Count - 1));
+					ts = dsd > 0 ? $"{dm / (dsd / Math.Sqrt(d.Count)):+0.00;-0.00}" : "";
+				}
+				Console.WriteLine($"{lbl,38} {100 * elig.Average(riskOf),9:0.00} {100 * m,10:+0.0000;-0.0000} " +
+					$"{(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00} " +
+					$"{(e > 0 ? (Math.Pow(e, 1 / yrs) - 1) * 100 : -100),10:0.0} {ts,9}");
+			}
+			// percentile form: multiplier 0.5 at the bottom of the name's own range, 1.5 at the top
+			Func<Tr, double> pctRisk = x => BaseRisk * (0.5 + pctOf[x.D]);
+			Func<Tr, double> pctInv = x => BaseRisk * (1.5 - pctOf[x.D]);
+			Func<Tr, double> absRisk = x => BaseRisk * Math.Min(MaxMult, Math.Max(MinMult, x.Cp));
+			double aBar = elig.Average(absRisk), pBar2 = elig.Average(pctRisk), iBar2 = elig.Average(pctInv);
+			P2("flat 10%", _ => BaseRisk);
+			P2($"flat {100 * aBar:0.00}% [ctrl for absolute]", _ => aBar);
+			P2("ABSOLUTE: 10% x callPut (shipped)", absRisk, _ => aBar);
+			P2($"flat {100 * pBar2:0.00}% [ctrl for pctile]", _ => pBar2);
+			P2("PERCENTILE: 10% x (0.5 + pctile)", pctRisk, _ => pBar2);
+			P2($"flat {100 * iBar2:0.00}% [ctrl for inverse]", _ => iBar2);
+			P2("PERCENTILE INVERTED (sign control)", pctInv, _ => iBar2);
+
+			// ---- THE GATE, CROSS-INSTRUMENT --------------------------------------------------------------
+			// Gating is a different question from sizing and must be judged separately. An ABSOLUTE 1.00 cut keeps
+			// ~62% of SPY sessions but 88% of GLD and only 12% of IWM, so comparing names on it confounds "does
+			// the signal work" with "how much did the gate remove". Percentile gates fix the kept-fraction so the
+			// selectivity is identical across instruments and only the signal differs.
+			Console.WriteLine($"\n--- GATE: absolute vs percentile, {symbol} ---");
+			Console.WriteLine($"{"gate",30} {"n",6} {"%kept",7} {"mean/tr%",10} {"win%",7} {"IR",8} {"maxDD%",8}");
+			void G2(string lbl, IEnumerable<Tr> src, int denom)
+			{
+				var t = src.ToList();
+				if (t.Count < 40) { Console.WriteLine($"{lbl,30} {t.Count,6}  (too few)"); return; }
+				var r = t.Select(x => BaseRisk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				Console.WriteLine($"{lbl,30} {t.Count,6} {100.0 * t.Count / denom,7:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00}");
+			}
+			G2("no gate", elig, elig.Count);
+			foreach (double th in new[] { 1.00, 1.25 })
+				G2($"absolute callPut > {th:0.00}", elig.Where(x => x.Cp > th), elig.Count);
+			foreach (double q in new[] { 0.25, 0.50, 0.70 })
+				G2($"top {100 * (1 - q):0}% of own history", elig.Where(x => pctOf[x.D] >= q), elig.Count);
+			G2("bottom 30% (inverse control)", elig.Where(x => pctOf[x.D] < 0.30), elig.Count);
+
 			Console.WriteLine("  for comparison, the 0.90-slope version already tested:");
 			double s9 = tr.Average(x => BaseRisk * Mult(x.Cp));
 			Show($"flat {100 * s9:0.00}% [control]", _ => s9);
@@ -308,10 +542,14 @@ namespace StockOdds
 			Console.WriteLine("in the tails, if it flattens the middle of the distribution is doing the work.");
 		}
 
+		// Same-day map: keyed by the TRADE date rather than the signal date, so a lookup returns the ratio
+		// published for the session being traded.
+		private static Dictionary<DateTime, double> LoadCallPutSameDay() => LoadCallPut();
+
 		private static Dictionary<DateTime, double> LoadCallPut()
 		{
 			var m = new Dictionary<DateTime, double>();
-			string p = Path.Combine(Path.GetFullPath(Universe.DataDir), "gex_uw_spx.csv");
+			string p = Path.Combine(Path.GetFullPath(Universe.DataDir), $"gex_uw_{DataSym}.csv");
 			if (!File.Exists(p)) return m;
 			var lines = File.ReadAllLines(p);
 			var h = lines[0].Split(',');
@@ -327,6 +565,26 @@ namespace StockOdds
 					m[d.Date] = cg / Math.Abs(pg);          // CALL / PUT -- higher is better
 			}
 			return m;
+		}
+
+		private static double CallPx(double S, double K, double iv, double T)
+		{
+			if (T <= 0 || iv <= 0) return Math.Max(0, S - K);
+			double v = iv * Math.Sqrt(T);
+			double d1 = (Math.Log(S / K) + 0.5 * iv * iv * T) / v;
+			return S * Nd(d1) - K * Nd(d1 - v);
+		}
+		private static double CallDeltaOf(double S, double K, double iv, double T)
+		{
+			if (T <= 0 || iv <= 0) return S > K ? 1 : 0;
+			double v = iv * Math.Sqrt(T);
+			return Nd((Math.Log(S / K) + 0.5 * iv * iv * T) / v);
+		}
+		private static double StrikeForCallDelta(double S, double iv, double T, double d)
+		{
+			double lo = S * 0.05, hi = S * 3.0;
+			for (int i = 0; i < 80; i++) { double mid = 0.5 * (lo + hi); if (CallDeltaOf(S, mid, iv, T) > d) lo = mid; else hi = mid; }
+			return 0.5 * (lo + hi);
 		}
 
 		private static double Nd(double x) => 0.5 * (1.0 + Erf(x / Math.Sqrt(2.0)));
