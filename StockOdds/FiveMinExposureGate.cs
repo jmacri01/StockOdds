@@ -200,6 +200,38 @@ namespace StockOdds
 			Table($"   5m exp < {Gate:0.00} & 5m Bear (ctl)", all.Where(x => x.Exp < Gate && x.St5 == ShortTermState.Bear).ToList(), all.Count);
 			Table($"   5m exp >= {Gate:0.00} (control)", all.Where(x => x.Exp >= Gate).ToList(), all.Count);
 
+			// ---- DOES BearNeutral ALONE REPRODUCE THE GATE? --------------------------------------------
+			// The overlap table showed BearNeutral at 47% inside the gate vs 4% outside, so the two are close
+			// to COLLINEAR and "which one is the real signal" may not be answerable with this data. The 2x2
+			// below is what decides it: if the off-diagonal cells are near-empty they cannot be separated,
+			// and the live question becomes whether the gate's NON-BearNeutral half stands on its own.
+			Console.WriteLine($"\n-- BearNeutral vs the exposure gate, 2x2 --");
+			Table("   BearNeutral, any exposure", all.Where(x => x.St5 == ShortTermState.BearNeutral).ToList(), all.Count);
+			Table($"   BearNeutral & exp <  {Gate:0.00}", all.Where(x => x.St5 == ShortTermState.BearNeutral && x.Exp < Gate).ToList(), all.Count);
+			Table($"   BearNeutral & exp >= {Gate:0.00}", all.Where(x => x.St5 == ShortTermState.BearNeutral && x.Exp >= Gate).ToList(), all.Count);
+			Table($"   NOT BearNeutral & exp <  {Gate:0.00}", all.Where(x => x.St5 != ShortTermState.BearNeutral && x.Exp < Gate).ToList(), all.Count);
+			Table($"   NOT BearNeutral & exp >= {Gate:0.00}", all.Where(x => x.St5 != ShortTermState.BearNeutral && x.Exp >= Gate).ToList(), all.Count);
+			Console.WriteLine($"   collinearity: of {all.Count(x => x.St5 == ShortTermState.BearNeutral)} BearNeutral sessions, " +
+				$"{all.Count(x => x.St5 == ShortTermState.BearNeutral && x.Exp < Gate)} sit inside the gate; " +
+				$"the gate holds {all.Count(x => x.Exp < Gate)} of which " +
+				$"{all.Count(x => x.Exp < Gate && x.St5 != ShortTermState.BearNeutral)} are NOT BearNeutral");
+			Console.WriteLine($"\n-- per-instrument: BearNeutral alone vs the gate (IR) --");
+			foreach (var kv in perSym)
+			{
+				var bn = kv.Value.Where(x => x.St5 == ShortTermState.BearNeutral).ToList();
+				var gt = kv.Value.Where(x => x.Exp < Gate).ToList();
+				double Ir(List<Tr> t)
+				{
+					if (t.Count < 4) return double.NaN;
+					var r = t.Select(x => Risk * x.R).ToList();
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					return sd > 1e-12 ? m / sd : double.NaN;
+				}
+				Console.WriteLine($"   {kv.Key,-6} BearNeutral n={bn.Count,3} IR {Ir(bn),8:0.000}    " +
+					$"gate n={gt.Count,3} IR {Ir(gt),8:0.000}    ungated IR {Ir(kv.Value),8:0.000}");
+			}
+
 			// How much of the exposure gate IS the bear-candle condition? If low exposure is mostly bear
 			// candles, the two gates are the same lever and stacking them cannot add anything.
 			Console.WriteLine($"\n-- overlap: what the 5m ST state looks like inside the exposure gate --");
@@ -268,6 +300,8 @@ namespace StockOdds
 			Permute($"exp < {Gate:0.00}", x => x.Exp < Gate);
 			Permute("NOT 5m Bear", x => x.St5 != ShortTermState.Bear);
 			Permute($"exp < {Gate:0.00} & NOT 5m Bear", x => x.Exp < Gate && x.St5 != ShortTermState.Bear);
+			Permute("BearNeutral alone", x => x.St5 == ShortTermState.BearNeutral);
+			Permute($"exp < {Gate:0.00} & NOT BearNeutral", x => x.Exp < Gate && x.St5 != ShortTermState.BearNeutral);
 		}
 	}
 }
