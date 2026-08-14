@@ -30,6 +30,8 @@ namespace StockOdds
 		public static double Risk = 0.10;
 		public static double TargetLo = 0.10;
 		public static bool SkipStBear = true;
+		// 5m is capped at ~60 days by Yahoo, so it is only worth running where a directional peek is wanted.
+		public static string[] Intervals = { "1h", "5m" };
 
 		private sealed record Tr(DateTime D, double R, double IntraExp);
 
@@ -89,7 +91,7 @@ namespace StockOdds
 			}
 
 			var byInterval = new Dictionary<string, List<Tr>>();
-			foreach (var (interval, range) in new[] { ("1h", "730d"), ("5m", "60d") })
+			foreach (var (interval, range) in new[] { ("1h", "730d"), ("5m", "60d") }.Where(x => Intervals.Contains(x.Item1)))
 			{
 				var intra = await IntradayClient.GetAsync(symbol, interval, range);
 				if (intra.Count < 100) { Console.WriteLine($"\n{interval}: not enough data"); continue; }
@@ -150,6 +152,8 @@ namespace StockOdds
 				}
 				G("no gate [SHIPPED]", tr);
 				G("intraday exp == 0", tr.Where(x => x.IntraExp <= 1e-9));
+				G("intraday exp < 0.02", tr.Where(x => x.IntraExp < 0.02));
+				G("intraday exp < 0.05", tr.Where(x => x.IntraExp < 0.05));
 				G("intraday exp < 0.10", tr.Where(x => x.IntraExp < 0.10));
 				G("intraday exp < 0.25", tr.Where(x => x.IntraExp < 0.25));
 				G("intraday exp < 0.50", tr.Where(x => x.IntraExp < 0.50));
