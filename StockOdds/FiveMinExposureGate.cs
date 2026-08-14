@@ -38,7 +38,7 @@ namespace StockOdds
 		public static double Gate = 0.10;
 		public static string[] Symbols = { "SPY", "QQQ", "IWM", "GLD" };
 
-		private sealed record Tr(string Sym, DateTime D, double R, double Exp);
+		private sealed record Tr(string Sym, DateTime D, double R, double Exp, ShortTermState St5);
 
 		private static double NormCdf(double x)
 		{
@@ -103,6 +103,10 @@ namespace StockOdds
 			var lastExp = new Dictionary<DateTime, double>();
 			for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				lastExp[iEng.ReturnDates[k].Date] = iEng.Positions[k];
+			// same read for the 5m CANDLE state -- last bar of the session, so it is known by the next open
+			var lastSt = new Dictionary<DateTime, ShortTermState>();
+			for (int k = 0; k < iEng.StState.Count && k < iEng.ReturnDates.Count; k++)
+				lastSt[iEng.ReturnDates[k].Date] = iEng.StState[k];
 
 			double T = 1.0 / 252.0;
 			for (int i = 1; i + 1 < daily.Count; i++)
@@ -113,6 +117,7 @@ namespace StockOdds
 				if (!FiveperecentBandTest.HasSameDayExpiry(dTr)) continue;
 				if (SkipStBear && stm.TryGetValue(dSig, out var st) && st == ShortTermState.Bear) continue;
 				if (!lastExp.TryGetValue(dSig, out double iexp)) continue;
+				if (!lastSt.TryGetValue(dSig, out var ist)) continue;
 				double S = daily[i + 1].Open, ST = daily[i + 1].Close;
 				if (S <= 0 || ST <= 0) continue;
 				double iv = h * VolRiskPremium;
@@ -122,7 +127,7 @@ namespace StockOdds
 				double ml = (kS - kL) - cr;
 				if (cr <= 1e-9 || ml <= 1e-9) continue;
 				double po = -Math.Max(0, kS - ST) + Math.Max(0, kL - ST);
-				outp.Add(new Tr(symbol, dTr, (cr + po) / ml, iexp));
+				outp.Add(new Tr(symbol, dTr, (cr + po) / ml, iexp, ist));
 			}
 			return outp;
 		}
@@ -183,12 +188,28 @@ namespace StockOdds
 					$"< {Gate:0.00} on {100.0 * kv.Value.Count(x => x.Exp < Gate) / kv.Value.Count:0.0}%)");
 				Table("   ungated", kv.Value, kv.Value.Count);
 				Table($"   5m exp < {Gate:0.00}", kv.Value.Where(x => x.Exp < Gate).ToList(), kv.Value.Count);
+				Table($"   5m exp < {Gate:0.00} & NOT 5m Bear", kv.Value.Where(x => x.Exp < Gate && x.St5 != ShortTermState.Bear).ToList(), kv.Value.Count);
+				Table($"   5m exp < {Gate:0.00} & 5m Bear (ctl)", kv.Value.Where(x => x.Exp < Gate && x.St5 == ShortTermState.Bear).ToList(), kv.Value.Count);
 				Table($"   5m exp >= {Gate:0.00} (control)", kv.Value.Where(x => x.Exp >= Gate).ToList(), kv.Value.Count);
 			}
 			Console.WriteLine($"\n-- POOLED across {perSym.Count} instruments --");
 			Table("   ungated", all, all.Count);
+			Table($"   NOT 5m Bear only", all.Where(x => x.St5 != ShortTermState.Bear).ToList(), all.Count);
 			Table($"   5m exp < {Gate:0.00}", all.Where(x => x.Exp < Gate).ToList(), all.Count);
+			Table($"   5m exp < {Gate:0.00} & NOT 5m Bear", all.Where(x => x.Exp < Gate && x.St5 != ShortTermState.Bear).ToList(), all.Count);
+			Table($"   5m exp < {Gate:0.00} & 5m Bear (ctl)", all.Where(x => x.Exp < Gate && x.St5 == ShortTermState.Bear).ToList(), all.Count);
 			Table($"   5m exp >= {Gate:0.00} (control)", all.Where(x => x.Exp >= Gate).ToList(), all.Count);
+
+			// How much of the exposure gate IS the bear-candle condition? If low exposure is mostly bear
+			// candles, the two gates are the same lever and stacking them cannot add anything.
+			Console.WriteLine($"\n-- overlap: what the 5m ST state looks like inside the exposure gate --");
+			foreach (var grp in new[] { ("exp <  " + Gate.ToString("0.00"), all.Where(x => x.Exp < Gate).ToList()),
+			                            ("exp >= " + Gate.ToString("0.00"), all.Where(x => x.Exp >= Gate).ToList()) })
+			{
+				var parts = grp.Item2.GroupBy(x => x.St5).OrderBy(g => g.Key.ToString())
+					.Select(g => $"{g.Key} {100.0 * g.Count() / Math.Max(1, grp.Item2.Count):0}%");
+				Console.WriteLine($"   {grp.Item1,-12} n={grp.Item2.Count,4}   {string.Join("  ", parts)}");
+			}
 
 			// ---- SIGN AGREEMENT: the honest read when the pooled units are correlated -------------------
 			Console.WriteLine($"\n-- per-instrument direction (gated mean minus ungated mean) --");
@@ -214,30 +235,39 @@ namespace StockOdds
 			// ---- PERMUTATION: could the gap arise by chance at this sample size? -----------------------
 			// Shuffle exposure WITHIN each instrument, so each name's own return distribution and its own
 			// exposure distribution are both preserved and only their pairing is destroyed.
+			// The (exposure, ST state) PAIR is shuffled together, so each instrument keeps its own joint
+			// distribution of predictors and only the link to the outcome is destroyed. Shuffling the two
+			// independently would invent (exposure, state) combinations that never occurred.
 			var rnd = new Random(20260813);
-			double Observed(List<Tr> t)
+			int iters = 20000;
+			void Permute(string lbl, Func<Tr, bool> gate)
 			{
-				var g = t.Where(x => x.Exp < Gate).Select(x => x.R).ToList();
-				var ng = t.Where(x => x.Exp >= Gate).Select(x => x.R).ToList();
-				return (g.Count > 0 && ng.Count > 0) ? g.Average() - ng.Average() : 0;
-			}
-			double obs = Observed(all);
-			int iters = 20000, ge = 0;
-			for (int it = 0; it < iters; it++)
-			{
-				var shuffled = new List<Tr>(all.Count);
-				foreach (var kv in perSym)
+				double Observed(List<Tr> t)
 				{
-					var exps = kv.Value.Select(x => x.Exp).OrderBy(_ => rnd.Next()).ToList();
-					for (int i = 0; i < kv.Value.Count; i++)
-						shuffled.Add(kv.Value[i] with { Exp = exps[i] });
+					var g = t.Where(gate).Select(x => x.R).ToList();
+					var ng = t.Where(x => !gate(x)).Select(x => x.R).ToList();
+					return (g.Count > 0 && ng.Count > 0) ? g.Average() - ng.Average() : 0;
 				}
-				if (Observed(shuffled) >= obs) ge++;
+				double obs = Observed(all);
+				int ge = 0;
+				for (int it = 0; it < iters; it++)
+				{
+					var shuffled = new List<Tr>(all.Count);
+					foreach (var kv in perSym)
+					{
+						var pairs = kv.Value.Select(x => (x.Exp, x.St5)).OrderBy(_ => rnd.Next()).ToList();
+						for (int i = 0; i < kv.Value.Count; i++)
+							shuffled.Add(kv.Value[i] with { Exp = pairs[i].Exp, St5 = pairs[i].St5 });
+					}
+					if (Observed(shuffled) >= obs) ge++;
+				}
+				int n = all.Count(gate);
+				Console.WriteLine($"   {lbl,-34} n={n,4}  edge {100 * Risk * obs,8:+0.0000;-0.0000}pp  p = {(double)(ge + 1) / (iters + 1),6:0.0000}");
 			}
-			Console.WriteLine($"\n-- permutation test, {iters} shuffles of exposure within each instrument --");
-			Console.WriteLine($"   observed gated-minus-ungated edge: {100 * Risk * obs:+0.0000;-0.0000}pp per trade");
-			Console.WriteLine($"   one-sided p = {(double)(ge + 1) / (iters + 1):0.0000}   " +
-				$"({ge} of {iters} random pairings did at least as well)");
+			Console.WriteLine($"\n-- permutation test, {iters} shuffles of the (exposure, ST) pair within each instrument --");
+			Permute($"exp < {Gate:0.00}", x => x.Exp < Gate);
+			Permute("NOT 5m Bear", x => x.St5 != ShortTermState.Bear);
+			Permute($"exp < {Gate:0.00} & NOT 5m Bear", x => x.Exp < Gate && x.St5 != ShortTermState.Bear);
 		}
 	}
 }
