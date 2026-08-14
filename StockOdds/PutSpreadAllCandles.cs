@@ -210,6 +210,55 @@ namespace StockOdds
 			Table($"  5m < gate & callPut <  1.00", g.Where(x => x.Exp5 < FiveMinGate && x.Cp < 1.0).ToList());
 			denom = all.Count;
 
+			// ---- DOES GEX STILL MATTER ONCE THE 5m GATE IS ON? -----------------------------------------
+			// Restricted to SHIPPED-qualifying sessions (the frame the 5m gate actually works in) and to
+			// gamma-covered dates. Two senses of "matter" are tested separately because they are different
+			// levers: the ratio as a GATE (skip below 1.00) and the ratio as a SIZE multiplier.
+			var sq = all.Where(x => x.DailyOk && !double.IsNaN(x.Cp)).ToList();
+			Console.WriteLine($"\n===== DOES GEX MATTER ON TOP OF THE 5m GATE? (shipped-qualifying, gamma-covered) =====");
+			Console.WriteLine($"{sq.Count} sessions; callPut >= 1.00 on {100.0 * sq.Count(x => x.Cp >= 1) / Math.Max(1, sq.Count):0.0}%");
+			denom = Math.Max(1, sq.Count);
+			Console.WriteLine($"\n{"arm",-42} {"n",5} {"%all",6} {"mean%",10} {"win%",7} {"IR",8} {"t",7} {"maxDD%",8}");
+			Table("shipped only (no 5m, no gex)", sq);
+			Table("5m < gate", sq.Where(x => x.Exp5 < FiveMinGate).ToList());
+			Table("callPut >= 1.00 only", sq.Where(x => x.Cp >= 1).ToList());
+			Console.WriteLine("  -- the 2x2 --");
+			Table("  5m < gate  & callPut >= 1.00", sq.Where(x => x.Exp5 < FiveMinGate && x.Cp >= 1).ToList());
+			Table("  5m < gate  & callPut <  1.00", sq.Where(x => x.Exp5 < FiveMinGate && x.Cp < 1).ToList());
+			Table("  5m >= gate & callPut >= 1.00", sq.Where(x => x.Exp5 >= FiveMinGate && x.Cp >= 1).ToList());
+			Table("  5m >= gate & callPut <  1.00", sq.Where(x => x.Exp5 >= FiveMinGate && x.Cp < 1).ToList());
+
+			// The ratio is inert-to-INVERTED off the SPX complex (see uw-ratio-spy-qqq-only), so pooling
+			// IWM/GLD into a gex test imports known noise. Reported separately rather than mixed.
+			var sq2 = sq.Where(x => x.Sym == "SPY" || x.Sym == "QQQ").ToList();
+			if (sq2.Count >= MinN)
+			{
+				Console.WriteLine($"  -- SPY+QQQ only ({sq2.Count} sessions), where the ratio is known to carry signal --");
+				denom = sq2.Count;
+				Table("  5m < gate", sq2.Where(x => x.Exp5 < FiveMinGate).ToList());
+				Table("  5m < gate & callPut >= 1.00", sq2.Where(x => x.Exp5 < FiveMinGate && x.Cp >= 1).ToList());
+				Table("  5m < gate & callPut <  1.00", sq2.Where(x => x.Exp5 < FiveMinGate && x.Cp < 1).ToList());
+			}
+			denom = all.Count;
+
+			// SIZING, not gating. Paired on the SAME sessions -- stake varies, outcome does not -- so this
+			// isolates cov(stake, outcome) and has more power than cutting the sample in two.
+			void PairSize(string lbl, List<Tr> t)
+			{
+				if (t.Count < MinN) { Console.WriteLine($"  {lbl,-40} n={t.Count,4}  REFUSED (n < {MinN})"); return; }
+				var d = t.Select(x => Risk * (Math.Min(2.0, x.Cp) - 1.0) * x.R).ToList();
+				double m = d.Average();
+				double sd = Math.Sqrt(d.Sum(z => (z - m) * (z - m)) / (d.Count - 1));
+				double avgRisk = t.Average(x => Risk * Math.Min(2.0, x.Cp));
+				Console.WriteLine($"  {lbl,-40} n={t.Count,4}  diff {100 * m,8:+0.0000;-0.0000}pp  " +
+					$"t {m / (sd / Math.Sqrt(d.Count)),6:+0.00;-0.00}  avg risk {100 * avgRisk,5:0.0}% vs {100 * Risk:0.0}%");
+			}
+			Console.WriteLine($"\n-- ratio as SIZING (risk = base x min(callPut,2)), paired vs flat on the same sessions --");
+			PairSize("all shipped-qualifying", sq);
+			PairSize("within 5m < gate", sq.Where(x => x.Exp5 < FiveMinGate).ToList());
+			PairSize("within 5m >= gate", sq.Where(x => x.Exp5 >= FiveMinGate).ToList());
+			PairSize("SPY+QQQ, within 5m < gate", sq2.Where(x => x.Exp5 < FiveMinGate).ToList());
+
 			Console.WriteLine($"\n-- per-instrument, 5m < {FiveMinGate:0.00} only (all candles) --");
 			foreach (var kv in all.GroupBy(x => x.Sym).OrderBy(x => x.Key))
 			{
