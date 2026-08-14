@@ -239,8 +239,17 @@ namespace StockOdds
 
 			Console.WriteLine($"\n{"arm",-40} {"n",5} {"mean%",10} {"win%",7} {"IR",8} {"t",7} {"maxDD%",8}");
 			Console.WriteLine("-- THE REQUESTED RULE (needs 5m, so limited to the ~60d window) --");
-			Table("full rule: +5m exp > 0.50", all.Where(x => !double.IsNaN(x.Exp5) && x.Exp5 > FiveMinGate).ToList());
 			Table("  5m-covered sessions, no 5m gate", all.Where(x => !double.IsNaN(x.Exp5)).ToList());
+			// Sweep the 5m threshold rather than testing one value: 0.50 collapsed the sample to 4 sessions,
+			// so the question is whether a LOOSER cut keeps enough sessions to say anything at all. Both the
+			// gate and its complement are shown -- if exposure carries direction here, they must differ.
+			foreach (double g in new[] { 0.10, 0.20, 0.30, 0.50 })
+			{
+				var above = all.Where(x => !double.IsNaN(x.Exp5) && x.Exp5 > g).ToList();
+				var below = all.Where(x => !double.IsNaN(x.Exp5) && x.Exp5 <= g).ToList();
+				Table($"  5m exp >  {g:0.00}", above);
+				Table($"  5m exp <= {g:0.00} (complement)", below);
+			}
 
 			Console.WriteLine("\n-- THE SAME RULE WITHOUT THE 5m GATE, on the full gamma history --");
 			Table("not qualify & callPut < 1.00", all);
@@ -259,12 +268,20 @@ namespace StockOdds
 			Table("  BEAR CALL spread (the candidate)", paired);
 			var flip = paired.Select(x => x with { R = x.RPut }).ToList();
 			Table("  PUT spread, same sessions", flip);
-			var diff = paired.Select(x => Risk * (x.R - x.RPut)).ToList();
-			double md = diff.Average();
-			double sdd = Math.Sqrt(diff.Sum(z => (z - md) * (z - md)) / (diff.Count - 1));
-			Console.WriteLine($"  paired t, CALL minus PUT on the same sessions: " +
-				$"{md / (sdd / Math.Sqrt(diff.Count)),0:+0.00;-0.00}   (mean diff {100 * md:+0.0000;-0.0000}pp)");
-			Console.WriteLine("  a bearish edge requires this to be POSITIVE; negative means the tape still rose");
+			void Pair(string lbl, List<Tr> t)
+			{
+				if (t.Count < MinN) { Console.WriteLine($"  {lbl,-42} n={t.Count,4}   REFUSED (n < {MinN})"); return; }
+				var d = t.Select(x => Risk * (x.R - x.RPut)).ToList();
+				double m = d.Average();
+				double sd = Math.Sqrt(d.Sum(z => (z - m) * (z - m)) / (d.Count - 1));
+				Console.WriteLine($"  {lbl,-42} n={t.Count,4}  diff {100 * m,9:+0.0000;-0.0000}pp  " +
+					$"t {m / (sd / Math.Sqrt(d.Count)),6:+0.00;-0.00}  call wins {100.0 * d.Count(z => z > 0) / d.Count,5:0.0}%");
+			}
+			Console.WriteLine("  a bearish edge requires the difference to be POSITIVE; negative means the tape still rose");
+			Pair("all rejected sessions", paired);
+			Pair("5m-covered subset", paired.Where(x => !double.IsNaN(x.Exp5)).ToList());
+			foreach (double g in new[] { 0.10, 0.20 })
+				Pair($"5m-covered & exp > {g:0.00}", paired.Where(x => !double.IsNaN(x.Exp5) && x.Exp5 > g).ToList());
 
 			// ---- CONTROL 2: why the paired test is the subsidy-free one --------------------------------
 			// Both legs of the comparison are SHORT premium at the same assumed IV = HV x 1.10, so the
