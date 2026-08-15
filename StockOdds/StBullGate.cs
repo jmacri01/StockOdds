@@ -207,17 +207,39 @@ namespace StockOdds
 			}
 
 			// ---------------- 5m ST STATE: the short-sample version ----------------
-			var w5 = all.Where(x => x.St5 != null).ToList();
+			// The 5m ST gate is only meaningful INSIDE the shipped universe -- the daily skip-Bear filter is
+			// already established, so every arm below starts from it. Mixing daily-Bear sessions into the
+			// Bull-only arm but not the baseline (as an earlier version did) compares different universes.
+			var w5 = all.Where(x => x.St5 != null && x.DailySt != ShortTermState.Bear).ToList();
 			if (w5.Count >= MinN * 2)
 			{
-				Console.WriteLine($"\n-- 5m ST state, {w5.Count} sessions only ({w5.Select(x => Wk(x.D)).Distinct().Count()} weeks) " +
-					$"-- same short window that produced the retracted exposure gate --");
+				Console.WriteLine($"\n===== 5m ST STATE (the actual question) =====");
+				Console.WriteLine($"{w5.Count} sessions, {w5.Select(x => Wk(x.D)).Distinct().Count()} weeks, shipped daily filters ON " +
+					$"-- the same short window that produced the retracted exposure gate, so treat the block bootstrap as the verdict");
 				Console.WriteLine($"\n{"arm",-38} {"n",5} {"%all",6} {"mean%",10} {"win%",7} {"IR",8} {"t",7} {"maxDD%",8}");
-				Row("5m-covered, shipped filters", w5.Where(x => x.DailySt != ShortTermState.Bear).ToList(), w5.Count);
-				Row("5m ST Bull ONLY", w5.Where(x => x.St5 == ShortTermState.Bull).ToList(), w5.Count);
-				Row("5m ST NOT Bull", w5.Where(x => x.St5 != ShortTermState.Bull).ToList(), w5.Count);
-				Console.WriteLine();
+				Row("baseline: shipped, no 5m filter", w5, w5.Count);
+				Row("5m Bull ONLY", w5.Where(x => x.St5 == ShortTermState.Bull).ToList(), w5.Count);
+				Row("5m NOT Bull (control)", w5.Where(x => x.St5 != ShortTermState.Bull).ToList(), w5.Count);
+				Row("5m skip Bear (mirror of daily rule)", w5.Where(x => x.St5 != ShortTermState.Bear).ToList(), w5.Count);
+				Row("5m Bull + BullNeutral", w5.Where(x => x.St5 is ShortTermState.Bull or ShortTermState.BullNeutral).ToList(), w5.Count);
+				Console.WriteLine("  -- each 5m state alone --");
+				foreach (var s in new[] { ShortTermState.Bull, ShortTermState.BullNeutral, ShortTermState.BearNeutral, ShortTermState.Bear })
+					Row($"    5m {s}", w5.Where(x => x.St5 == s).ToList(), w5.Count);
+
+				Console.WriteLine($"\n-- robustness (block bootstrap over weeks + drop-worst-week) --");
 				Block("5m Bull only", w5, x => x.St5 == ShortTermState.Bull);
+				Block("5m Bull + BullNeutral", w5, x => x.St5 is ShortTermState.Bull or ShortTermState.BullNeutral);
+				Block("5m skip Bear", w5, x => x.St5 != ShortTermState.Bear);
+
+				Console.WriteLine($"\n-- per-instrument, 5m Bull-only vs baseline (mean%) --");
+				foreach (var sym in Symbols)
+				{
+					var u = w5.Where(x => x.Sym == sym).ToList();
+					var b = u.Where(x => x.St5 == ShortTermState.Bull).ToList();
+					if (u.Count < 15 || b.Count < 5) { Console.WriteLine($"   {sym,-5} n={u.Count,3} Bull={b.Count,3}  too few"); continue; }
+					Console.WriteLine($"   {sym,-5} baseline n={u.Count,3} {100 * Risk * u.Average(x => x.R),8:+0.0000;-0.0000}   " +
+						$"5m Bull n={b.Count,3} {100 * Risk * b.Average(x => x.R),8:+0.0000;-0.0000}");
+				}
 			}
 		}
 	}
