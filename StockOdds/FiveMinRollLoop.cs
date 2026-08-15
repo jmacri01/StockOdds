@@ -41,8 +41,12 @@ namespace StockOdds
 		public static double CostPct = 2.6;        // % of credit, per fill
 		public static int MinBarsLeft = 6;         // ~30 min must remain to open a new leg
 		public static string[] Symbols = { "SPY", "QQQ", "IWM", "GLD" };
+		// Per-LEG sizing on the exposure at that leg's entry. 0 = flat. Multipliers are raw here and
+		// normalised to mean 1.0 across all legs afterwards, so average risk matches flat exactly and no
+		// arm can win by quietly deploying more capital.
+		public static int SizeMode = 0;
 
-		private sealed record Sess(string Sym, DateTime D, double Ret, int Legs, double PriorExp);
+		private sealed record Sess(string Sym, DateTime D, double Ret, int Legs, double PriorExp, double SumMult);
 
 		private static double NormCdf(double x)
 		{
@@ -88,7 +92,7 @@ namespace StockOdds
 			if (n < 20) return null;
 			double ST = tb[n - 1].Close;
 			if (ST <= 0) return null;
-			double total = 0; int legs = 0;
+			double total = 0; int legs = 0; double sumMult = 0;
 			int k = 0;
 			bool first = true;
 
@@ -114,7 +118,17 @@ namespace StockOdds
 				double ml = (kS - kL) - cr;
 				if (cr <= 1e-9 || ml <= 1e-9) break;
 				double entryCost = cr * CostPct / 100.0;
-				legs++; first = false;
+				// deeper dip -> larger leg. Mode 3 inverts it as a sign control.
+				double eAt = Math.Max(0.0, exp[Math.Min(j, exp.Count - 1)]);
+				double mult = SizeMode switch
+				{
+					1 => Math.Max(0.05, (Gate - Math.Min(eAt, Gate)) / Math.Max(1e-9, Gate)) + 0.5,
+					2 => 1.0 / (eAt + 0.05),
+					3 => Math.Min(eAt, Gate) / Math.Max(1e-9, Gate) + 0.5,
+					_ => 1.0
+				};
+				double riskLeg = Risk * mult;
+				legs++; first = false; sumMult += mult;
 
 				// ---- walk forward looking for the floor-qualified exit
 				bool banked = false;
@@ -129,20 +143,167 @@ namespace StockOdds
 					// QUALIFIED: low delta only counts as a win when spot is above the short strike
 					if (nd >= FloorDelta || Sp <= kS) continue;
 					double val = Put(Sp, kS, iv, Trem) - Put(Sp, kL, iv, Trem);
-					total += Risk * (cr - val - entryCost - val * CostPct / 100.0) / ml;
+					total += riskLeg * (cr - val - entryCost - val * CostPct / 100.0) / ml;
 					banked = true;
 					break;
 				}
 				if (!banked)
 				{
 					double po = -Math.Max(0, kS - ST) + Math.Max(0, kL - ST);
-					total += Risk * (cr + po - entryCost) / ml;      // rides to expiry, no exit crossing
+					total += riskLeg * (cr + po - entryCost) / ml;   // rides to expiry, no exit crossing
 					break;
 				}
 				if (mode == 0 || mode == 1) break;                    // single-entry modes stop after one leg
 				k = e + 1;
 			}
-			return legs == 0 ? null : new Sess(sym, d, total, legs, priorExp);
+			return legs == 0 ? null : new Sess(sym, d, total, legs, priorExp, sumMult);
+		}
+
+		// Cached per-session inputs, so the gate can be swept without refetching or re-deriving anything.
+		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv, double PriorExp);
+
+		private static async Task<List<Input>> Collect()
+		{
+			var outp = new List<Input>();
+			foreach (var symbol in Symbols)
+			{
+				FiveperecentBandTest.UseCalendar(symbol);
+				var daily = await YahooClient.GetBarsAsync(symbol, "1d", 21);
+				var eng = BankrollSimulator.Run(daily, 10_000.0);
+				List<OhlcBar> intra;
+				try { intra = await IntradayClient.GetAsync(symbol, "5m", "60d"); }
+				catch { continue; }
+				if (intra.Count < 100) continue;
+
+				var pos = new Dictionary<DateTime, double>();
+				for (int k = 0; k < eng.Positions.Count && k < eng.ReturnDates.Count; k++)
+					pos[eng.ReturnDates[k].Date] = eng.Positions[k];
+				var stm = new Dictionary<DateTime, ShortTermState>();
+				for (int k = 0; k < eng.StState.Count && k < eng.ReturnDates.Count; k++)
+					stm[eng.ReturnDates[k].Date] = eng.StState[k];
+				var hv = new Dictionary<DateTime, double>();
+				for (int i = 1; i < daily.Count; i++)
+				{
+					int j0 = Math.Max(1, i - (HvWindow - 1));
+					var lr = new List<double>();
+					for (int j = j0; j <= i; j++)
+						if (daily[j - 1].Close > 0 && daily[j].Close > 0) lr.Add(Math.Log(daily[j].Close / daily[j - 1].Close));
+					if (lr.Count >= 10)
+					{
+						double m = lr.Average();
+						hv[daily[i].Date.Date] = Math.Max(0.05, Math.Sqrt(lr.Sum(x => (x - m) * (x - m)) / (lr.Count - 1)) * Math.Sqrt(252.0));
+					}
+				}
+				var iEng = BankrollSimulator.Run(intra, 10_000.0);
+				var expPath = new Dictionary<DateTime, List<double>>();
+				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
+				{
+					var d = iEng.ReturnDates[k].Date;
+					if (!expPath.TryGetValue(d, out var lst)) expPath[d] = lst = new List<double>();
+					lst.Add(iEng.Positions[k]);
+				}
+				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
+
+				for (int i = 1; i + 1 < daily.Count; i++)
+				{
+					var dSig = daily[i].Date.Date; var dTr = daily[i + 1].Date.Date;
+					if (!hv.TryGetValue(dSig, out double h)) continue;
+					if (!pos.TryGetValue(dSig, out double tg) || tg < TargetLo) continue;
+					if (!FiveperecentBandTest.HasSameDayExpiry(dTr)) continue;
+					if (SkipStBear && stm.TryGetValue(dSig, out var st) && st == ShortTermState.Bear) continue;
+					if (!expPath.TryGetValue(dSig, out var pPrev) || pPrev.Count == 0) continue;
+					if (!expPath.TryGetValue(dTr, out var pToday) || !barsOf.TryGetValue(dTr, out var tb)) continue;
+					if (Math.Min(pToday.Count, tb.Count) < 20) continue;
+					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1]));
+				}
+			}
+			return outp;
+		}
+
+		// Sweep the entry/re-entry threshold inside the LOOP, which is a different question from the old
+		// session-filter sweep: here the gate decides WHEN to arm, not WHETHER to trade the day at all.
+		public static async Task RunGateSweep()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate;
+
+			List<Sess> Arm(int mode, double gate)
+			{
+				Gate = gate;
+				var outp = new List<Sess>();
+				foreach (var x in inputs)
+				{
+					var s = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, mode);
+					if (s != null) outp.Add(s);
+				}
+				return outp;
+			}
+			var hold = Arm(0, 0.10);
+			var worst = hold.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+
+			(double mean, double ir, double dd, double wst, double sd) Stat(List<double> r)
+			{
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				return (100 * m, sd > 1e-12 ? m / sd : 0, dd, 100 * r.Min(), sd);
+			}
+
+			Console.WriteLine($"\n===== GATE SWEEP INSIDE THE LOOP (entry AND re-entry threshold) =====");
+			Console.WriteLine($"{inputs.Count} sessions; floor-qualified bank at delta < {FloorDelta:0.00}; cost {CostPct:0.0}%/fill");
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				var hr = hold.Where(filt).Select(x => x.Ret).ToList();
+				var hs = Stat(hr);
+				Console.WriteLine($"\n-- {tag} --");
+				Console.WriteLine($"{"gate",7} {"sess",5} {"legs/s",7} {"mean/s%",9} {"win%",7} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8} {"vs matched",11}");
+				Console.WriteLine($"{"hold",7} {hr.Count,5} {1.00,7:0.00} {hs.mean,9:+0.0000;-0.0000} " +
+					$"{100.0 * hr.Count(z => z > 0) / hr.Count,7:0.0} {hs.ir,8:0.000} {hs.dd,8:0.00} {hs.wst,8:0.00} " +
+					$"{hs.mean / Math.Max(0.01, hs.dd),8:0.000} {"--",11}");
+				foreach (double g in new[] { 0.01, 0.02, 0.03, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50 })
+				{
+					var s = Arm(2, g).Where(filt).ToList();
+					if (s.Count < 20) { Console.WriteLine($"{g,7:0.00} {s.Count,5}  (too few)"); continue; }
+					var r = s.Select(x => x.Ret).ToList();
+					var st = Stat(r);
+					// vol-matched haircut: scale HOLD to this arm's volatility, then compare ret/DD. A rule
+					// that merely deploys more capital cannot beat its own matched haircut on this column.
+					double mult = hs.sd > 1e-12 ? st.sd / hs.sd : 1.0;
+					var hm = Stat(hr.Select(z => z * mult).ToList());
+					Console.WriteLine($"{g,7:0.00} {s.Count,5} {s.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
+						$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
+						$"{st.mean / Math.Max(0.01, st.dd),8:0.000} {hm.mean / Math.Max(0.01, hm.dd),11:0.000}");
+				}
+				Console.WriteLine($"   last column = ret/DD of hold scaled to the SAME volatility; the loop only earns");
+				Console.WriteLine($"   credit where its ret/DD exceeds it.");
+			}
+			// ---- PER-LEG SIZING ON ENTRY EXPOSURE, at a fixed gate ------------------------------------
+			// Sizing failed on the single-entry framework, but the loop is a different setting: entries now
+			// happen at varied depths below the gate, so there is a real spread of entry exposures to size
+			// on. Multipliers are normalised to mean 1.0 ACROSS ALL LEGS, so average risk equals flat and
+			// nothing can win by deploying more. Mode 3 inverts the tilt as a sign control.
+			int sSave = SizeMode;
+			string[] sizeNames = { "flat (no sizing)", "deeper dip -> bigger leg", "1/(exp+0.05)", "INVERTED (sign control)" };
+			foreach (double g in new[] { 0.05, 0.10 })
+			{
+				Console.WriteLine($"\n-- per-leg sizing on entry exposure, gate {g:0.00}, W23 removed, mean-1 normalised --");
+				Console.WriteLine($"{"sizing",-28} {"legs/s",7} {"mean/s%",9} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8}");
+				for (int sm = 0; sm < 4; sm++)
+				{
+					SizeMode = sm;
+					var s = Arm(2, g).Where(x => Wk(x.D) != worst).ToList();
+					if (s.Count < 20) { Console.WriteLine($"{sizeNames[sm],-28}  (too few)"); continue; }
+					double meanMult = s.Sum(x => x.SumMult) / Math.Max(1, s.Sum(x => x.Legs));
+					var r = s.Select(x => x.Ret / meanMult).ToList();     // normalise to mean multiplier 1.0
+					var st = Stat(r);
+					Console.WriteLine($"{sizeNames[sm],-28} {s.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
+						$"{st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} {st.mean / Math.Max(0.01, st.dd),8:0.000}");
+				}
+			}
+			SizeMode = sSave;
+			Gate = gSave;
 		}
 
 		public static async Task Run()
