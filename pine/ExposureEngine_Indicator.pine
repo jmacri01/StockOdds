@@ -169,7 +169,7 @@ ddRatioMinDd = input.float(1.0, "Require both drawdowns above (%)", minval = 0, 
 
 grpOverlay = "Options overlay"
 overlayMode = input.string("Wheel", "Overlay", options = ["Wheel", "SPX 0DTE put credit spread (GEX > 0)"], group = grpOverlay,
-     tooltip = "Which options structure the table recommends for expressing the engine's exposure.\n\nWheel (default) = the shipped split switch: covered stock + short call above 0.50 exposure, cash-secured short put from 0.20 to 0.50, cash below.\n\nSPX 0DTE = a same-session put credit spread: buy the 0.15 put, sell the 0.35 put -- a FIXED 0.20 net delta -- both expiring at today's close. Trades only when exposure is at or above the floor, the candle is not ST Bear, and dealer gamma is positive. The exposure gates the trade; it does not set the strike.")
+     tooltip = "Which options structure the table recommends for expressing the engine's exposure.\n\nWheel (default) = the shipped split switch: covered stock + short call above 0.50 exposure, cash-secured short put from 0.20 to 0.50, cash below.\n\nSPX 0DTE = a same-session put credit spread: buy the 0.15 put, sell the 0.35 put -- a FIXED 0.20 net delta -- both expiring at today's close.\n\nON A DAILY CHART this is the shipped rule: the last closed bar's exposure is the signal for tomorrow's open. Trades only when exposure is at or above the floor, the candle is not ST Bear, and the call/put gate passes. The exposure gates the trade; it does not set the strike.\n\nON A 5-MINUTE CHART it switches to the intraday rule, where the same scale-free engine yields the 5m exposure: arm when that drops under the 5m gate, close a winner at net delta 0.10, then re-arm on another candle under the gate. Different question, different threshold -- the daily floor wants the slow signal HIGH, the 5m gate wants the fast signal LOW.\n\nAny other timeframe is unsupported and the table says so rather than approximating.")
 zdteWing = input.float(0.15, "0DTE: long put delta (wing)", minval = 0.01, maxval = 0.50, step = 0.01, group = grpOverlay,
      tooltip = "The protective long put. Fixed at 0.15 in testing. Keep both legs on the SAME expiry -- pushing the wing out to 7-42 DTE turns this into a diagonal whose apparent advantage is a bet on implied vol exceeding realised (it inverts once that premium falls below ~0.95), and it raises margin roughly 11x.")
 zdteNetDelta = input.float(0.20, "0DTE: net delta (FIXED, not from exposure)", minval = 0.05, maxval = 1.0, step = 0.05, group = grpOverlay,
@@ -181,15 +181,17 @@ zdteHi = input.float(0, "0DTE: upper exposure cap (0 = none)", minval = 0, maxva
 zdteMaxShort = input.float(0.95, "0DTE: short put delta cap", minval = 0.10, maxval = 0.99, step = 0.01, group = grpOverlay,
      tooltip = "Ceiling on the short leg's delta. Inert inside the default band (0.50 + 0.15 = 0.65), and only binds if the band's upper bound is raised.")
 zdteRisk = input.float(10, "0DTE: BASE risk % of bankroll", minval = 0.5, maxval = 25, step = 0.5, group = grpOverlay,
-     tooltip = "The BASE stake, before the call/put multiplier below. Size the spread so a FULL LOSS costs this much of the bankroll. For a defined-risk credit spread the broker requirement IS the max loss, so this is both the risk and the margin: contracts = (risk% x bankroll) / (width - credit) per contract.\n\nNOTE the multiplier averages about 1.31x inside the gate, so a 10 here means ~13% AVERAGE risk, not 10%. Set 7.5 if you want the average to land near 10%.\n\nAt flat 10% gated: SPY 704% CAGR, 23.4% max drawdown. Max losing streak is 4, and four full losses at 10% compounds to -34%.")
-zdteMaxMult = input.float(2.0, "0DTE: max size multiplier", minval = 1.0, maxval = 4.0, step = 0.25, group = grpOverlay,
-     tooltip = "Ceiling on the call/put multiplier, so one lopsided session cannot size without limit. Over 2022-03 to 2026-07 the realised ratio never exceeded 2.09, so a cap of 2.0 almost never bound and raising it changed nothing -- it is a guardrail against a future day outside that sample, not a tuning knob.")
+     tooltip = "The stake, FLAT. Size the spread so a FULL LOSS costs this much of the bankroll. For a defined-risk credit spread the broker requirement IS the max loss, so this is both the risk and the margin: contracts = (risk% x bankroll) / (width - credit) per contract.\n\nGEX SIZING WAS REMOVED. The old multiplier (risk x min(callPut,2)) is real on daily single-entry data -- mean-1 paired t +3.03, block-bootstrap p 0.003, and it survives dropping both the worst week and the worst month -- but roughly HALF its headline gain was just the ~1.1-1.3x average stake rather than signal, and on GLD the entire +1.57pp apparent edge was leverage (+0.01pp once normalised). Inside the 5m loop it added nothing at all once entry timing was doing the work. The call/put GATE is a different thing and is retained.\n\nAt flat 10%: SPY 704% CAGR, 23.4% max drawdown. Max losing streak is 4, and four full losses at 10% compounds to -34%.\n\nOn the 5m chart each LEG carries this stake. Because the exit only ever closes winners, a session can still only lose one leg's worth.")
+zdte5mGate = input.float(0.05, "0DTE (5m chart): arm when exposure is below", minval = 0.01, maxval = 0.50, step = 0.01, group = grpOverlay,
+     tooltip = "Used ONLY on a 5-minute chart, where this script's exposure IS the 5m exposure (the engine is scale-free).\n\nThe rule: enter when 5m exposure drops under this level. If it is already under at the open -- because the prior session closed there -- enter at the open; otherwise wait for the first candle that goes under. After banking a winner, re-arm only on another candle under this level.\n\n0.05 was an INTERIOR optimum: on 91 sessions, ret/DD ran 0.344 at 0.03, 0.380 at 0.05, 0.307 at 0.10 and 0.200 at 0.20. Looser settings add legs without adding return -- mean return is flat across the whole range, only the drawdown grows.\n\nNOTE this threshold is the opposite direction to the DAILY floor above. The daily rule wants the slow signal constructive (exposure >= 0.10); this wants the fast signal flushed (exposure < 0.05). They are different filters, not one filter at two resolutions.")
+zdte5mMinsLeft = input.int(30, "0DTE (5m chart): minutes that must remain", minval = 5, maxval = 180, step = 5, group = grpOverlay,
+     tooltip = "No new leg inside this much of the close. With implied vol frozen a late entry books a tiny max-loss denominator that the risk budget then levers enormously, in a spread whose real bid-ask would swallow the credit. Tested at 20/60/120 minutes the results were identical because dips fire early (median 35 minutes into the session), so this binds rarely -- it is a guard, not a tuning knob.")
 zdteSkipStBear = input.bool(true, "0DTE: skip ST Bear candles", group = grpOverlay,
      tooltip = "ST Bear is the one genuinely bad short-term state for this trade, and it is isolated -- BearNeutral behaves like BullNeutral, not like Bear.\n\nSPY: ST Bear sessions earn +0.29%/trade at IR 0.113 (vs 0.526 in ST Bull) and carry 35% drawdown on their own. Skipping them drops 17% of trades and cuts max drawdown 27.8 -> 19.0 while RAISING Sharpe. IWM: 36.1 -> 19.8. Replicates on both instruments.\n\nDo NOT extend this to BearNeutral -- that lowers Sharpe on SPY and worsens drawdown on IWM.")
 zdteCallPut = input.float(0.0, "0DTE: call/put gamma ratio (MANUAL, 0 = unknown)", minval = 0, maxval = 10, step = 0.01, group = grpOverlay,
-     tooltip = "call_gex / |put_gex| from the PRIOR session's close. Higher means call gamma dominates, which is the favourable regime.\n\nPINE HAS NO GAMMA FEED, so this is entered by hand each session. Enter 0 if you do not have it -- the structure still shows but the gate is flagged unverified.\n\nThis one number replaces the old Positive/Negative dropdown, because ratio <= 1 IS negative net gamma (net = call + put, and put gamma is negative). It also drives the SIZE: the magnitude carries information the sign throws away.\n\nUSE THE PRIOR DAY'S VALUE. A same-day figure published after the close is look-ahead; when tested it beat prior-day by +0.167 IR in a vendor's backfilled rows and by only +0.010 in rows captured live -- the gap was the backfill reading end-of-day data.\n\nSPY AND QQQ ONLY. Tested across four instruments, both the gate and the size multiplier work on SPY (paired t +2.26) and QQQ (+3.26), are ABSENT on GLD (+0.45) and INVERTED on IWM (-2.75, and the sign control fails). Normalising to each name's own percentile does not rescue them, so it is not a calibration problem -- the ratio is measuring something else where 0-DTE flow does not dominate the gamma book. Leave this at 0 on anything but SPY or QQQ.")
+     tooltip = "call_gex / |put_gex| from the PRIOR session's close. Higher means call gamma dominates, which is the favourable regime.\n\nPINE HAS NO GAMMA FEED, so this is entered by hand each session. Enter 0 if you do not have it -- the structure still shows but the gate is flagged unverified.\n\nThis one number replaces the old Positive/Negative dropdown, because ratio <= 1 IS negative net gamma (net = call + put, and put gamma is negative). It is now used ONLY as a gate -- the sizing multiplier it used to drive has been removed.\n\nUSE THE PRIOR DAY'S VALUE. A same-day figure published after the close is look-ahead; when tested it beat prior-day by +0.167 IR in a vendor's backfilled rows and by only +0.010 in rows captured live -- the gap was the backfill reading end-of-day data.\n\nSPY AND QQQ ONLY. Tested across four instruments, both the gate and the size multiplier work on SPY (paired t +2.26) and QQQ (+3.26), are ABSENT on GLD (+0.45) and INVERTED on IWM (-2.75, and the sign control fails). Normalising to each name's own percentile does not rescue them, so it is not a calibration problem -- the ratio is measuring something else where 0-DTE flow does not dominate the gamma book. Leave this at 0 on anything but SPY or QQQ.")
 zdteGate = input.float(1.0, "0DTE: skip when call/put is below", minval = 0, maxval = 3, step = 0.05, group = grpOverlay,
-     tooltip = "Sessions below this are skipped. 1.00 = the shipped gate (equivalently net gamma > 0).\n\nTightening pays but costs trades: on SPY 2022-03+, gate 1.00 keeps 74.6% of sessions at IR 0.497 and 23.4% drawdown; gate 1.25 keeps 40.5% at IR 0.798 and 16.7%. The gate and the size multiplier are SUBSTITUTES -- past about 1.25 the multiplier stops adding anything (paired t falls to +0.64), because the gate has already taken the signal.\n\nSPY AND QQQ ONLY, same as the ratio above. Ranking sessions by each name's own percentile and keeping the top 30%: SPY IR 0.455 -> 0.789 and QQQ 0.324 -> 0.627, both monotone in the ratio with the bottom-30% control the worst bucket. GLD (0.647 -> 0.535) and IWM (0.406 -> 0.275) are monotone the WRONG way, and IWM's best sessions by a distance are the ones this gate discards. On IWM the absolute 1.00 gate throws away 72% of sessions and makes BOTH IR and drawdown worse -- set this to 0 there.")
+     tooltip = "Sessions below this are skipped. 1.00 = the shipped gate (equivalently net gamma > 0).\n\nTightening pays but costs trades: on SPY 2022-03+, gate 1.00 keeps 74.6% of sessions at IR 0.497 and 23.4% drawdown; gate 1.25 keeps 40.5% at IR 0.798 and 16.7%. The gate and the old size multiplier were SUBSTITUTES -- past about 1.25 the multiplier stopped adding anything (paired t +0.64) because the gate had already taken the signal. With sizing removed, this gate is the only place the ratio is used.\n\nSPY AND QQQ ONLY, same as the ratio above. Ranking sessions by each name's own percentile and keeping the top 30%: SPY IR 0.455 -> 0.789 and QQQ 0.324 -> 0.627, both monotone in the ratio with the bottom-30% control the worst bucket. GLD (0.647 -> 0.535) and IWM (0.406 -> 0.275) are monotone the WRONG way, and IWM's best sessions by a distance are the ones this gate discards. On IWM the absolute 1.00 gate throws away 72% of sessions and makes BOTH IR and drawdown worse -- set this to 0 there.")
 
 // #############################################################################
 // ############   SHARED ENGINE  (identical in indicator & strategy)   #########
@@ -497,7 +499,7 @@ tblPosV = tblPos == "Top Right" ? position.top_right : tblPos == "Bottom Right" 
 // frame/border are OFF so the transparent spacer row below the content does not draw an empty box; the dark
 // per-cell backgrounds carry the visual instead. 18 rows covers the widest layout: debug + the 0DTE
 // overlay = 17 content rows (0..16) plus the spacer at 17.
-var table tbl = table.new(tblPosV, 2, 18, force_overlay = true)
+var table tbl = table.new(tblPosV, 2, 20, force_overlay = true)
 
 f_row(row, k, v, txtCol) =>
     table.cell(tbl, 0, row, k, text_color = color.gray,  text_halign = text.align_left,  text_size = size.small, bgcolor = color.new(color.black, 70))
@@ -547,30 +549,42 @@ if showTable and barstate.islast
     // things: exposure below the floor (genuinely worse sessions), gamma negative (the tested gate), and
     // a non-daily chart (the whole open->close mapping only holds on daily bars).
     // ---------------------------------------------------------------------------------------------
+    // TWO CHARTS, TWO JOBS. On a DAILY chart this is the shipped rule: the last closed bar's exposure is
+    // the signal for tomorrow's open. On a 5-MINUTE chart the same engine yields the 5m exposure, and the
+    // job changes from "should I trade tomorrow" to "is now the moment to arm". Anything else is unsupported
+    // rather than silently approximated, because the open->close mapping only holds on those two.
+    zIs5m    = timeframe.isminutes and timeframe.multiplier == 5
+    zTfOk    = timeframe.isdaily or zIs5m
     zShort   = math.min(zdteMaxShort, zdteNetDelta + zdteWing)
     zCapOn   = zdteHi > 0
     zInBand  = not na(position) and position >= zdteLo and (not zCapOn or position < zdteHi)
     // A ratio of 0 means "not entered". Treated as unknown rather than as a blocking zero: the structure is
-    // still shown, the gate is flagged unverified, and sizing falls back to the base stake.
+    // still shown and the gate is flagged unverified.
     zGexSet  = zdteCallPut > 0
     zGexOk   = not zGexSet or zdteCallPut >= zdteGate
-    zTfOk    = timeframe.isdaily
     zStOk    = not zdteSkipStBear or na(stState) or stState != 0        // 0 = ST Bear
-    zTrade   = zInBand and zGexOk and zTfOk and zStOk
-    // SIZE ON THE RATIO. risk = base x min(callPut, cap). The multiplier's LOWER end is moot because the gate
-    // already removed everything under 1.00 -- inside the gate the ratio only scales up. Measured on SPY
-    // 2022-03+: within the gate this lifts IR 0.497 -> 0.526 at a matched-risk control, paired t = +2.40, and
-    // the inverted rule loses by the same margin (-2.41). It raises AVERAGE risk to ~1.31x base, which is where
-    // its extra return comes from -- the edge is that the extra stake lands on the better sessions.
-    // SCOPE: the ratio (gate AND multiplier) replicates on QQQ, is inert on GLD and INVERTS on IWM. Both uses
-    // fail together on the same names, so it is one finding rather than two. Leaving zdteCallPut at 0 disables
-    // both -- no gate, 1.0x size -- which is the correct setting on anything outside SPY/QQQ.
-    zMult    = zGexSet ? math.min(zdteMaxMult, zdteCallPut) : 1.0
-    zRisk    = zdteRisk * zMult
+    // 5m arming. `position` on a 5m chart IS the 5m exposure. Enough of the session must remain to open a
+    // leg; the guard is in minutes so it does not depend on the exchange's session length.
+    zMinsLeft = na(time_close) ? na : (time_close - time) / 60000.0
+    zSessOk   = na(zMinsLeft) or zMinsLeft >= zdte5mMinsLeft
+    zArmed    = zIs5m and not na(position) and position < zdte5mGate and zSessOk
+    // The daily qualification (exposure >= floor, not ST Bear) is NOT recomputed here from 5m bars -- it is a
+    // DAILY signal and reading it off intraday bars would be a different, untested quantity. On the 5m chart
+    // the table therefore reports arming only, and says plainly that the daily check is the user's to make.
+    zTrade   = zIs5m ? zArmed : (zInBand and zGexOk and zTfOk and zStOk)
+    // GEX SIZING REMOVED. The multiplier `risk = base x min(callPut, 2)` measured well on 1315 single-entry
+    // daily sessions (mean-1 paired t +3.03, block-bootstrap p 0.003, robust to dropping the worst week AND
+    // the worst month), but roughly half its headline gain was simply the ~1.1-1.3x average stake rather than
+    // signal, and inside the 5m loop it added nothing once entry timing was doing the work. The call/put GATE
+    // is a separate, still-valid filter and is retained. Stake is flat.
+    zRisk    = zdteRisk
     zLongTxt  = zTrade ? "BUY  " + str.tostring(zdteWing, "#.00") + "d  (0 DTE)" : "—"
     zShortTxt = zTrade ? "SELL " + str.tostring(zShort,   "#.00") + "d  (0 DTE)" : "—"
     zGateTxt = na(position)  ? "—" :
-               not zTfOk     ? "NEEDS DAILY CHART (tf is " + timeframe.period + ")" :
+               not zTfOk     ? "NEEDS 1D OR 5m CHART (tf is " + timeframe.period + ")" :
+               zIs5m and not zSessOk ? "STAND DOWN — under " + str.tostring(zdte5mMinsLeft) + " min left" :
+               zIs5m and not zArmed  ? "WAIT — 5m exp " + str.tostring(position, "#.00") + " not under " + str.tostring(zdte5mGate, "#.00") :
+               zIs5m         ? "ARMED — 5m exp " + str.tostring(position, "#.00") + " under " + str.tostring(zdte5mGate, "#.00") :
                position < zdteLo ? "NO TRADE — exp " + str.tostring(position, "#.00") + " below " + str.tostring(zdteLo, "#.00") + " floor" :
                not zInBand   ? "NO TRADE — exp " + str.tostring(position, "#.00") + " above " + str.tostring(zdteHi, "#.00") + " cap" :
                not zStOk     ? "NO TRADE — ST Bear candle" :
@@ -584,10 +598,13 @@ if showTable and barstate.islast
     zNetTxt  = zTrade ? str.tostring(zShort - zdteWing, "#.00") + "d net (fixed)" : "—"
     // Size is stated as a RULE, not a contract count: the indicator has no option prices, so it cannot know
     // the max loss per contract. Margin equals max loss for a defined-risk spread, so this is also the margin.
-    zSizeTxt = not zTrade ? "—" :
-               zGexSet ? str.tostring(zRisk, "#.#") + "% of bankroll  (" + str.tostring(zdteRisk, "#.#") +
-                         "% x " + str.tostring(zMult, "#.00") + ")"
-                       : str.tostring(zdteRisk, "#.#") + "% of bankroll  (base, ratio not set)"
+    zSizeTxt = not zTrade ? "—" : str.tostring(zRisk, "#.#") + "% of bankroll  (flat)"
+    // On the 5m chart the exit is a DELTA rule, and this script has no option prices, so it states the rule
+    // rather than pretending to evaluate it. Closing only when the spread is in profit is what keeps the
+    // defined-risk floor intact: every closed leg is a winner, so only the leg open at the bell can lose.
+    zExitTxt = not zIs5m ? "hold to the close (expiry)" :
+               "close at net delta < 0.10 ONLY IF spot > short strike, then re-arm under " + str.tostring(zdte5mGate, "#.00")
+    zDailyTxt = not zIs5m ? "—" : "check on the 1D chart: exposure >= " + str.tostring(zdteLo, "#.00") + ", not ST Bear"
 
     isZdte = overlayMode == "SPX 0DTE put credit spread (GEX > 0)"
     // Default view is deliberately minimal: the two rows that are ACTIONABLE -- what exposure to hold and which
@@ -600,7 +617,10 @@ if showTable and barstate.islast
         f_row(1, "0DTE long put",  zLongTxt,  zLegCol)
         f_row(2, "0DTE short put", zShortTxt, zLegCol)
         f_row(3, "Size", zSizeTxt, zLegCol)
-        f_row(4, "Status (next open)", zGateTxt, zGateCol)
+        f_row(4, zIs5m ? "Status (now)" : "Status (next open)", zGateTxt, zGateCol)
+        if zIs5m
+            f_row(5, "Exit rule", zExitTxt, color.gray)
+            f_row(6, "Daily filter", zDailyTxt, color.gray)
     if showDebug
         f_row(0,  "LT State",    f_ltName(ltState), ltCol)
         f_row(1,  "ST State",    f_stName(stState), stCol)
@@ -623,12 +643,15 @@ if showTable and barstate.islast
             f_row(13, "0DTE short put", zShortTxt, zLegCol)
             f_row(14, "0DTE net delta", zNetTxt, zLegCol)
             f_row(15, "Size", zSizeTxt, zLegCol)
-            f_row(16, "Status (next open)", zGateTxt, zGateCol)
+            f_row(16, zIs5m ? "Status (now)" : "Status (next open)", zGateTxt, zGateCol)
+            if zIs5m
+                f_row(17, "Exit rule", zExitTxt, color.gray)
+                f_row(18, "Daily filter", zDailyTxt, color.gray)
     // Transparent spacer BELOW the content. With a bottom anchor this is what holds the visible table off the
     // bottom of the pane -- table.cell's `height` is a percent of the pane, which is the only percentage control
     // Pine gives for tables (the anchor itself is only top/middle/bottom).
     if tblBottomPct > 0
-        spacerRow = showDebug ? (isZdte ? 17 : 13) : (isZdte ? 5 : 2)
+        spacerRow = showDebug ? (isZdte ? (zIs5m ? 19 : 17) : 13) : (isZdte ? (zIs5m ? 7 : 5) : 2)
         table.cell(tbl, 0, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
         table.cell(tbl, 1, spacerRow, "", height = tblBottomPct, bgcolor = color.new(color.black, 100))
 
