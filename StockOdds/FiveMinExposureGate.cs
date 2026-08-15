@@ -360,6 +360,57 @@ namespace StockOdds
 					$"{(double)(ge2 + 1) / (it2 + 1),8:0.0000} | EXCLUDED {exs}");
 			}
 
+			// ---- ROBUSTNESS: re-run the whole sweep with the single worst week removed -----------------
+			// If one week drives the result, every threshold that depends on it should move. Thresholds
+			// that survive its removal are measuring something distributed across the sample.
+			string Wk(DateTime d) => $"{System.Globalization.ISOWeek.GetYear(d)}-W{System.Globalization.ISOWeek.GetWeekOfYear(d):00}";
+			var worstWeek = all.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.R)).First().Key;
+			var exW = all.Where(x => Wk(x.D) != worstWeek).ToList();
+			Console.WriteLine($"\n-- sweep with the worst week ({worstWeek}, {all.Count - exW.Count} sessions) REMOVED --");
+			Console.WriteLine($"{"gate",8} {"n",5} {"kept mean%",11} {"kept IR",9} | {"excl n",7} {"excl mean%",11} {"excl IR",9}");
+			foreach (double gv in new[] { 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40 })
+			{
+				var k = exW.Where(x => x.Exp < gv).Select(x => Risk * x.R).ToList();
+				var e2 = exW.Where(x => x.Exp >= gv).Select(x => Risk * x.R).ToList();
+				if (k.Count < 10 || e2.Count < 5) { Console.WriteLine($"{gv,8:0.00}   (too few)"); continue; }
+				double km = k.Average(), em = e2.Average();
+				double ks = Math.Sqrt(k.Sum(z => (z - km) * (z - km)) / (k.Count - 1));
+				double es = Math.Sqrt(e2.Sum(z => (z - em) * (z - em)) / (e2.Count - 1));
+				Console.WriteLine($"{gv,8:0.00} {k.Count,5} {100 * km,11:+0.0000;-0.0000} {(ks > 1e-12 ? km / ks : 0),9:0.000} | " +
+					$"{e2.Count,7} {100 * em,11:+0.0000;-0.0000} {(es > 1e-12 ? em / es : 0),9:0.000}");
+			}
+
+			// ---- IS THE TOXIC TAIL ONE EVENT? ----------------------------------------------------------
+			// The reframed gate rests entirely on a small high-exposure set being bad. With only 13-29
+			// sessions in it, the whole finding collapses if they are one selloff week or one instrument.
+			// Concentration is therefore a harder constraint here than any p-value.
+			foreach (double gv in new[] { 0.25, 0.30 })
+			{
+				var tail = all.Where(x => x.Exp >= gv).OrderBy(x => x.D).ToList();
+				if (tail.Count < 3) continue;
+				var byWeek = tail.GroupBy(x => $"{System.Globalization.ISOWeek.GetYear(x.D)}-W{System.Globalization.ISOWeek.GetWeekOfYear(x.D):00}")
+					.OrderByDescending(g => g.Count()).ToList();
+				var bySym = tail.GroupBy(x => x.Sym).OrderByDescending(g => g.Count()).ToList();
+				var losers = tail.Where(x => x.R <= 0).ToList();
+				Console.WriteLine($"\n-- the EXCLUDED tail at exp >= {gv:0.00}: {tail.Count} sessions, is it one event? --");
+				Console.WriteLine($"   spans {tail.First().D:yyyy-MM-dd} -> {tail.Last().D:yyyy-MM-dd} over {byWeek.Count} distinct weeks; " +
+					$"biggest week holds {byWeek[0].Count()} ({100.0 * byWeek[0].Count() / tail.Count:0.0}%)");
+				Console.WriteLine($"   by instrument: {string.Join(", ", bySym.Select(g => $"{g.Key} {g.Count()}"))}");
+				Console.WriteLine($"   losing sessions: {losers.Count} of {tail.Count}; " +
+					$"weeks holding a loser: {string.Join(", ", losers.GroupBy(x => $"{System.Globalization.ISOWeek.GetYear(x.D)}-W{System.Globalization.ISOWeek.GetWeekOfYear(x.D):00}").OrderByDescending(g => g.Count()).Take(4).Select(g => $"{g.Key}x{g.Count()}"))}");
+				// Drop the single worst week and re-measure: if the tail is still bad without it, the
+				// effect is distributed rather than being one episode wearing a threshold as a disguise.
+				var wk = byWeek[0].Key;
+				var exWorst = tail.Where(x => $"{System.Globalization.ISOWeek.GetYear(x.D)}-W{System.Globalization.ISOWeek.GetWeekOfYear(x.D):00}" != wk).ToList();
+				if (exWorst.Count >= 5)
+				{
+					var r0 = tail.Select(x => Risk * x.R).ToList();
+					var r1 = exWorst.Select(x => Risk * x.R).ToList();
+					Console.WriteLine($"   tail mean {100 * r0.Average(),8:+0.0000;-0.0000}  ->  " +
+						$"{100 * r1.Average(),8:+0.0000;-0.0000} after dropping its biggest week ({wk}, n={tail.Count - exWorst.Count})");
+				}
+			}
+
 			Console.WriteLine($"\n-- permutation test, {iters} shuffles of the (exposure, ST) pair within each instrument --");
 			Permute($"exp < {Gate:0.00}", x => x.Exp < Gate);
 			Permute("NOT 5m Bear", x => x.St5 != ShortTermState.Bear);
