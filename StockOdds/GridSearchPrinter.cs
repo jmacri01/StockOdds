@@ -38,6 +38,41 @@ namespace StockOdds
 			}
 		}
 
+		// Current-period weight sweep: each arm against the w=1 baseline, grouped by axis.
+		public static void PrintBiasWeightSweep(List<BiasWeightRow> rows)
+		{
+			var baseRow = rows.FirstOrDefault(r => r.Weight == 1.0);
+			if (baseRow == null) { Console.WriteLine("\n(no bias-weight rows)"); return; }
+
+			Console.WriteLine("\n===== BIAS CURRENT-PERIOD WEIGHT SWEEP =====");
+			Console.WriteLine($"Symbols            : {baseRow.Symbols}");
+			Console.WriteLine($"Baseline (w=1)     : Sharpe {baseRow.MeanSharpe:0.000} (med {baseRow.MedianSharpe:0.000})  " +
+				$"ret {Signed(baseRow.MeanReturn)}  dd -{baseRow.MeanMaxDd:0.00}%");
+			Console.WriteLine("Axis: EmaAlpha = bias-EMA alpha x w | Window = newest LT sample x w in the rolling sum");
+			Console.WriteLine();
+			Console.WriteLine(
+				$"{"Axis",9} {"w",5} {"MeanShp",9} {"dShp",8} {"MedShp",9} {"MeanRet%",11} {"MeanDD%",9} " +
+				$"{"ShpWin",7} {"DdWin",6}");
+
+			foreach (var g in rows.Where(r => r.Weight != 1.0).GroupBy(r => r.Axis))
+			{
+				foreach (var r in g.OrderBy(r => r.Weight))
+					Console.WriteLine(
+						$"{r.Axis,9} {r.Weight,5:0.##} {r.MeanSharpe,9:0.000} {Signed(r.MeanSharpe - baseRow.MeanSharpe, "0.000"),8} " +
+						$"{r.MedianSharpe,9:0.000} {Signed(r.MeanReturn),11} -{r.MeanMaxDd,7:0.00}% " +
+						$"{r.SharpeWins + "/" + r.Symbols,7} {r.DdWins + "/" + r.Symbols,6}");
+				Console.WriteLine();
+			}
+
+			var best = rows.Where(r => r.Weight != 1.0).OrderByDescending(r => r.MeanSharpe).FirstOrDefault();
+			if (best != null && best.MeanSharpe > baseRow.MeanSharpe)
+				Console.WriteLine($"Best arm: {best.Axis} w={best.Weight:0.##}  " +
+					$"Sharpe {baseRow.MeanSharpe:0.000} -> {best.MeanSharpe:0.000} " +
+					$"({best.SharpeWins}/{best.Symbols} symbols), dd {baseRow.MeanMaxDd:0.00}% -> {best.MeanMaxDd:0.00}%");
+			else
+				Console.WriteLine("No arm beats the w=1 baseline on mean Sharpe.");
+		}
+
 		// Multi-symbol version: ranked by mean Sharpe across the basket, with the worst
 		// symbol (MinSharpe) shown so combos that only work on one name stand out. Then
 		// the per-symbol Sharpe breakdown for the winning combination.
@@ -495,5 +530,9 @@ namespace StockOdds
 			double x = Math.Round(v, 2);
 			return (x >= 0 ? "+" : "-") + Math.Abs(x).ToString("0.00");
 		}
+
+		// same, with a caller-chosen precision (deltas want more decimals than percents)
+		private static string Signed(double v, string fmt) =>
+			(v >= 0 ? "+" : "-") + Math.Abs(v).ToString(fmt);
 	}
 }

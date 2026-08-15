@@ -178,6 +178,79 @@ namespace StockOdds
 			return result;
 		}
 
+		// ---- Current-period weight sweep ----
+		// "Does over-weighting the newest reading in the dynamic bias help?" Two independent
+		// axes, both 1.0 = the plain behaviour:
+		//   EmaAlpha -> BiasEmaCurrentWeight    (newest sample counts w-fold in the bias EMA)
+		//   Window   -> BiasWindowCurrentWeight (newest LT-direction counts w-fold in the sum)
+		//   Both     -> the two applied together
+		// All other knobs stay as configured; every symbol is scored over its full window and
+		// compared symbol-by-symbol against the w=1 baseline.
+		// w < 1 UNDER-weights the newest reading (slower bias) — kept in the grid so the sweep
+		// shows the whole gradient, not just the "more responsive" half.
+		public static double[] BiasWeightCandidates = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0 };
+
+		public static List<BiasWeightRow> BiasWeightSweep(
+			Dictionary<string, List<OhlcBar>> barsBySymbol, double initialBankroll = 10_000.0)
+		{
+			double savedEmaW = BankrollSimulator.BiasEmaCurrentWeight;
+			double savedWinW = BankrollSimulator.BiasWindowCurrentWeight;
+			var rows = new List<BiasWeightRow>();
+
+			// per-symbol results at a given (emaW, winW), in a stable symbol order
+			List<BankrollResult> EvalAll(double emaW, double winW)
+			{
+				BankrollSimulator.BiasEmaCurrentWeight    = emaW;
+				BankrollSimulator.BiasWindowCurrentWeight = winW;
+				return barsBySymbol.OrderBy(kv => kv.Key)
+					.Select(kv => BankrollSimulator.Run(kv.Value, initialBankroll)).ToList();
+			}
+
+			try
+			{
+				var baseline = EvalAll(1.0, 1.0);
+
+				void Add(string axis, double w, List<BankrollResult> res)
+				{
+					rows.Add(new BiasWeightRow
+					{
+						Axis        = axis,
+						Weight      = w,
+						Symbols     = res.Count,
+						MeanSharpe  = res.Average(SharpeOf),
+						MeanMaxDd   = res.Average(r => r.MaxDrawdownPct),
+						MeanReturn  = res.Average(r => r.TotalReturnPct),
+						MedianSharpe = Median(res.Select(SharpeOf).ToList()),
+						SharpeWins  = res.Where((r, i) => SharpeOf(r) > SharpeOf(baseline[i]) + 1e-9).Count(),
+						DdWins      = res.Where((r, i) => r.MaxDrawdownPct < baseline[i].MaxDrawdownPct - 1e-9).Count(),
+					});
+				}
+
+				foreach (var w in BiasWeightCandidates)
+				{
+					Add("EmaAlpha", w, EvalAll(w, 1.0));
+					if (w == 1.0) continue;      // w=1 is the same run on every axis
+					Add("Window",   w, EvalAll(1.0, w));
+					Add("Both",     w, EvalAll(w, w));
+				}
+			}
+			finally
+			{
+				BankrollSimulator.BiasEmaCurrentWeight    = savedEmaW;
+				BankrollSimulator.BiasWindowCurrentWeight = savedWinW;
+			}
+
+			return rows;
+		}
+
+		private static double Median(List<double> xs)
+		{
+			if (xs.Count == 0) return 0.0;
+			var s = xs.OrderBy(x => x).ToList();
+			int m = s.Count / 2;
+			return s.Count % 2 == 1 ? s[m] : (s[m - 1] + s[m]) / 2.0;
+		}
+
 		// Where do the CURRENTLY configured smoothing knobs rank among the full grid, scored
 		// by mean Sharpe across a universe (optionally HV-filtered) over the full window?
 		// Answers "are the current knobs optimal?" with the whole distribution for context.
@@ -784,6 +857,16 @@ namespace StockOdds
 		// return per unit of max drawdown (Calmar-like); guarded against tiny drawdowns.
 		public double StratRetPerDd => StratMaxDd > 0.01 ? StratReturn / StratMaxDd : double.NaN;
 		public double BhRetPerDd    => BhMaxDd    > 0.01 ? BhReturn    / BhMaxDd    : double.NaN;
+	}
+
+	// One (axis, weight) arm of the current-period weight sweep, aggregated over the basket.
+	public class BiasWeightRow
+	{
+		public string Axis = "";
+		public double Weight;
+		public int    Symbols;
+		public double MeanSharpe, MedianSharpe, MeanMaxDd, MeanReturn;
+		public int    SharpeWins, DdWins;   // symbols beating the w=1 baseline
 	}
 
 	public class BiasSweepCell

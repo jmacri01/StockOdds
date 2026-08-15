@@ -125,6 +125,17 @@ namespace StockOdds
 		// The dynamic bias is smoothed by this EMA before it skews the exposure EMA.
 		public static int    BiasEmaPeriod = 100;
 
+		// Extra weight on the CURRENT period when the bias is computed. 1.0 = plain
+		// (unchanged); 2.0 = the newest reading counts double.
+		//   BiasEmaCurrentWeight    scales the EMA's alpha: alpha = w * 2/(N+1), capped at 1.
+		//                           For small alpha this is ~= halving BiasEmaPeriod.
+		//   BiasWindowCurrentWeight weights the newest LT-direction sample inside the
+		//                           BiasPeriod rolling sum: (sum + (w-1)*sig) / (BiasPeriod-1+w).
+		//                           This is NOT the same as shortening BiasPeriod -- the older
+		//                           bars keep their full weight, only the last one is boosted.
+		public static double BiasEmaCurrentWeight    = 1.0;
+		public static double BiasWindowCurrentWeight = 1.0;
+
 		// Number of bar-periods per year, used only to annualize the Sharpe ratio.
 		// 252 trading days for daily bars; set to 52 for weekly, 12 for monthly, etc.
 		public static double PeriodsPerYear = 252.0;
@@ -212,7 +223,9 @@ namespace StockOdds
 			var bhReturns = new List<double>();
 
 			double alpha = 2.0 / (ExposureEmaPeriod + 1);
-			double biasAlpha = 2.0 / (BiasEmaPeriod + 1);
+			double biasAlpha = Math.Min(1.0, BiasEmaCurrentWeight * 2.0 / (BiasEmaPeriod + 1));
+			double biasWinW  = Math.Max(0.01, BiasWindowCurrentWeight);
+			double biasWinDen = BiasPeriod - 1 + biasWinW;
 			double driftBand = RebalanceDriftPercent / 100.0;
 			double minExp = MinExposurePercent / 100.0;
 			double maxExp = MaxExposurePercent / 100.0;
@@ -255,7 +268,7 @@ namespace StockOdds
 				biasSum += sig;
 				while (biasWindow.Count > BiasPeriod)
 					biasSum -= biasWindow.Dequeue();
-				double dynBias = biasSum / BiasPeriod;
+				double dynBias = (biasSum + (biasWinW - 1.0) * sig) / biasWinDen;
 				biasEma = double.IsNaN(biasEma) ? dynBias : biasAlpha * dynBias + (1.0 - biasAlpha) * biasEma;
 
 				double adjEma = Math.Abs(ema) * biasEma + ema;
