@@ -253,6 +253,35 @@ namespace StockOdds
 				nb++;
 				if (samp.Average(x => Risk * ((x.PriorExp < Gate ? x.ROpen : x.RDip) - x.ROpen)) <= 0) le++;
 			}
+			// WHEN does the dip actually happen on the sessions that matter? D and A differ only on the
+			// sessions the gate would skip. If the dip on those is bar 0, then "dip entry" is really just
+			// "enter at the close of the first 5m bar instead of the open" -- a five-minute shift, which
+			// would make the whole effect a single-bar timing quirk rather than a regime read.
+			var diffOnly = exW.Where(x => x.PriorExp >= Gate && x.DipBar >= 0).ToList();
+			if (diffOnly.Count > 0)
+			{
+				var bars = diffOnly.Select(x => x.DipBar).OrderBy(v => v).ToList();
+				Console.WriteLine($"\n-- when the dip fires on the {diffOnly.Count} sessions where D differs from A --");
+				Console.WriteLine($"   dip bar: min {bars[0]}, p25 {bars[bars.Count / 4]}, median {bars[bars.Count / 2]}, " +
+					$"p75 {bars[3 * bars.Count / 4]}, max {bars[^1]}  (of ~79 bars; bar 0 = first 5 minutes)");
+				Console.WriteLine($"   fires at bar 0: {100.0 * bars.Count(b => b == 0) / bars.Count:0.0}%   " +
+					$"within the first half hour (bar <= 5): {100.0 * bars.Count(b => b <= 5) / bars.Count:0.0}%   " +
+					$"after midday (bar >= 39): {100.0 * bars.Count(b => b >= 39) / bars.Count:0.0}%");
+				// Split the paired gain by WHEN the dip fired -- if it all sits in bar 0 it is a one-bar quirk.
+				foreach (var (lbl, sel) in new[] { ("bar 0 only", (Func<Sess, bool>)(x => x.DipBar == 0)),
+				                                    ("bars 1-5", x => x.DipBar >= 1 && x.DipBar <= 5),
+				                                    ("bars 6+", x => x.DipBar >= 6) })
+				{
+					var g = diffOnly.Where(sel).Where(x => !double.IsNaN(x.RDip)).ToList();
+					if (g.Count < 5) { Console.WriteLine($"   {lbl,-12} n={g.Count,3}   too few"); continue; }
+					var d3 = g.Select(x => Risk * (x.RDip - x.ROpen)).ToList();
+					double m3 = d3.Average();
+					double s3 = d3.Count > 1 ? Math.Sqrt(d3.Sum(z => (z - m3) * (z - m3)) / (d3.Count - 1)) : 0;
+					Console.WriteLine($"   {lbl,-12} n={g.Count,3}  dip minus open {100 * m3,9:+0.0000;-0.0000}pp  " +
+						$"t {(s3 > 1e-12 ? m3 / (s3 / Math.Sqrt(d3.Count)) : 0),6:+0.00;-0.00}");
+				}
+			}
+
 			Console.WriteLine($"\n-- hybrid (D) minus trade-everything (A), paired on {pairD.Count} sessions, W23 removed --");
 			Console.WriteLine($"   mean difference {100 * md:+0.0000;-0.0000}pp/session   paired t {md / (sdd / Math.Sqrt(dif.Count)):+0.00;-0.00}   " +
 				$"block-bootstrap P(diff<=0) = {(nb > 0 ? (double)le / nb : 1):0.000}");
