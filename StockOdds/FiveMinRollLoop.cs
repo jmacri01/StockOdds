@@ -45,6 +45,10 @@ namespace StockOdds
 		// normalised to mean 1.0 across all legs afterwards, so average risk matches flat exactly and no
 		// arm can win by quietly deploying more capital.
 		public static int SizeMode = 0;
+		// Gex sizing: leg risk x min(callPut, 2). The ratio is a DAILY value, so every leg in a session
+		// carries the same multiplier. Scoped to SPY/QQQ -- it is inverted on IWM and pure leverage on GLD.
+		public static bool GexSizing = false;
+		public static double GexCap = 2.0;
 
 		private sealed record Sess(string Sym, DateTime D, double Ret, int Legs, double PriorExp, double SumMult);
 
@@ -86,7 +90,7 @@ namespace StockOdds
 		// mode: 0 = single entry at open, hold      1 = single entry at first dip, hold
 		//       2 = loop, re-enter only when exposure < Gate    3 = loop, re-enter at the next bar
 		private static Sess? Simulate(string sym, DateTime d, List<OhlcBar> tb, List<double> exp, double iv,
-			double priorExp, int mode)
+			double priorExp, int mode, double cp = double.NaN)
 		{
 			int n = Math.Min(tb.Count, exp.Count);
 			if (n < 20) return null;
@@ -108,9 +112,10 @@ namespace StockOdds
 					for (int q = k; q < n - MinBarsLeft; q++) if (exp[q] < Gate) { j = q; break; }
 					if (j < 0) break;
 				}
-				double S = (mode == 0 && first) ? tb[0].Open : tb[j].Close;
+				bool atOpen = (mode == 0 || mode == 4) && first && j == 0 && (mode == 0 || priorExp < Gate);
+				double S = atOpen ? tb[0].Open : tb[j].Close;
 				if (S <= 0) break;
-				double frac = (mode == 0 && first) ? 1.0 : (double)(n - 1 - j) / n;
+				double frac = atOpen ? 1.0 : (double)(n - 1 - j) / n;
 				double T = Math.Max(1e-9, frac) / 252.0;
 				double kS = StrikeForPutDelta(S, iv, T, NetDelta + WingDelta);
 				double kL = StrikeForPutDelta(S, iv, T, WingDelta);
@@ -127,6 +132,7 @@ namespace StockOdds
 					3 => Math.Min(eAt, Gate) / Math.Max(1e-9, Gate) + 0.5,
 					_ => 1.0
 				};
+				if (GexSizing && !double.IsNaN(cp)) mult *= Math.Min(GexCap, cp);
 				double riskLeg = Risk * mult;
 				legs++; first = false; sumMult += mult;
 
@@ -159,8 +165,101 @@ namespace StockOdds
 			return legs == 0 ? null : new Sess(sym, d, total, legs, priorExp, sumMult);
 		}
 
+		// The configuration as specified: enter at the OPEN when the prior session's closing 5m exposure
+		// was already under the gate, otherwise wait for the first candle under it; bank at delta < 0.10
+		// qualified on spot > short strike; re-arm only on another candle under the gate; size on gex.
+		public static async Task RunFinal()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate; bool xSave = GexSizing;
+			Gate = 0.05;
+
+			List<Sess> Arm(int mode, bool gex, IEnumerable<Input>? univ = null)
+			{
+				GexSizing = gex;
+				var outp = new List<Sess>();
+				foreach (var x in (univ ?? inputs))
+				{
+					var s = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, mode, x.Cp);
+					if (s != null) outp.Add(s);
+				}
+				return outp;
+			}
+			(double mean, double ir, double dd, double wst, double sd) Stat(List<double> r)
+			{
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				return (100 * m, sd > 1e-12 ? m / sd : 0, dd, 100 * r.Min(), sd);
+			}
+
+			var holdAll = Arm(0, false);
+			var worst = holdAll.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+			// gex is scoped to SPY/QQQ: inverted on IWM, pure leverage on GLD
+			var sq = inputs.Where(x => x.Sym is "SPY" or "QQQ").ToList();
+
+			Console.WriteLine($"\n===== THE SPECIFIED CONFIGURATION =====");
+			Console.WriteLine($"gate {Gate:0.00} on prior close OR any candle in session; bank at delta < {FloorDelta:0.00} " +
+				$"qualified; re-arm on another sub-gate candle; cost {CostPct:0.0}%/fill");
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				Console.WriteLine($"\n-- {tag} --");
+				Console.WriteLine($"{"arm",-46} {"sess",5} {"legs/s",7} {"mean/s%",9} {"win%",7} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8}");
+				void Row(string lbl, List<Sess> s, double norm = 1.0)
+				{
+					var f = s.Where(filt).ToList();
+					if (f.Count < 20) { Console.WriteLine($"{lbl,-46} {f.Count,5}  (too few)"); return; }
+					var r = f.Select(x => x.Ret / norm).ToList();
+					var st = Stat(r);
+					Console.WriteLine($"{lbl,-46} {f.Count,5} {f.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
+						$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
+						$"{st.mean / Math.Max(0.01, st.dd),8:0.000}");
+				}
+				Row("hold to expiry, flat [SHIPPED]", holdAll);
+				Row("loop, first entry at dip", Arm(2, false));
+				Row("loop, HYBRID entry (open-or-dip)", Arm(4, false));
+				Console.WriteLine($"   -- SPY+QQQ only, where gex sizing is valid --");
+				Row("  hold, flat", Arm(0, false, sq));
+				Row("  HYBRID loop, flat", Arm(4, false, sq));
+				var gx = Arm(4, true, sq);
+				Row("  HYBRID loop + gex sizing (as shipped)", gx);
+				double mm = gx.Sum(x => x.SumMult) / Math.Max(1, gx.Sum(x => x.Legs));
+				Row($"  HYBRID loop + gex, MEAN-1 (x{mm:0.00} removed)", gx, mm);
+				Console.WriteLine($"   as-shipped runs {100 * Risk * mm:0.0}% average risk vs {100 * Risk:0.0}% flat, so the mean-1 row is");
+				Console.WriteLine($"   the one that is not partly leverage.");
+			}
+			Gate = gSave; GexSizing = xSave;
+		}
+
 		// Cached per-session inputs, so the gate can be swept without refetching or re-deriving anything.
-		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv, double PriorExp);
+		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv, double PriorExp, double Cp);
+
+		private static Dictionary<DateTime, double> LoadCallPut(string symbol)
+		{
+			var m = new Dictionary<DateTime, double>();
+			string dat = symbol.ToUpperInvariant() switch
+				{ "SPY" => "spx", "QQQ" => "qqq", "IWM" => "iwm", "GLD" => "gld", _ => "" };
+			if (dat == "") return m;
+			string path = System.IO.Path.Combine(System.IO.Path.GetFullPath(Universe.DataDir), $"gex_uw_{dat}.csv");
+			if (!System.IO.File.Exists(path)) return m;
+			var lines = System.IO.File.ReadAllLines(path);
+			var h = lines[0].Split(',');
+			int di = Array.IndexOf(h, "date"), ci = Array.IndexOf(h, "call_gex"), pi = Array.IndexOf(h, "put_gex");
+			if (di < 0 || ci < 0 || pi < 0) return m;
+			for (int i = 1; i < lines.Length; i++)
+			{
+				var f = lines[i].Split(',');
+				if (f.Length <= Math.Max(ci, pi)) continue;
+				if (DateTime.TryParse(f[di], CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+					&& double.TryParse(f[ci], NumberStyles.Any, CultureInfo.InvariantCulture, out var cg)
+					&& double.TryParse(f[pi], NumberStyles.Any, CultureInfo.InvariantCulture, out var pg)
+					&& Math.Abs(pg) > 0)
+					m[d.Date] = cg / Math.Abs(pg);
+			}
+			return m;
+		}
 
 		private static async Task<List<Input>> Collect()
 		{
@@ -170,6 +269,7 @@ namespace StockOdds
 				FiveperecentBandTest.UseCalendar(symbol);
 				var daily = await YahooClient.GetBarsAsync(symbol, "1d", 21);
 				var eng = BankrollSimulator.Run(daily, 10_000.0);
+				var cpMap = LoadCallPut(symbol);
 				List<OhlcBar> intra;
 				try { intra = await IntradayClient.GetAsync(symbol, "5m", "60d"); }
 				catch { continue; }
@@ -214,7 +314,8 @@ namespace StockOdds
 					if (!expPath.TryGetValue(dSig, out var pPrev) || pPrev.Count == 0) continue;
 					if (!expPath.TryGetValue(dTr, out var pToday) || !barsOf.TryGetValue(dTr, out var tb)) continue;
 					if (Math.Min(pToday.Count, tb.Count) < 20) continue;
-					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1]));
+					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1],
+						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN));
 				}
 			}
 			return outp;
@@ -316,6 +417,7 @@ namespace StockOdds
 				FiveperecentBandTest.UseCalendar(symbol);
 				var daily = await YahooClient.GetBarsAsync(symbol, "1d", 21);
 				var eng = BankrollSimulator.Run(daily, 10_000.0);
+				var cpMap = LoadCallPut(symbol);
 				List<OhlcBar> intra;
 				try { intra = await IntradayClient.GetAsync(symbol, "5m", "60d"); }
 				catch { continue; }
