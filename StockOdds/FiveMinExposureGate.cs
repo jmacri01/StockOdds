@@ -360,6 +360,40 @@ namespace StockOdds
 					$"{(double)(ge2 + 1) / (it2 + 1),8:0.0000} | EXCLUDED {exs}");
 			}
 
+			// ---- WIN/LOSS DECOMPOSITION BY 5m CANDLE STATE ---------------------------------------------
+			// A credit spread's mean is win_rate * avg_win - loss_rate * avg_loss, and a filter can move
+			// any of those three independently. Splitting them shows WHICH one a gate is actually acting
+			// on: raising the hit rate, shrinking the losses, or neither. Max loss is bounded at -10% of
+			// bankroll by construction (defined risk at the configured stake), so avg loss has a floor.
+			string WkD(DateTime d) => $"{System.Globalization.ISOWeek.GetYear(d)}-W{System.Globalization.ISOWeek.GetWeekOfYear(d):00}";
+			var worstD = all.GroupBy(x => WkD(x.D)).OrderBy(g => g.Average(x => x.R)).First().Key;
+			Console.WriteLine($"\n===== WIN/LOSS BY 5m CANDLE STATE, WITH AND WITHOUT THE < 0.10 GATE =====");
+			Console.WriteLine($"returns are % of bankroll at {100 * Risk:0.#}% risk per trade; a full loss is -{100 * Risk:0.#}%");
+			void WL(string lbl, List<Tr> src)
+			{
+				if (src.Count == 0) { Console.WriteLine($"{lbl,-34}    0        --        --        --        --"); return; }
+				var r = src.Select(x => Risk * x.R).ToList();
+				var w = r.Where(z => z > 0).ToList();
+				var l = r.Where(z => z <= 0).ToList();
+				Console.WriteLine($"{lbl,-34} {r.Count,4} {100.0 * w.Count / r.Count,8:0.0} " +
+					$"{(w.Count > 0 ? 100 * w.Average() : 0),9:+0.0000;-0.0000} {(l.Count > 0 ? 100 * l.Average() : 0),10:+0.0000;-0.0000} " +
+					$"{100 * r.Average(),10:+0.0000;-0.0000} {(l.Count > 0 ? 100 * l.Min() : 0),9:+0.00;-0.00}");
+			}
+			foreach (var (tag, src) in new[] { ("FULL SAMPLE", all), ($"W23 REMOVED", all.Where(x => WkD(x.D) != worstD).ToList()) })
+			{
+				Console.WriteLine($"\n-- {tag} --");
+				Console.WriteLine($"{"state / gate",-34} {"n",4} {"win%",8} {"meanWin%",9} {"meanLoss%",10} {"mean%",10} {"worst%",9}");
+				WL("ALL states, no gate", src);
+				WL("ALL states, exp < 0.10", src.Where(x => x.Exp < 0.10).ToList());
+				WL("ALL states, exp >= 0.10", src.Where(x => x.Exp >= 0.10).ToList());
+				foreach (var s in new[] { ShortTermState.Bull, ShortTermState.BullNeutral, ShortTermState.BearNeutral, ShortTermState.Bear })
+				{
+					WL($"  {s}, no gate", src.Where(x => x.St5 == s).ToList());
+					WL($"  {s}, exp < 0.10", src.Where(x => x.St5 == s && x.Exp < 0.10).ToList());
+					WL($"  {s}, exp >= 0.10", src.Where(x => x.St5 == s && x.Exp >= 0.10).ToList());
+				}
+			}
+
 			// ---- 5m ST Bull CROSSED WITH exposure < 0.20 -----------------------------------------------
 			// Both conditions fail on their own (Bull alone -0.096pp at P 0.604; exp<0.20 +0.022pp), so the
 			// only way this is interesting is if the INTERACTION differs from the main effects. The full
