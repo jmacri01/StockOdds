@@ -45,6 +45,17 @@ namespace StockOdds
 		public static double RatioMax = -1;                  // <= 0 disables
 		public static Dictionary<DateTime, double> Ratio = new();
 
+		// CALL/PUT convention (higher = more call gamma = favourable), distinct from `Ratio` above which
+		// is put/call and gates with >=. Kept separate rather than reusing one dict, because silently
+		// flipping the convention is exactly how a gate ends up inverted.
+		public static Dictionary<DateTime, double> CallPut = new();
+		public static double GexGate = -1;                   // <= 0 disables; skip when callPut < GexGate
+		public static bool GexSizing = false;                // risk = Risk * min(callPut, GexCap)
+		public static double GexCap = 2.0;
+		// 5m exposure gate. Only ~60 days of 5m history exists, so this shrinks the window hard.
+		public static Dictionary<DateTime, double> Exp5 = new();
+		public static double FiveMinGate = -1;               // <= 0 disables; require exposure < gate
+
 		private sealed record Sess(DateTime D, double Ret, int Rolls);
 
 		public static async Task Run(string symbol = "SPY")
@@ -102,6 +113,13 @@ namespace StockOdds
 					if (SkipStBear && isBear) continue;
 					if (SplitStBear && !isBear) continue;        // isolate the state rather than excluding it
 					if (RatioMax > 0 && (!Ratio.TryGetValue(dp, out double rr) || rr >= RatioMax)) continue;
+					// gex gate + 5m gate, both keyed on the PRIOR session so they are known at the open
+					bool haveCp = CallPut.TryGetValue(dp, out double cpv);
+					if (GexGate > 0 && (!haveCp || cpv < GexGate)) continue;
+					if (FiveMinGate > 0 && (!Exp5.TryGetValue(dp, out double e5v) || e5v >= FiveMinGate)) continue;
+					// SIZING is per session and must scale every leg of the session, rolls included, or the
+					// stake would silently reset to flat after the first re-entry.
+					double riskI = Risk * (GexSizing && haveCp ? Math.Min(GexCap, cpv) : 1.0);
 					double iv = h * VolRiskPremium, S0 = bars[0].Open;
 					if (S0 <= 0) continue;
 
@@ -129,14 +147,14 @@ namespace StockOdds
 							if (!trip) continue;
 							if (n - j <= MinBarsLeftToRoll) break;      // too little left to re-arm sensibly
 							double val = Put(Sp, kS, iv, Trem) - Put(Sp, kL, iv, Trem);
-							total += Risk * (cr - val - entryCost - val * CostPct / 100.0) / ml;
+							total += riskI * (cr - val - entryCost - val * CostPct / 100.0) / ml;
 							rolls++; rolled = true; break;
 						}
 						if (!rolled)
 						{
 							double ST = bars[n - 1].Close;
 							double po = -Math.Max(0, kS - ST) + Math.Max(0, kL - ST);
-							total += Risk * (cr + po - entryCost) / ml;
+							total += riskI * (cr + po - entryCost) / ml;
 							break;
 						}
 						k = j;
@@ -362,6 +380,89 @@ namespace StockOdds
 			}
 			Console.WriteLine("\nFloor-only is profit-taking; ceiling-only is rolling a loser. If the combined rule looks");
 			Console.WriteLine("acceptable while one side is clearly bad, the other side is carrying it.");
+
+			// ---- FULL STACK: band roll + gex gate + gex sizing (+ optional 5m gate) --------------------
+			// Layers are added ONE AT A TIME against the same baseline so it stays visible which one moves
+			// the result. The 5m arm is last because it costs most of the window: 5m history is ~60 days,
+			// so it collapses a 2-year backtest to a handful of weeks, and that gate is itself retracted
+			// (its entire effect was 2026-W23).
+			CallPut = LoadCallPutRatio(symbol);
+			if (CallPut.Count > 0)
+			{
+				Console.WriteLine($"{Environment.NewLine}--- FULL STACK on {symbol}: band [0.10,0.30] floor-qualified + gex ---");
+				Console.WriteLine($"{"arm",44} {"sess",6} {"mean/sess%",11} {"win%",7} {"IR",8} {"maxDD%",8} {"CAGR%",10} {"worst%",8}");
+				void Stack(string lbl, List<Sess> s)
+				{
+					if (s.Count < 25) { Console.WriteLine($"{lbl,44} {s.Count,6}   (too few)"); return; }
+					var r = s.Select(x => x.Ret).ToList();
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					double e = 1, pk = 1, dd = 0;
+					foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+					double yrs = Math.Max(0.5, (s.Last().D - s.First().D).TotalDays / 365.25);
+					Console.WriteLine($"{lbl,44} {s.Count,6} {100 * m,11:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,7:0.0} " +
+						$"{(sd > 0 ? m / sd : 0),8:0.000} {dd,8:0.00} {(e > 0 ? (Math.Pow(e, 1 / yrs) - 1) * 100 : -100),10:0.0} {100 * r.Min(),8:0.00}");
+				}
+				GexGate = -1; GexSizing = false; FiveMinGate = -1;
+				Stack("1. hold to expiry, flat [SHIPPED]", Sim(-1, -1));
+				Stack("2. + band roll", Sim(0.10, 0.30, true));
+				GexGate = 1.0;
+				Stack("3. + gex gate (callPut >= 1)", Sim(0.10, 0.30, true));
+				GexSizing = true;
+				Stack("4. + gex sizing (x min(cp,2))", Sim(0.10, 0.30, true));
+				GexGate = -1;
+				Stack("   gex SIZING only, no gex gate", Sim(0.10, 0.30, true));
+				GexGate = 1.0;
+
+				try
+				{
+					var i5 = await IntradayClient.GetAsync(symbol, "5m", "60d");
+					if (i5.Count >= 100)
+					{
+						var e5eng = BankrollSimulator.Run(i5, 10_000.0);
+						Exp5 = new Dictionary<DateTime, double>();
+						for (int k = 0; k < e5eng.Positions.Count && k < e5eng.ReturnDates.Count; k++)
+							Exp5[e5eng.ReturnDates[k].Date] = e5eng.Positions[k];
+						FiveMinGate = 0.10;
+						Console.WriteLine($"   (5m coverage: {Exp5.Count} sessions, {Exp5.Keys.Min():yyyy-MM-dd} -> {Exp5.Keys.Max():yyyy-MM-dd})");
+						Stack("5. + 5m exposure < 0.10  [RETRACTED gate]", Sim(0.10, 0.30, true));
+						GexGate = -1; GexSizing = false;
+						Stack("   5m gate alone, no gex", Sim(0.10, 0.30, true));
+					}
+				}
+				catch (Exception ex) { Console.WriteLine($"   5m unavailable: {ex.Message}"); }
+				GexGate = -1; GexSizing = false; FiveMinGate = -1; Exp5 = new(); CallPut = new();
+			}
+		}
+
+		// call/put (higher = favourable). Deliberately separate from the put/call loader above, because
+		// silently reusing one dictionary across two conventions is how a gate ends up inverted.
+		private static Dictionary<DateTime, double> LoadCallPutRatio(string symbol)
+		{
+			var m = new Dictionary<DateTime, double>();
+			string dat = symbol.ToUpperInvariant() switch
+				{ "SPY" => "spx", "QQQ" => "qqq", "IWM" => "iwm", "GLD" => "gld", _ => "" };
+			if (dat == "") return m;
+			string path = System.IO.Path.Combine(System.IO.Path.GetFullPath(Universe.DataDir), $"gex_uw_{dat}.csv");
+			if (!System.IO.File.Exists(path)) return m;
+			var lines = System.IO.File.ReadAllLines(path);
+			var h = lines[0].Split(',');
+			int di = Array.IndexOf(h, "date"), ci = Array.IndexOf(h, "call_gex"), pi = Array.IndexOf(h, "put_gex");
+			if (di < 0 || ci < 0 || pi < 0) return m;
+			for (int i = 1; i < lines.Length; i++)
+			{
+				var f = lines[i].Split(',');
+				if (f.Length <= Math.Max(ci, pi)) continue;
+				if (DateTime.TryParse(f[di], System.Globalization.CultureInfo.InvariantCulture,
+						System.Globalization.DateTimeStyles.None, out var d)
+					&& double.TryParse(f[ci], System.Globalization.NumberStyles.Any,
+						System.Globalization.CultureInfo.InvariantCulture, out var cg)
+					&& double.TryParse(f[pi], System.Globalization.NumberStyles.Any,
+						System.Globalization.CultureInfo.InvariantCulture, out var pg)
+					&& Math.Abs(pg) > 0)
+					m[d.Date] = cg / Math.Abs(pg);
+			}
+			return m;
 		}
 
 		private static Dictionary<DateTime, double> LoadRatioMap()
