@@ -360,6 +360,38 @@ namespace StockOdds
 					$"{(double)(ge2 + 1) / (it2 + 1),8:0.0000} | EXCLUDED {exs}");
 			}
 
+			// ---- HEAD-TO-HEAD: BearNeutral vs the exposure gate, before and after W23 -------------------
+			// These are largely the SAME sessions (BearNeutral is ~47% of the gate and 25 of its 27 members
+			// sit inside it), so the comparison is not "two rival signals" but "which label better isolates
+			// whatever is there". The only reading that matters is what survives removing the worst week --
+			// full-sample numbers are known to be W23 in disguise.
+			string WkH(DateTime d) => $"{System.Globalization.ISOWeek.GetYear(d)}-W{System.Globalization.ISOWeek.GetWeekOfYear(d):00}";
+			var worstH = all.GroupBy(x => WkH(x.D)).OrderBy(g => g.Average(x => x.R)).First().Key;
+			var allExW = all.Where(x => WkH(x.D) != worstH).ToList();
+			Console.WriteLine($"\n-- HEAD-TO-HEAD: BearNeutral vs exposure gate (worst week = {worstH}) --");
+			Console.WriteLine($"{"rule",-36} {"n",4} {"mean%",9} {"IR",7} | {"n",4} {"mean%",9} {"IR",7}   (right side = W23 removed)");
+			void H2(string lbl, Func<Tr, bool> f)
+			{
+				string Fmt(List<Tr> src)
+				{
+					var t = src.Where(f).ToList();
+					if (t.Count < 5) return $"{t.Count,4}   too few      ";
+					var r = t.Select(x => Risk * x.R).ToList();
+					double m = r.Average();
+					double sd = r.Count > 1 ? Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1)) : 0;
+					return $"{t.Count,4} {100 * m,9:+0.0000;-0.0000} {(sd > 1e-12 ? m / sd : 0),7:0.000}";
+				}
+				Console.WriteLine($"{lbl,-36} {Fmt(all)} | {Fmt(allExW)}");
+			}
+			H2("baseline (no 5m filter)", _ => true);
+			H2("exposure < 0.10", x => x.Exp < 0.10);
+			H2("5m BearNeutral", x => x.St5 == ShortTermState.BearNeutral);
+			H2("BearNeutral & exp < 0.10", x => x.St5 == ShortTermState.BearNeutral && x.Exp < 0.10);
+			H2("exp < 0.10 & NOT BearNeutral", x => x.St5 != ShortTermState.BearNeutral && x.Exp < 0.10);
+			H2("BearNeutral & exp >= 0.10", x => x.St5 == ShortTermState.BearNeutral && x.Exp >= 0.10);
+			Console.WriteLine($"   overlap: {all.Count(x => x.St5 == ShortTermState.BearNeutral)} BearNeutral sessions, " +
+				$"{all.Count(x => x.St5 == ShortTermState.BearNeutral && x.Exp < 0.10)} of them inside the exposure gate");
+
 			// ---- ROBUSTNESS: re-run the whole sweep with the single worst week removed -----------------
 			// If one week drives the result, every threshold that depends on it should move. Thresholds
 			// that survive its removal are measuring something distributed across the sample.
