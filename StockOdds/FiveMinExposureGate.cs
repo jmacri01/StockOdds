@@ -37,6 +37,7 @@ namespace StockOdds
 		public static bool SkipStBear = true;
 		public static double Gate = 0.10;
 		public static string[] Symbols = { "SPY", "QQQ", "IWM", "GLD" };
+		public static int MinNSweep = 15;
 
 		private sealed record Tr(string Sym, DateTime D, double R, double Exp, ShortTermState St5);
 
@@ -296,6 +297,69 @@ namespace StockOdds
 				int n = all.Count(gate);
 				Console.WriteLine($"   {lbl,-34} n={n,4}  edge {100 * Risk * obs,8:+0.0000;-0.0000}pp  p = {(double)(ge + 1) / (iters + 1),6:0.0000}");
 			}
+			// ---- THRESHOLD SWEEP -----------------------------------------------------------------------
+			// The Spearman above already measures the underlying relationship without any cutoff, so a
+			// threshold sweep only carves that same relationship into pieces. What it can legitimately
+			// answer is the SHAPE: a real effect should degrade smoothly away from its best cut, and the
+			// per-instrument signs should hold across neighbouring thresholds. A lone spike at one value
+			// with neighbours that disagree is a split artifact, not a tuned parameter.
+			Console.WriteLine($"\n-- threshold sweep (shipped daily filters ON; Spearman is the cutoff-free reference) --");
+			Console.WriteLine($"{"gate",8} {"n",5} {"%kept",7} {"mean%",10} {"win%",7} {"IR",8} {"maxDD%",8} {"perm p",8}  per-instrument IR");
+			foreach (double gv in new[] { 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40 })
+			{
+				var t = all.Where(x => x.Exp < gv).ToList();
+				if (t.Count < MinNSweep) { Console.WriteLine($"{gv,8:0.00} {t.Count,5}   (too few)"); continue; }
+				var r = t.Select(x => Risk * x.R).ToList();
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var z in r) { e *= 1 + z; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				// permutation for THIS threshold, same construction as above
+				double Obs(List<Tr> src)
+				{
+					var g2 = src.Where(x => x.Exp < gv).Select(x => x.R).ToList();
+					var ng = src.Where(x => x.Exp >= gv).Select(x => x.R).ToList();
+					return (g2.Count > 0 && ng.Count > 0) ? g2.Average() - ng.Average() : 0;
+				}
+				double ob = Obs(all);
+				int ge2 = 0, it2 = 5000;
+				var rnd2 = new Random(20260814);
+				for (int it = 0; it < it2; it++)
+				{
+					var sh = new List<Tr>(all.Count);
+					foreach (var kv in perSym)
+					{
+						var pr = kv.Value.Select(x => (x.Exp, x.St5)).OrderBy(_ => rnd2.Next()).ToList();
+						for (int i = 0; i < kv.Value.Count; i++) sh.Add(kv.Value[i] with { Exp = pr[i].Exp, St5 = pr[i].St5 });
+					}
+					if (Obs(sh) >= ob) ge2++;
+				}
+				string per = string.Join("  ", perSym.Select(kv =>
+				{
+					var q = kv.Value.Where(x => x.Exp < gv).ToList();
+					if (q.Count < 8) return $"{kv.Key}:--";
+					var rr = q.Select(x => Risk * x.R).ToList();
+					double mm = rr.Average();
+					double ss = Math.Sqrt(rr.Sum(z => (z - mm) * (z - mm)) / (rr.Count - 1));
+					return $"{kv.Key}:{(ss > 1e-12 ? mm / ss : 0):0.00}";
+				}));
+				// The EXCLUDED side matters as much as the kept side. A flat kept-curve with a collapsing
+				// complement means the gate works by dropping bad sessions, not by finding good ones --
+				// a different mechanism with a different implication for where to set the threshold.
+				var ex = all.Where(x => x.Exp >= gv).ToList();
+				string exs = "--";
+				if (ex.Count >= 5)
+				{
+					var er = ex.Select(x => Risk * x.R).ToList();
+					double em = er.Average();
+					double esd = er.Count > 1 ? Math.Sqrt(er.Sum(z => (z - em) * (z - em)) / (er.Count - 1)) : 0;
+					exs = $"n={ex.Count,3} {100 * em,8:+0.0000;-0.0000} IR {(esd > 1e-12 ? em / esd : 0),6:0.00}";
+				}
+				Console.WriteLine($"{gv,8:0.00} {t.Count,5} {100.0 * t.Count / all.Count,7:0.0} {100 * m,10:+0.0000;-0.0000} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {(sd > 1e-12 ? m / sd : 0),8:0.000} {dd,8:0.00} " +
+					$"{(double)(ge2 + 1) / (it2 + 1),8:0.0000} | EXCLUDED {exs}");
+			}
+
 			Console.WriteLine($"\n-- permutation test, {iters} shuffles of the (exposure, ST) pair within each instrument --");
 			Permute($"exp < {Gate:0.00}", x => x.Exp < Gate);
 			Permute("NOT 5m Bear", x => x.St5 != ShortTermState.Bear);
