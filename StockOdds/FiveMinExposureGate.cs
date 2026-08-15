@@ -360,6 +360,54 @@ namespace StockOdds
 					$"{(double)(ge2 + 1) / (it2 + 1),8:0.0000} | EXCLUDED {exs}");
 			}
 
+			// ---- 5m ST Bull CROSSED WITH exposure < 0.20 -----------------------------------------------
+			// Both conditions fail on their own (Bull alone -0.096pp at P 0.604; exp<0.20 +0.022pp), so the
+			// only way this is interesting is if the INTERACTION differs from the main effects. The full
+			// 2x2 is shown, since a combined arm alone cannot distinguish "the pair works" from "one half
+			// happens to carry it".
+			string WkB(DateTime d) => $"{System.Globalization.ISOWeek.GetYear(d)}-W{System.Globalization.ISOWeek.GetWeekOfYear(d):00}";
+			var worstB = all.GroupBy(x => WkB(x.D)).OrderBy(g => g.Average(x => x.R)).First().Key;
+			var exWB = all.Where(x => WkB(x.D) != worstB).ToList();
+			var weeksB = exWB.GroupBy(x => WkB(x.D)).ToList();
+			var rndB = new Random(20260814);
+			Console.WriteLine($"\n-- 5m ST Bull x exposure < 0.20 (worst week {worstB} removed on the right) --");
+			Console.WriteLine($"{"rule",-34} {"n",4} {"mean%",9} {"IR",7} | {"n",4} {"mean%",9} {"IR",7} {"edge",9} {"P(<=0)",7}");
+			void B2(string lbl, Func<Tr, bool> f)
+			{
+				string Fmt(List<Tr> src)
+				{
+					var t = src.Where(f).ToList();
+					if (t.Count < 8) return $"{t.Count,4}   too few     ";
+					var r = t.Select(x => Risk * x.R).ToList();
+					double m = r.Average();
+					double sd = r.Count > 1 ? Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1)) : 0;
+					return $"{t.Count,4} {100 * m,9:+0.0000;-0.0000} {(sd > 1e-12 ? m / sd : 0),7:0.000}";
+				}
+				string ed = "       --", ps = "     --";
+				if (exWB.Count(f) >= 8)
+				{
+					double edge = Risk * (exWB.Where(f).Average(x => x.R) - exWB.Average(x => x.R));
+					ed = $"{100 * edge,9:+0.0000;-0.0000}";
+					int n = 0, le = 0;
+					for (int it = 0; it < 3000; it++)
+					{
+						var samp = new List<Tr>(exWB.Count);
+						for (int w = 0; w < weeksB.Count; w++) samp.AddRange(weeksB[rndB.Next(weeksB.Count)]);
+						if (samp.Count(f) < 5) continue;
+						n++;
+						if (Risk * (samp.Where(f).Average(x => x.R) - samp.Average(x => x.R)) <= 0) le++;
+					}
+					ps = n > 0 ? $"{(double)le / n,7:0.000}" : "     --";
+				}
+				Console.WriteLine($"{lbl,-34} {Fmt(all)} | {Fmt(exWB)} {ed} {ps}");
+			}
+			B2("baseline (no 5m filter)", _ => true);
+			B2("exposure < 0.20 alone", x => x.Exp < 0.20);
+			B2("5m Bull alone", x => x.St5 == ShortTermState.Bull);
+			B2("5m Bull & exp < 0.20  <== asked", x => x.St5 == ShortTermState.Bull && x.Exp < 0.20);
+			B2("5m Bull & exp >= 0.20", x => x.St5 == ShortTermState.Bull && x.Exp >= 0.20);
+			B2("NOT Bull & exp < 0.20", x => x.St5 != ShortTermState.Bull && x.Exp < 0.20);
+
 			// ---- HEAD-TO-HEAD: BearNeutral vs the exposure gate, before and after W23 -------------------
 			// These are largely the SAME sessions (BearNeutral is ~47% of the gate and 25 of its 27 members
 			// sit inside it), so the comparison is not "two rival signals" but "which label better isolates
