@@ -81,6 +81,11 @@ namespace StockOdds
 		// the actual traded exposure (clamped/RSI/smoothed/region-adjusted position) applied each bar,
 		// aligned with ReturnDates/StratReturns. Consumed by the options-overlay simulator.
 		public List<double>   Positions { get; set; } = new();
+		// PRE-CLAMP exposure (adjEma), recorded because Positions is clamped to [min, max] and therefore
+		// destroys the sign. Two bars both showing Positions = 0 can sit at adjEma -0.05 or -0.95, which are
+		// very different states; only this series can tell them apart. Diagnostic only -- nothing reads it
+		// inside the engine, so it cannot affect behaviour.
+		public List<double>   RawExposure { get; set; } = new();
 		// RESEARCH diagnostic: was the decision close at/above its KAMA on that bar?
 		public List<bool>     KamaAbove { get; set; } = new();
 		// RESEARCH diagnostic: SIGNED distance of the decision close from its KAMA, in % ((close-kama)/kama*100).
@@ -654,6 +659,8 @@ namespace StockOdds
 			// per-bar return series for Sharpe (strategy = sized/signed, buy&hold = raw move),
 			// over the exact same bars so the two ratios are comparable.
 			var positions = new List<double>();
+			var rawExposures = new List<double>();
+			double lastRaw = double.NaN;
 			var kamaAbove = new List<bool>();
 			var kamaDist = new List<double>();
 			var stStates = new List<ShortTermState>();
@@ -808,6 +815,7 @@ namespace StockOdds
 				// actually size to full (fix the drift-band leaving the position stale-low, e.g. 0.7 instead of 1).
 				if (AccurateFullSizing && adjEma >= maxExp)
 					held = Math.Max(maxExp, Math.Max(maxExp - driftBand, adjEma - driftBand));
+				lastRaw = adjEma;                      // pre-clamp, sign intact
 				double posB = Clamp(held, minExp, maxExp);
 				if (RsiOverlayPeriod > 0) posB = Clamp(posB * rsiMult, minExp, maxExp);
 				return posB;
@@ -1029,6 +1037,7 @@ namespace StockOdds
 				bhReturns.Add(r);
 				returnDates.Add(bar.Date);
 				positions.Add(position);
+				rawExposures.Add(lastRaw);
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
 				stStates.Add(st.Value);
@@ -1067,6 +1076,7 @@ namespace StockOdds
 			result.StratReturns = stratReturns;
 			result.ReturnDates = returnDates;
 			result.Positions = positions;
+			result.RawExposure = rawExposures;
 			result.KamaAbove = kamaAbove;
 			result.KamaDist = kamaDist;
 			result.StState = stStates;

@@ -275,8 +275,89 @@ namespace StockOdds
 			Gate = gSave; GexSizing = xSave;
 		}
 
+		// RAW vs CLAMPED exposure as the arming signal.
+		//
+		// `Positions` is clamped to [min, max] with min = 0, so every bearish reading collapses onto zero.
+		// The pre-clamp series keeps the sign, and the two are NOT interchangeable: "position < 0.05" admits
+		// every negative bar as well, so it is really "raw < 0.05" and cannot distinguish a tape sitting just
+		// under flat from one pinned at -0.9. If the loop's edge comes from trading a genuinely washed-out
+		// tape, a raw threshold should isolate it more sharply. If it comes from something the clamp already
+		// captures, raw gating will add nothing and the two will score the same.
+		public static async Task RunRawCompare()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate;
+
+			List<Sess> Arm(int mode, double gate, bool useRaw)
+			{
+				Gate = gate; GexSizing = false; ArmBars = 1;
+				var outp = new List<Sess>();
+				foreach (var x in inputs)
+				{
+					var series = useRaw ? x.Raw : x.Exp;
+					double prior = useRaw ? x.PriorRaw : x.PriorExp;
+					if (series == null || series.Count == 0 || double.IsNaN(prior)) continue;
+					var s = Simulate(x.Sym, x.D, x.Bars, series, x.Iv, prior, mode, x.Cp);
+					if (s != null) outp.Add(s);
+				}
+				return outp;
+			}
+			(double mean, double ir, double dd, double wst) Stat(List<double> r)
+			{
+				double m = r.Average();
+				double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+				double e = 1, pk = 1, dd = 0;
+				foreach (var x in r) { e *= 1 + x; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+				return (100 * m, sd > 1e-12 ? m / sd : 0, dd, 100 * r.Min());
+			}
+
+			var hold = Arm(0, 0.05, false);
+			var worst = hold.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+
+			// What does the raw series actually look like? A threshold is meaningless without its coverage.
+			var allRaw = inputs.SelectMany(x => x.Raw ?? new List<double>()).Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			var allPos = inputs.SelectMany(x => x.Exp ?? new List<double>()).Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			Console.WriteLine($"{Environment.NewLine}===== RAW (pre-clamp) vs POSITION (clamped) AS THE ARMING SIGNAL =====");
+			Console.WriteLine($"{inputs.Count} sessions, {allRaw.Count} 5m bars");
+			if (allRaw.Count > 10 && allPos.Count > 10)
+			{
+				Console.WriteLine($"  raw      : min {allRaw[0]:+0.000;-0.000}  p10 {allRaw[allRaw.Count / 10]:+0.000;-0.000}  " +
+					$"median {allRaw[allRaw.Count / 2]:+0.000;-0.000}  p90 {allRaw[9 * allRaw.Count / 10]:+0.000;-0.000}  max {allRaw[^1]:+0.000;-0.000}");
+				Console.WriteLine($"  position : min {allPos[0]:+0.000;-0.000}  p10 {allPos[allPos.Count / 10]:+0.000;-0.000}  " +
+					$"median {allPos[allPos.Count / 2]:+0.000;-0.000}  p90 {allPos[9 * allPos.Count / 10]:+0.000;-0.000}  max {allPos[^1]:+0.000;-0.000}");
+				Console.WriteLine($"  bars with raw < 0 : {100.0 * allRaw.Count(v => v < 0) / allRaw.Count:0.0}%   " +
+					$"raw < -0.5 : {100.0 * allRaw.Count(v => v < -0.5) / allRaw.Count:0.0}%   " +
+					$"raw < -0.9 : {100.0 * allRaw.Count(v => v < -0.9) / allRaw.Count:0.0}%   " +
+					$"position == 0 : {100.0 * allPos.Count(v => v <= 1e-9) / allPos.Count:0.0}%");
+			}
+
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				Console.WriteLine($"{Environment.NewLine}-- {tag} --");
+				Console.WriteLine($"{"arm",-34} {"sess",5} {"legs/s",7} {"mean/s%",9} {"win%",7} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8}");
+				void Row(string lbl, List<Sess> s)
+				{
+					var f = s.Where(filt).ToList();
+					if (f.Count < 20) { Console.WriteLine($"{lbl,-34} {f.Count,5}  (too few / never arms)"); return; }
+					var r = f.Select(x => x.Ret).ToList();
+					var st = Stat(r);
+					Console.WriteLine($"{lbl,-34} {f.Count,5} {f.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
+						$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
+						$"{st.mean / Math.Max(0.01, st.dd),8:0.000}");
+				}
+				Row("hold to expiry [SHIPPED]", hold);
+				Console.WriteLine($"   -- gate on POSITION (clamped, current) --");
+				foreach (double g in new[] { 0.05, 0.10, 0.20 }) Row($"  position < {g:0.00}", Arm(4, g, false));
+				Console.WriteLine($"   -- gate on RAW (pre-clamp, sign intact) --");
+				foreach (double g in new[] { 0.01, 0.02, 0.05, 0.10, 0.20 }) Row($"  raw < {g:0.00}", Arm(4, g, true));
+			}
+			Gate = gSave;
+		}
+
 		// Cached per-session inputs, so the gate can be swept without refetching or re-deriving anything.
-		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv, double PriorExp, double Cp);
+		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv,
+			double PriorExp, double Cp, List<double> Raw, double PriorRaw);
 
 		private static Dictionary<DateTime, double> LoadCallPut(string symbol)
 		{
@@ -338,11 +419,16 @@ namespace StockOdds
 				}
 				var iEng = BankrollSimulator.Run(intra, 10_000.0);
 				var expPath = new Dictionary<DateTime, List<double>>();
+				var rawPath = new Dictionary<DateTime, List<double>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
 					if (!expPath.TryGetValue(d, out var lst)) expPath[d] = lst = new List<double>();
 					lst.Add(iEng.Positions[k]);
+					if (!rawPath.TryGetValue(d, out var rl)) rawPath[d] = rl = new List<double>();
+					// adjEma is a PERCENT (min/maxExp are percents) whereas Positions is a fraction -- rescale
+					// so a single threshold means the same thing against either series.
+					rl.Add(k < iEng.RawExposure.Count ? iEng.RawExposure[k] / 100.0 : double.NaN);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 
@@ -356,8 +442,11 @@ namespace StockOdds
 					if (!expPath.TryGetValue(dSig, out var pPrev) || pPrev.Count == 0) continue;
 					if (!expPath.TryGetValue(dTr, out var pToday) || !barsOf.TryGetValue(dTr, out var tb)) continue;
 					if (Math.Min(pToday.Count, tb.Count) < 20) continue;
+					rawPath.TryGetValue(dSig, out var rPrev);
+					rawPath.TryGetValue(dTr, out var rToday);
+					if (rToday == null || rPrev == null || rPrev.Count == 0) continue;
 					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1],
-						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN));
+						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN, rToday, rPrev[^1]));
 				}
 			}
 			return outp;
@@ -486,11 +575,16 @@ namespace StockOdds
 				}
 				var iEng = BankrollSimulator.Run(intra, 10_000.0);
 				var expPath = new Dictionary<DateTime, List<double>>();
+				var rawPath = new Dictionary<DateTime, List<double>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
 					if (!expPath.TryGetValue(d, out var lst)) expPath[d] = lst = new List<double>();
 					lst.Add(iEng.Positions[k]);
+					if (!rawPath.TryGetValue(d, out var rl)) rawPath[d] = rl = new List<double>();
+					// adjEma is a PERCENT (min/maxExp are percents) whereas Positions is a fraction -- rescale
+					// so a single threshold means the same thing against either series.
+					rl.Add(k < iEng.RawExposure.Count ? iEng.RawExposure[k] / 100.0 : double.NaN);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 
