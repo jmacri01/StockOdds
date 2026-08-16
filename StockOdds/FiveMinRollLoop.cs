@@ -47,6 +47,9 @@ namespace StockOdds
 		public static int SizeMode = 0;
 		// Gex sizing: leg risk x min(callPut, 2). The ratio is a DAILY value, so every leg in a session
 		// carries the same multiplier. Scoped to SPY/QQQ -- it is inverted on IWM and pure leverage on GLD.
+		// Consecutive candles that must sit under Gate before arming. 1 = the level rule tested so far.
+		// Persistence is a different lever from the threshold: it trades entry PROMPTNESS for confirmation.
+		public static int ArmBars = 1;
 		public static bool GexSizing = false;
 		public static double GexCap = 2.0;
 
@@ -105,11 +108,23 @@ namespace StockOdds
 				// ---- find the entry bar for this leg
 				int j;
 				if (mode == 0 && first) j = 0;
+				// HYBRID: the prior session already closed under the gate, so the condition is satisfied
+				// before the bell -- enter at the open rather than waiting for a fresh candle to confirm
+				// something already true. Only meaningful at ArmBars == 1; with a persistence requirement
+				// there is no prior-session run to inspect, so it falls through to the scan.
+				else if (mode == 4 && first && ArmBars == 1 && priorExp < Gate) j = 0;
 				else if (mode == 3 && !first) j = k;
 				else
 				{
 					j = -1;
-					for (int q = k; q < n - MinBarsLeft; q++) if (exp[q] < Gate) { j = q; break; }
+					for (int q = k; q < n - MinBarsLeft; q++)
+						{
+							// ArmBars consecutive candles must sit under the gate, the run ending at q
+							if (q + 1 < ArmBars) continue;
+							bool ok = true;
+							for (int b = 0; b < ArmBars; b++) if (exp[q - b] >= Gate) { ok = false; break; }
+							if (ok) { j = q; break; }
+						}
 					if (j < 0) break;
 				}
 				bool atOpen = (mode == 0 || mode == 4) && first && j == 0 && (mode == 0 || priorExp < Gate);
@@ -230,6 +245,33 @@ namespace StockOdds
 				Console.WriteLine($"   as-shipped runs {100 * Risk * mm:0.0}% average risk vs {100 * Risk:0.0}% flat, so the mean-1 row is");
 				Console.WriteLine($"   the one that is not partly leverage.");
 			}
+			// ---- PERSISTENCE vs LEVEL, inside the loop -------------------------------------------------
+			// "5 candles under 0.20" against "1 candle under 0.05". Both wait for a quiet tape; one asks for
+			// a DEEPER reading, the other for a more SUSTAINED one. In the single-entry framework persistence
+			// lost outright, but the gate already changed meaning once between session-filter and re-entry
+			// timer, so it is re-tested here rather than assumed.
+			Console.WriteLine($"{Environment.NewLine}===== PERSISTENCE vs LEVEL inside the loop =====");
+			Console.WriteLine($"{"arm",-34} {"sess",5} {"legs/s",7} {"mean/s%",9} {"win%",7} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8}");
+			int aSave = ArmBars;
+			void PRow(string lbl, int bars, double gate, Func<Sess, bool> filt)
+			{
+				ArmBars = bars; Gate = gate; GexSizing = false;
+				var s2 = Arm(4, false).Where(filt).ToList();
+				if (s2.Count < 20) { Console.WriteLine($"{lbl,-34} {s2.Count,5}  (too few)"); return; }
+				var r = s2.Select(x => x.Ret).ToList();
+				var st = Stat(r);
+				Console.WriteLine($"{lbl,-34} {s2.Count,5} {s2.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
+					$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
+					$"{st.mean / Math.Max(0.01, st.dd),8:0.000}");
+			}
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				Console.WriteLine($"{Environment.NewLine}-- {tag} --");
+				foreach (int bars in new[] { 1, 3, 5, 8 })
+					foreach (double gate in new[] { 0.05, 0.10, 0.20 })
+						PRow($"{bars} candle{(bars == 1 ? "" : "s")} under {gate:0.00}", bars, gate, filt);
+			}
+			ArmBars = aSave;
 			Gate = gSave; GexSizing = xSave;
 		}
 
