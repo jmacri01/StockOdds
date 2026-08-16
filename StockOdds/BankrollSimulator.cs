@@ -86,6 +86,11 @@ namespace StockOdds
 		// very different states; only this series can tell them apart. Diagnostic only -- nothing reads it
 		// inside the engine, so it cannot affect behaviour.
 		public List<double>   RawExposure { get; set; } = new();
+		// The PLAIN EMA of the (LT,ST) target, BEFORE the long-bias skew. This is the series that actually
+		// goes negative: adjEma = |ema|*biasEma + ema, so where ema < 0 the skew rescales it by (1 - biasEma)
+		// and a bias above 1.0 flips the sign outright. Both are recorded because they are different signals.
+		public List<double>   EmaExposure { get; set; } = new();
+		public List<double>   BiasEma { get; set; } = new();
 		// RESEARCH diagnostic: was the decision close at/above its KAMA on that bar?
 		public List<bool>     KamaAbove { get; set; } = new();
 		// RESEARCH diagnostic: SIGNED distance of the decision close from its KAMA, in % ((close-kama)/kama*100).
@@ -660,7 +665,9 @@ namespace StockOdds
 			// over the exact same bars so the two ratios are comparable.
 			var positions = new List<double>();
 			var rawExposures = new List<double>();
-			double lastRaw = double.NaN;
+			var emaExposures = new List<double>();
+			var biasEmas = new List<double>();
+			double lastRaw = double.NaN, lastEma = double.NaN, lastBias = double.NaN;
 			var kamaAbove = new List<bool>();
 			var kamaDist = new List<double>();
 			var stStates = new List<ShortTermState>();
@@ -815,7 +822,9 @@ namespace StockOdds
 				// actually size to full (fix the drift-band leaving the position stale-low, e.g. 0.7 instead of 1).
 				if (AccurateFullSizing && adjEma >= maxExp)
 					held = Math.Max(maxExp, Math.Max(maxExp - driftBand, adjEma - driftBand));
-				lastRaw = adjEma;                      // pre-clamp, sign intact
+				lastRaw = adjEma;                      // pre-clamp, post-bias
+				lastEma = ema;                         // pre-clamp, PRE-bias -- the series that goes negative
+				lastBias = biasEma;
 				double posB = Clamp(held, minExp, maxExp);
 				if (RsiOverlayPeriod > 0) posB = Clamp(posB * rsiMult, minExp, maxExp);
 				return posB;
@@ -1038,6 +1047,8 @@ namespace StockOdds
 				returnDates.Add(bar.Date);
 				positions.Add(position);
 				rawExposures.Add(lastRaw);
+				emaExposures.Add(lastEma);
+				biasEmas.Add(lastBias);
 				kamaAbove.Add(!double.IsNaN(kama) && prev.Close >= kama);
 				kamaDist.Add(double.IsNaN(kama) || kama <= 0 ? double.NaN : (prev.Close - kama) / kama * 100.0);
 				stStates.Add(st.Value);
@@ -1077,6 +1088,8 @@ namespace StockOdds
 			result.ReturnDates = returnDates;
 			result.Positions = positions;
 			result.RawExposure = rawExposures;
+			result.EmaExposure = emaExposures;
+			result.BiasEma = biasEmas;
 			result.KamaAbove = kamaAbove;
 			result.KamaDist = kamaDist;
 			result.StState = stStates;

@@ -289,16 +289,16 @@ namespace StockOdds
 			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
 			double gSave = Gate;
 
-			List<Sess> Arm(int mode, double gate, bool useRaw)
+			List<Sess> Arm(int mode, double gate, int series)
 			{
 				Gate = gate; GexSizing = false; ArmBars = 1;
 				var outp = new List<Sess>();
 				foreach (var x in inputs)
 				{
-					var series = useRaw ? x.Raw : x.Exp;
-					double prior = useRaw ? x.PriorRaw : x.PriorExp;
-					if (series == null || series.Count == 0 || double.IsNaN(prior)) continue;
-					var s = Simulate(x.Sym, x.D, x.Bars, series, x.Iv, prior, mode, x.Cp);
+					var sel = series == 2 ? x.Ema : series == 1 ? x.Raw : x.Exp;
+					double prior = series == 2 ? x.PriorEma : series == 1 ? x.PriorRaw : x.PriorExp;
+					if (sel == null || sel.Count == 0 || double.IsNaN(prior)) continue;
+					var s = Simulate(x.Sym, x.D, x.Bars, sel, x.Iv, prior, mode, x.Cp);
 					if (s != null) outp.Add(s);
 				}
 				return outp;
@@ -312,12 +312,13 @@ namespace StockOdds
 				return (100 * m, sd > 1e-12 ? m / sd : 0, dd, 100 * r.Min());
 			}
 
-			var hold = Arm(0, 0.05, false);
+			var hold = Arm(0, 0.05, 0);
 			var worst = hold.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
 
 			// What does the raw series actually look like? A threshold is meaningless without its coverage.
 			var allRaw = inputs.SelectMany(x => x.Raw ?? new List<double>()).Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
 			var allPos = inputs.SelectMany(x => x.Exp ?? new List<double>()).Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			var allEma = inputs.SelectMany(x => x.Ema ?? new List<double>()).Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
 			Console.WriteLine($"{Environment.NewLine}===== RAW (pre-clamp) vs POSITION (clamped) AS THE ARMING SIGNAL =====");
 			Console.WriteLine($"{inputs.Count} sessions, {allRaw.Count} 5m bars");
 			if (allRaw.Count > 10 && allPos.Count > 10)
@@ -326,6 +327,13 @@ namespace StockOdds
 					$"median {allRaw[allRaw.Count / 2]:+0.000;-0.000}  p90 {allRaw[9 * allRaw.Count / 10]:+0.000;-0.000}  max {allRaw[^1]:+0.000;-0.000}");
 				Console.WriteLine($"  position : min {allPos[0]:+0.000;-0.000}  p10 {allPos[allPos.Count / 10]:+0.000;-0.000}  " +
 					$"median {allPos[allPos.Count / 2]:+0.000;-0.000}  p90 {allPos[9 * allPos.Count / 10]:+0.000;-0.000}  max {allPos[^1]:+0.000;-0.000}");
+				if (allEma.Count > 10)
+					Console.WriteLine($"  ema      : min {allEma[0]:+0.000;-0.000}  p10 {allEma[allEma.Count / 10]:+0.000;-0.000}  " +
+						$"median {allEma[allEma.Count / 2]:+0.000;-0.000}  p90 {allEma[9 * allEma.Count / 10]:+0.000;-0.000}  max {allEma[^1]:+0.000;-0.000}");
+				Console.WriteLine($"  bars with EMA < 0 : {100.0 * allEma.Count(v => v < 0) / Math.Max(1, allEma.Count):0.0}%   " +
+					$"ema < -0.25 : {100.0 * allEma.Count(v => v < -0.25) / Math.Max(1, allEma.Count):0.0}%   " +
+					$"ema < -0.50 : {100.0 * allEma.Count(v => v < -0.50) / Math.Max(1, allEma.Count):0.0}%   " +
+					$"ema < -0.90 : {100.0 * allEma.Count(v => v < -0.90) / Math.Max(1, allEma.Count):0.0}%");
 				Console.WriteLine($"  bars with raw < 0 : {100.0 * allRaw.Count(v => v < 0) / allRaw.Count:0.0}%   " +
 					$"raw < -0.5 : {100.0 * allRaw.Count(v => v < -0.5) / allRaw.Count:0.0}%   " +
 					$"raw < -0.9 : {100.0 * allRaw.Count(v => v < -0.9) / allRaw.Count:0.0}%   " +
@@ -335,29 +343,77 @@ namespace StockOdds
 			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
 			{
 				Console.WriteLine($"{Environment.NewLine}-- {tag} --");
-				Console.WriteLine($"{"arm",-34} {"sess",5} {"legs/s",7} {"mean/s%",9} {"win%",7} {"IR",8} {"maxDD%",8} {"worst%",8} {"ret/DD",8}");
+				// UNIVERSE = every eligible session. Mode 0 always arms, so the hold arm's count IS the
+				// universe. Arms that skip sessions must be charged for them: `perSess` divides by the
+				// universe rather than by the sessions that happened to trade, which is what stops a
+				// selective rule being flattered by its own selectivity. `mean/s%` is the traded-only
+				// figure, kept alongside so the difference between the two is visible.
+				int universe = hold.Where(filt).Count();
+				Console.WriteLine($"{"arm",-30} {"sess",5} {"%univ",6} {"legs/s",7} {"mean/s%",9} {"perSess%",9} {"win%",6} {"IR",7} {"maxDD%",7} {"worst%",7} {"ret/DD",7}");
 				void Row(string lbl, List<Sess> s)
 				{
 					var f = s.Where(filt).ToList();
-					if (f.Count < 20) { Console.WriteLine($"{lbl,-34} {f.Count,5}  (too few / never arms)"); return; }
+					if (f.Count < 20) { Console.WriteLine($"{lbl,-30} {f.Count,5}  (too few / never arms)"); return; }
 					var r = f.Select(x => x.Ret).ToList();
 					var st = Stat(r);
-					Console.WriteLine($"{lbl,-34} {f.Count,5} {f.Average(x => x.Legs),7:0.00} {st.mean,9:+0.0000;-0.0000} " +
-						$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
-						$"{st.mean / Math.Max(0.01, st.dd),8:0.000}");
+					double perSess = 100.0 * r.Sum() / Math.Max(1, universe);
+					// drawdown on the ZERO-FILLED series, so untraded sessions are flat rather than absent
+					var zf = new List<double>();
+					var traded = f.ToDictionary(x => (x.Sym, x.D), x => x.Ret);
+					foreach (var h in hold.Where(filt)) zf.Add(traded.TryGetValue((h.Sym, h.D), out var v) ? v : 0.0);
+					double e2 = 1, pk2 = 1, dd2 = 0;
+					foreach (var x in zf) { e2 *= 1 + x; if (e2 <= 0) { e2 = 0; break; } if (e2 > pk2) pk2 = e2; double q = (pk2 - e2) / pk2 * 100; if (q > dd2) dd2 = q; }
+					Console.WriteLine($"{lbl,-30} {f.Count,5} {100.0 * f.Count / Math.Max(1, universe),6:0.0} {f.Average(x => x.Legs),7:0.00} " +
+						$"{st.mean,9:+0.0000;-0.0000} {perSess,9:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,6:0.0} " +
+						$"{st.ir,7:0.000} {dd2,7:0.00} {st.wst,7:0.00} {perSess / Math.Max(0.01, dd2),7:0.000}");
 				}
 				Row("hold to expiry [SHIPPED]", hold);
 				Console.WriteLine($"   -- gate on POSITION (clamped, current) --");
-				foreach (double g in new[] { 0.05, 0.10, 0.20 }) Row($"  position < {g:0.00}", Arm(4, g, false));
+				foreach (double g in new[] { 0.05, 0.10, 0.20 }) Row($"  position < {g:0.00}", Arm(4, g, 0));
 				Console.WriteLine($"   -- gate on RAW (pre-clamp, sign intact) --");
-				foreach (double g in new[] { 0.01, 0.02, 0.05, 0.10, 0.20 }) Row($"  raw < {g:0.00}", Arm(4, g, true));
+				foreach (double g in new[] { 0.01, 0.05, 0.10 }) Row($"  adjEma < {g:0.00}", Arm(4, g, 1));
+				Console.WriteLine($"   -- gate on EMA (pre-bias -- the line that goes negative) --");
+				foreach (double g in new[] { -0.90, -0.75, -0.50, -0.25, 0.00, 0.25, 0.50 }) Row($"  ema < {g,5:+0.00;-0.00}", Arm(4, g, 2));
 			}
 			Gate = gSave;
 		}
 
+		// One-off unit probe: print the three series side by side so the scales are established by
+		// observation rather than assumed. adjEma = |ema|*biasEma + ema, so if biasEma is large the
+		// magnitude term dominates and the SIGN of ema stops reaching the position at all.
+		public static async Task ProbeUnits()
+		{
+			FiveperecentBandTest.UseCalendar("SPY");
+			var intra = await IntradayClient.GetAsync("SPY", "5m", "60d");
+			var e = BankrollSimulator.Run(intra, 10_000.0);
+			Console.WriteLine($"{Environment.NewLine}=== UNIT PROBE (SPY 5m, native units, no rescaling) ===");
+			Console.WriteLine($"{"bar",5} {"ema",10} {"biasEma",10} {"adjEma",10} {"position",10}");
+			int shown = 0;
+			for (int i = 0; i < e.Positions.Count && shown < 12; i++)
+			{
+				if (i < e.EmaExposure.Count && e.EmaExposure[i] < -0.2 && shown < 6)
+				{
+					Console.WriteLine($"{i,5} {e.EmaExposure[i],10:+0.0000;-0.0000} {e.BiasEma[i],10:0.0000} " +
+						$"{e.RawExposure[i],10:+0.0000;-0.0000} {e.Positions[i],10:0.0000}   <- ema strongly NEGATIVE");
+					shown++;
+				}
+			}
+			for (int i = 0; i < Math.Min(6, e.Positions.Count); i++)
+				Console.WriteLine($"{i,5} {e.EmaExposure[i],10:+0.0000;-0.0000} {e.BiasEma[i],10:0.0000} " +
+					$"{e.RawExposure[i],10:+0.0000;-0.0000} {e.Positions[i],10:0.0000}");
+			var ema = e.EmaExposure.Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			var bias = e.BiasEma.Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			var adj = e.RawExposure.Where(v => !double.IsNaN(v)).OrderBy(v => v).ToList();
+			Console.WriteLine($"ema    range [{ema[0]:+0.000;-0.000}, {ema[^1]:+0.000;-0.000}]  neg on {100.0 * ema.Count(v => v < 0) / ema.Count:0.0}%");
+			Console.WriteLine($"biasEma range [{bias[0]:0.000}, {bias[^1]:0.000}]  median {bias[bias.Count / 2]:0.000}");
+			Console.WriteLine($"adjEma range [{adj[0]:+0.000;-0.000}, {adj[^1]:+0.000;-0.000}]  neg on {100.0 * adj.Count(v => v < 0) / adj.Count:0.0}%");
+			Console.WriteLine($"position range [{e.Positions.Min():0.000}, {e.Positions.Max():0.000}]");
+		}
+
 		// Cached per-session inputs, so the gate can be swept without refetching or re-deriving anything.
 		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv,
-			double PriorExp, double Cp, List<double> Raw, double PriorRaw);
+			double PriorExp, double Cp, List<double> Raw, double PriorRaw,
+			List<double> Ema, double PriorEma);
 
 		private static Dictionary<DateTime, double> LoadCallPut(string symbol)
 		{
@@ -420,15 +476,19 @@ namespace StockOdds
 				var iEng = BankrollSimulator.Run(intra, 10_000.0);
 				var expPath = new Dictionary<DateTime, List<double>>();
 				var rawPath = new Dictionary<DateTime, List<double>>();
+				var emaPath = new Dictionary<DateTime, List<double>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
 					if (!expPath.TryGetValue(d, out var lst)) expPath[d] = lst = new List<double>();
 					lst.Add(iEng.Positions[k]);
+					// adjEma and ema are PERCENTS (min/maxExp are percents) whereas Positions is a fraction --
+					// rescale so one threshold means the same thing against any of the three series.
 					if (!rawPath.TryGetValue(d, out var rl)) rawPath[d] = rl = new List<double>();
-					// adjEma is a PERCENT (min/maxExp are percents) whereas Positions is a fraction -- rescale
-					// so a single threshold means the same thing against either series.
 					rl.Add(k < iEng.RawExposure.Count ? iEng.RawExposure[k] / 100.0 : double.NaN);
+					// the PRE-BIAS ema -- this is the plotted "EMA (raw)" line, and the one that goes negative
+					if (!emaPath.TryGetValue(d, out var el)) emaPath[d] = el = new List<double>();
+					el.Add(k < iEng.EmaExposure.Count ? iEng.EmaExposure[k] : double.NaN);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 
@@ -444,9 +504,13 @@ namespace StockOdds
 					if (Math.Min(pToday.Count, tb.Count) < 20) continue;
 					rawPath.TryGetValue(dSig, out var rPrev);
 					rawPath.TryGetValue(dTr, out var rToday);
+					emaPath.TryGetValue(dSig, out var ePrev);
+					emaPath.TryGetValue(dTr, out var eToday);
 					if (rToday == null || rPrev == null || rPrev.Count == 0) continue;
+					if (eToday == null || ePrev == null || ePrev.Count == 0) continue;
 					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1],
-						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN, rToday, rPrev[^1]));
+						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN, rToday, rPrev[^1],
+						eToday, ePrev[^1]));
 				}
 			}
 			return outp;
@@ -576,15 +640,19 @@ namespace StockOdds
 				var iEng = BankrollSimulator.Run(intra, 10_000.0);
 				var expPath = new Dictionary<DateTime, List<double>>();
 				var rawPath = new Dictionary<DateTime, List<double>>();
+				var emaPath = new Dictionary<DateTime, List<double>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
 					if (!expPath.TryGetValue(d, out var lst)) expPath[d] = lst = new List<double>();
 					lst.Add(iEng.Positions[k]);
+					// adjEma and ema are PERCENTS (min/maxExp are percents) whereas Positions is a fraction --
+					// rescale so one threshold means the same thing against any of the three series.
 					if (!rawPath.TryGetValue(d, out var rl)) rawPath[d] = rl = new List<double>();
-					// adjEma is a PERCENT (min/maxExp are percents) whereas Positions is a fraction -- rescale
-					// so a single threshold means the same thing against either series.
 					rl.Add(k < iEng.RawExposure.Count ? iEng.RawExposure[k] / 100.0 : double.NaN);
+					// the PRE-BIAS ema -- this is the plotted "EMA (raw)" line, and the one that goes negative
+					if (!emaPath.TryGetValue(d, out var el)) emaPath[d] = el = new List<double>();
+					el.Add(k < iEng.EmaExposure.Count ? iEng.EmaExposure[k] : double.NaN);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 
