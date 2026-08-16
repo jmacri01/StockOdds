@@ -7,6 +7,13 @@ using System.Threading.Tasks;
 namespace StockOdds
 {
 	// ================================================================================================
+	// WHAT IS SHIPPED, AND WHAT IS A BENCHMARK HERE. The indicator carries TWO rules. On a DAILY chart
+	// it enters at the open and HOLDS TO EXPIRY. On a 5-MINUTE chart it runs the loop below: arm when
+	// exposure < 0.05, bank at net delta < 0.10 qualified on spot > short strike, re-arm. This file is
+	// 5m-only, so the shipped behaviour for this timeframe is the LOOP -- the hold-to-expiry row is the
+	// DAILY rule included as a benchmark, not what the indicator would tell you to do on a 5m chart.
+	// (It was previously labelled [SHIPPED], which implied the opposite.)
+	//
 	// SCAN EVERY 5m CANDLE: enter on exposure < 0.10, bank the winner at delta < 0.10, re-enter when
 	// exposure is low again, repeat until the close.
 	//
@@ -53,7 +60,8 @@ namespace StockOdds
 		public static bool GexSizing = false;
 		public static double GexCap = 2.0;
 
-		private sealed record Sess(string Sym, DateTime D, double Ret, int Legs, double PriorExp, double SumMult);
+		private sealed record Sess(string Sym, DateTime D, double Ret, int Legs, double PriorExp, double SumMult,
+			double EntryEma = double.NaN);
 
 		private static double NormCdf(double x)
 		{
@@ -93,13 +101,13 @@ namespace StockOdds
 		// mode: 0 = single entry at open, hold      1 = single entry at first dip, hold
 		//       2 = loop, re-enter only when exposure < Gate    3 = loop, re-enter at the next bar
 		private static Sess? Simulate(string sym, DateTime d, List<OhlcBar> tb, List<double> exp, double iv,
-			double priorExp, int mode, double cp = double.NaN)
+			double priorExp, int mode, double cp = double.NaN, List<double>? emaSeries = null)
 		{
 			int n = Math.Min(tb.Count, exp.Count);
 			if (n < 20) return null;
 			double ST = tb[n - 1].Close;
 			if (ST <= 0) return null;
-			double total = 0; int legs = 0; double sumMult = 0;
+			double total = 0; int legs = 0; double sumMult = 0; double entryEma = double.NaN;
 			int k = 0;
 			bool first = true;
 
@@ -149,6 +157,9 @@ namespace StockOdds
 				};
 				if (GexSizing && !double.IsNaN(cp)) mult *= Math.Min(GexCap, cp);
 				double riskLeg = Risk * mult;
+				// record the RAW ema at the moment this session first armed -- diagnostic only, it does not
+				// gate anything, so the traded set is identical with and without it
+				if (legs == 0 && emaSeries != null && j < emaSeries.Count) entryEma = emaSeries[j];
 				legs++; first = false; sumMult += mult;
 
 				// ---- walk forward looking for the floor-qualified exit
@@ -177,7 +188,7 @@ namespace StockOdds
 				if (mode == 0 || mode == 1) break;                    // single-entry modes stop after one leg
 				k = e + 1;
 			}
-			return legs == 0 ? null : new Sess(sym, d, total, legs, priorExp, sumMult);
+			return legs == 0 ? null : new Sess(sym, d, total, legs, priorExp, sumMult, entryEma);
 		}
 
 		// The configuration as specified: enter at the OPEN when the prior session's closing 5m exposure
@@ -232,7 +243,7 @@ namespace StockOdds
 						$"{100.0 * r.Count(z => z > 0) / r.Count,7:0.0} {st.ir,8:0.000} {st.dd,8:0.00} {st.wst,8:0.00} " +
 						$"{st.mean / Math.Max(0.01, st.dd),8:0.000}");
 				}
-				Row("hold to expiry, flat [SHIPPED]", holdAll);
+				Row("hold to expiry, flat [1D rule = benchmark]", holdAll);
 				Row("loop, first entry at dip", Arm(2, false));
 				Row("loop, HYBRID entry (open-or-dip)", Arm(4, false));
 				Console.WriteLine($"   -- SPY+QQQ only, where gex sizing is valid --");
@@ -367,13 +378,86 @@ namespace StockOdds
 						$"{st.mean,9:+0.0000;-0.0000} {perSess,9:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,6:0.0} " +
 						$"{st.ir,7:0.000} {dd2,7:0.00} {st.wst,7:0.00} {perSess / Math.Max(0.01, dd2),7:0.000}");
 				}
-				Row("hold to expiry [SHIPPED]", hold);
+				Row("hold to expiry [1D rule = benchmark]", hold);
 				Console.WriteLine($"   -- gate on POSITION (clamped, current) --");
 				foreach (double g in new[] { 0.05, 0.10, 0.20 }) Row($"  position < {g:0.00}", Arm(4, g, 0));
 				Console.WriteLine($"   -- gate on RAW (pre-clamp, sign intact) --");
 				foreach (double g in new[] { 0.01, 0.05, 0.10 }) Row($"  adjEma < {g:0.00}", Arm(4, g, 1));
 				Console.WriteLine($"   -- gate on EMA (pre-bias -- the line that goes negative) --");
 				foreach (double g in new[] { -0.90, -0.75, -0.50, -0.25, 0.00, 0.25, 0.50 }) Row($"  ema < {g,5:+0.00;-0.00}", Arm(4, g, 2));
+			}
+			Gate = gSave;
+		}
+
+		// SHIPPED GATE, RESULTS SPLIT BY THE SIGN OF THE RAW EMA AT ENTRY.
+		//
+		// This is a DIAGNOSTIC, not a filter: the gate stays position < 0.05 and the traded set is
+		// identical in both buckets, so the split cannot be flattered by selectivity the way an ema GATE
+		// was. It answers a narrower question -- when the loop arms, does it matter whether the pre-bias
+		// EMA happened to be bullish or bearish at that moment? Since `adjEma` discards the sign almost
+		// entirely (biasEma median 18.4), the engine's own position cannot express this distinction, so
+		// any gap here is information the shipped pipeline is currently throwing away.
+		public static async Task RunEmaBuckets()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate;
+			Gate = 0.05; GexSizing = false; ArmBars = 1; SizeMode = 0;
+
+			var all = new List<Sess>();
+			var holdAll = new List<Sess>();
+			foreach (var x in inputs)
+			{
+				if (x.Exp == null || x.Ema == null || x.Exp.Count == 0) continue;
+				var s = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, 4, x.Cp, x.Ema);
+				if (s != null) all.Add(s);
+				var h = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, 0, x.Cp, x.Ema);
+				if (h != null) holdAll.Add(h);
+			}
+			if (all.Count == 0) { Console.WriteLine("nothing traded"); return; }
+			var worst = holdAll.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+
+			Console.WriteLine($"{Environment.NewLine}===== SHIPPED LOOP (position < 0.05), SPLIT BY RAW EMA SIGN AT ENTRY =====");
+			Console.WriteLine($"the gate is unchanged -- this only labels each session by the pre-bias EMA when it armed");
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				var univ = all.Where(filt).Where(x => !double.IsNaN(x.EntryEma)).ToList();
+				if (univ.Count < 20) continue;
+				Console.WriteLine($"{Environment.NewLine}-- {tag} ({univ.Count} sessions with a recorded entry EMA) --");
+				Console.WriteLine($"{"bucket",-28} {"sess",5} {"%",6} {"legs/s",7} {"mean/s%",9} {"win%",6} {"IR",7} {"maxDD%",7} {"worst%",7} {"ret/DD",7}");
+				void Row(string lbl, List<Sess> f)
+				{
+					if (f.Count < 8) { Console.WriteLine($"{lbl,-28} {f.Count,5}  (too few)"); return; }
+					var r = f.Select(x => x.Ret).ToList();
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					double e = 1, pk = 1, dd = 0;
+					foreach (var z in r) { e *= 1 + z; if (e <= 0) { e = 0; break; } if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q; }
+					Console.WriteLine($"{lbl,-28} {f.Count,5} {100.0 * f.Count / univ.Count,6:0.0} {f.Average(x => x.Legs),7:0.00} " +
+						$"{100 * m,9:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,6:0.0} {(sd > 1e-12 ? m / sd : 0),7:0.000} " +
+						$"{dd,7:0.00} {100 * r.Min(),7:0.00} {100 * m / Math.Max(0.01, dd),7:0.000}");
+				}
+				Row("ALL (both buckets)", univ);
+				Row("  entry EMA >= 0", univ.Where(x => x.EntryEma >= 0).ToList());
+				Row("  entry EMA <  0", univ.Where(x => x.EntryEma < 0).ToList());
+				Console.WriteLine($"   -- finer slices --");
+				Row("  EMA >= +0.50", univ.Where(x => x.EntryEma >= 0.50).ToList());
+				Row("  EMA  0 .. +0.50", univ.Where(x => x.EntryEma >= 0 && x.EntryEma < 0.50).ToList());
+				Row("  EMA -0.50 .. 0", univ.Where(x => x.EntryEma >= -0.50 && x.EntryEma < 0).ToList());
+				Row("  EMA <  -0.50", univ.Where(x => x.EntryEma < -0.50).ToList());
+				// Unpaired two-sample t on the sign split. Both buckets are disjoint sets of sessions, so
+				// this is a difference of means, not a paired test.
+				var a = univ.Where(x => x.EntryEma >= 0).Select(x => x.Ret).ToList();
+				var b = univ.Where(x => x.EntryEma < 0).Select(x => x.Ret).ToList();
+				if (a.Count > 5 && b.Count > 5)
+				{
+					double ma = a.Average(), mb = b.Average();
+					double va = a.Sum(z => (z - ma) * (z - ma)) / (a.Count - 1);
+					double vb = b.Sum(z => (z - mb) * (z - mb)) / (b.Count - 1);
+					double se = Math.Sqrt(va / a.Count + vb / b.Count);
+					Console.WriteLine($"   EMA>=0 minus EMA<0: {100 * (ma - mb),8:+0.0000;-0.0000}pp   " +
+						$"Welch t {(se > 1e-12 ? (ma - mb) / se : 0),6:+0.00;-0.00}   (n {a.Count} vs {b.Count})");
+				}
 			}
 			Gate = gSave;
 		}
@@ -682,7 +766,7 @@ namespace StockOdds
 			Console.WriteLine($"floor is QUALIFIED on spot > short strike, so every CLOSED leg is a winner and only the");
 			Console.WriteLine($"leg open at the bell can lose -- watch the worst% column to confirm the -10% floor holds.");
 
-			string[] names = { "1. single entry at OPEN, hold [SHIPPED]", "2. single entry at first dip, hold",
+			string[] names = { "1. single entry at OPEN, hold [1D rule]", "2. single entry at first dip, hold",
 				"3. LOOP: re-enter on exposure < gate", "4. LOOP: re-enter at next bar (no gate)" };
 			foreach (var (tag, filt) in new[] { ("FULL SAMPLE", (Func<Sess, bool>)(_ => true)), ("W23 REMOVED", x => Wk(x.D) != worst) })
 			{
