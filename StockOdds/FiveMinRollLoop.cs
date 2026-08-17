@@ -57,6 +57,10 @@ namespace StockOdds
 		// Consecutive candles that must sit under Gate before arming. 1 = the level rule tested so far.
 		// Persistence is a different lever from the threshold: it trades entry PROMPTNESS for confirmation.
 		public static int ArmBars = 1;
+		// 5m candle-state condition applied AT THE ARMING BAR, not to the session. 0 = off,
+		// 1 = require the 5m candle not be Bear, 2 = require it IS Bear (sign control).
+		// The daily ST-Bear skip is separate and already applied upstream in Collect().
+		public static int StFilter = 0;
 		public static bool GexSizing = false;
 		public static double GexCap = 2.0;
 
@@ -96,12 +100,20 @@ namespace StockOdds
 			return 0.5 * (lo + hi);
 		}
 
+		// The 5m candle state at a given bar, against the configured condition.
+		private static bool StOk(List<ShortTermState>? st, int i)
+		{
+			if (StFilter == 0 || st == null || i < 0 || i >= st.Count) return true;
+			return StFilter == 1 ? st[i] != ShortTermState.Bear : st[i] == ShortTermState.Bear;
+		}
+
 		private static string Wk(DateTime d) => $"{ISOWeek.GetYear(d)}-W{ISOWeek.GetWeekOfYear(d):00}";
 
 		// mode: 0 = single entry at open, hold      1 = single entry at first dip, hold
 		//       2 = loop, re-enter only when exposure < Gate    3 = loop, re-enter at the next bar
 		private static Sess? Simulate(string sym, DateTime d, List<OhlcBar> tb, List<double> exp, double iv,
-			double priorExp, int mode, double cp = double.NaN, List<double>? emaSeries = null)
+			double priorExp, int mode, double cp = double.NaN, List<double>? emaSeries = null,
+			List<ShortTermState>? stSeries = null)
 		{
 			int n = Math.Min(tb.Count, exp.Count);
 			if (n < 20) return null;
@@ -120,7 +132,7 @@ namespace StockOdds
 				// before the bell -- enter at the open rather than waiting for a fresh candle to confirm
 				// something already true. Only meaningful at ArmBars == 1; with a persistence requirement
 				// there is no prior-session run to inspect, so it falls through to the scan.
-				else if (mode == 4 && first && ArmBars == 1 && priorExp < Gate) j = 0;
+				else if (mode == 4 && first && ArmBars == 1 && priorExp < Gate && StOk(stSeries, 0)) j = 0;
 				else if (mode == 3 && !first) j = k;
 				else
 				{
@@ -129,6 +141,7 @@ namespace StockOdds
 						{
 							// ArmBars consecutive candles must sit under the gate, the run ending at q
 							if (q + 1 < ArmBars) continue;
+							if (!StOk(stSeries, q)) continue;
 							bool ok = true;
 							for (int b = 0; b < ArmBars; b++) if (exp[q - b] >= Gate) { ok = false; break; }
 							if (ok) { j = q; break; }
@@ -389,6 +402,147 @@ namespace StockOdds
 			Gate = gSave;
 		}
 
+		// DOES THE LOOP HOLD UP PER INSTRUMENT?
+		//
+		// Everything so far pooled SPY/QQQ/IWM/GLD, which hides two things: whether the result is one
+		// instrument carrying the rest, and whether it is really ~4 independent replications (it is not --
+		// SPY, QQQ and IWM are correlated index products living through the same weeks, so agreement
+		// between them is weaker evidence than the session count suggests). GLD is the only genuinely
+		// different underlying here, and also the thinnest.
+		//
+		// Per-instrument universes are separate: each symbol's own hold-set is its denominator, so the
+		// zero-filled per-session column stays honest within each name.
+		public static async Task RunPerInstrument()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate;
+			Gate = 0.05; GexSizing = false; ArmBars = 1; SizeMode = 0; StFilter = 0;
+
+			List<Sess> Arm(int mode, IEnumerable<Input> univ)
+			{
+				var outp = new List<Sess>();
+				foreach (var x in univ)
+				{
+					if (x.Exp == null || x.Exp.Count == 0) continue;
+					var s = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, mode, x.Cp, x.Ema, x.St5);
+					if (s != null) outp.Add(s);
+				}
+				return outp;
+			}
+			var holdAll = Arm(0, inputs);
+			var worst = holdAll.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+
+			Console.WriteLine($"{Environment.NewLine}===== THE LOOP, PER INSTRUMENT (gate {Gate:0.00}, flat stake) =====");
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				Console.WriteLine($"{Environment.NewLine}-- {tag} --");
+				Console.WriteLine($"{"instrument / arm",-32} {"sess",5} {"legs/s",7} {"mean/s%",9} {"perSess%",9} {"win%",6} {"IR",7} {"maxDD%",7} {"worst%",7} {"ret/DD",7}");
+				foreach (var sym in new[] { "SPY", "QQQ", "IWM", "GLD", "*POOLED" })
+				{
+					var univ = sym == "*POOLED" ? inputs : inputs.Where(x => x.Sym == sym).ToList();
+					var h = Arm(0, univ).Where(filt).ToList();
+					var lp = Arm(4, univ).Where(filt).ToList();
+					if (h.Count < 8) { Console.WriteLine($"{sym,-32} {h.Count,5}   (too few sessions)"); continue; }
+					void Row(string lbl, List<Sess> f)
+					{
+						if (f.Count < 5) { Console.WriteLine($"{lbl,-32} {f.Count,5}   (too few)"); return; }
+						var r = f.Select(x => x.Ret).ToList();
+						double m = r.Average();
+						double sd = r.Count > 1 ? Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1)) : 0;
+						double perSess = 100.0 * r.Sum() / h.Count;
+						var traded = f.ToDictionary(x => (x.Sym, x.D), x => x.Ret);
+						double e = 1, pk = 1, dd = 0;
+						foreach (var hh in h)
+						{
+							double v = traded.TryGetValue((hh.Sym, hh.D), out var t) ? t : 0.0;
+							e *= 1 + v; if (e <= 0) { e = 0; break; }
+							if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q;
+						}
+						Console.WriteLine($"{lbl,-32} {f.Count,5} {f.Average(x => x.Legs),7:0.00} {100 * m,9:+0.0000;-0.0000} " +
+							$"{perSess,9:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,6:0.0} {(sd > 1e-12 ? m / sd : 0),7:0.000} " +
+							$"{dd,7:0.00} {100 * r.Min(),7:0.00} {perSess / Math.Max(0.01, dd),7:0.000}");
+					}
+					Console.WriteLine($"  {sym}");
+					Row("    hold to expiry", h);
+					Row("    LOOP", lp);
+				}
+			}
+			Gate = gSave;
+		}
+
+		// ADD A 5m CANDLE-STATE CONDITION TO THE LOOP: arm only when the 5m candle is not Bear.
+		//
+		// This is NOT the session filter that already failed. The daily ST-Bear skip is applied upstream,
+		// and testing the 5m state as a whole-session filter lost outright. Here it is a condition on the
+		// ARMING BAR, the same distinction that turned the exposure gate from a dead session filter into a
+		// working re-entry timer. A rule that decides WHEN to arm is a different object from one that
+		// decides WHETHER to trade the day.
+		//
+		// Reported with the zero-filled per-session column, because any condition that can refuse to arm
+		// shrinks the traded set and would otherwise be flattered by its own selectivity. The sign control
+		// (arm ONLY on Bear) is included: if non-Bear is genuinely better, its mirror must be worse.
+		public static async Task RunStFilter()
+		{
+			var inputs = await Collect();
+			if (inputs.Count == 0) { Console.WriteLine("no data"); return; }
+			double gSave = Gate; int fSave = StFilter;
+			Gate = 0.05; GexSizing = false; ArmBars = 1; SizeMode = 0;
+
+			List<Sess> Arm(int mode, int stFilter)
+			{
+				StFilter = stFilter;
+				var outp = new List<Sess>();
+				foreach (var x in inputs)
+				{
+					if (x.Exp == null || x.Exp.Count == 0) continue;
+					var s = Simulate(x.Sym, x.D, x.Bars, x.Exp, x.Iv, x.PriorExp, mode, x.Cp, x.Ema, x.St5);
+					if (s != null) outp.Add(s);
+				}
+				return outp;
+			}
+			var hold = Arm(0, 0);
+			var worst = hold.GroupBy(x => Wk(x.D)).OrderBy(g => g.Average(x => x.Ret)).First().Key;
+
+			// how often is the 5m candle Bear at all?
+			var flatSt = inputs.SelectMany(x => x.St5 ?? new List<ShortTermState>()).ToList();
+			Console.WriteLine($"{Environment.NewLine}===== LOOP + 5m CANDLE-STATE CONDITION AT THE ARMING BAR =====");
+			Console.WriteLine($"gate {Gate:0.00}; daily ST-Bear already skipped upstream; " +
+				$"5m candle is Bear on {100.0 * flatSt.Count(v => v == ShortTermState.Bear) / Math.Max(1, flatSt.Count):0.0}% of bars");
+
+			foreach (var (tag, filt) in new[] { ("W23 REMOVED", (Func<Sess, bool>)(x => Wk(x.D) != worst)), ("FULL SAMPLE", _ => true) })
+			{
+				int universe = hold.Where(filt).Count();
+				Console.WriteLine($"{Environment.NewLine}-- {tag} --");
+				Console.WriteLine($"{"arm",-38} {"sess",5} {"%univ",6} {"legs/s",7} {"mean/s%",9} {"perSess%",9} {"win%",6} {"IR",7} {"maxDD%",7} {"worst%",7} {"ret/DD",7}");
+				void Row(string lbl, List<Sess> s)
+				{
+					var f = s.Where(filt).ToList();
+					if (f.Count < 15) { Console.WriteLine($"{lbl,-38} {f.Count,5}  (too few)"); return; }
+					var r = f.Select(x => x.Ret).ToList();
+					double m = r.Average();
+					double sd = Math.Sqrt(r.Sum(z => (z - m) * (z - m)) / (r.Count - 1));
+					double perSess = 100.0 * r.Sum() / Math.Max(1, universe);
+					var traded = f.ToDictionary(x => (x.Sym, x.D), x => x.Ret);
+					double e = 1, pk = 1, dd = 0;
+					foreach (var h in hold.Where(filt))
+					{
+						double v = traded.TryGetValue((h.Sym, h.D), out var t) ? t : 0.0;
+						e *= 1 + v; if (e <= 0) { e = 0; break; }
+						if (e > pk) pk = e; double q = (pk - e) / pk * 100; if (q > dd) dd = q;
+					}
+					Console.WriteLine($"{lbl,-38} {f.Count,5} {100.0 * f.Count / Math.Max(1, universe),6:0.0} {f.Average(x => x.Legs),7:0.00} " +
+						$"{100 * m,9:+0.0000;-0.0000} {perSess,9:+0.0000;-0.0000} {100.0 * r.Count(z => z > 0) / r.Count,6:0.0} " +
+						$"{(sd > 1e-12 ? m / sd : 0),7:0.000} {dd,7:0.00} {100 * r.Min(),7:0.00} {perSess / Math.Max(0.01, dd),7:0.000}");
+				}
+				Row("hold to expiry [1D rule = benchmark]", hold);
+				Row("loop, no 5m ST condition [current]", Arm(4, 0));
+				Row("loop + arm only when NOT 5m Bear", Arm(4, 1));
+				Row("loop + arm ONLY on 5m Bear (control)", Arm(4, 2));
+			}
+			Gate = gSave; StFilter = fSave;
+		}
+
 		// SHIPPED GATE, RESULTS SPLIT BY THE SIGN OF THE RAW EMA AT ENTRY.
 		//
 		// This is a DIAGNOSTIC, not a filter: the gate stays position < 0.05 and the traded set is
@@ -497,7 +651,7 @@ namespace StockOdds
 		// Cached per-session inputs, so the gate can be swept without refetching or re-deriving anything.
 		private sealed record Input(string Sym, DateTime D, List<OhlcBar> Bars, List<double> Exp, double Iv,
 			double PriorExp, double Cp, List<double> Raw, double PriorRaw,
-			List<double> Ema, double PriorEma);
+			List<double> Ema, double PriorEma, List<ShortTermState> St5);
 
 		private static Dictionary<DateTime, double> LoadCallPut(string symbol)
 		{
@@ -561,6 +715,7 @@ namespace StockOdds
 				var expPath = new Dictionary<DateTime, List<double>>();
 				var rawPath = new Dictionary<DateTime, List<double>>();
 				var emaPath = new Dictionary<DateTime, List<double>>();
+				var stPath = new Dictionary<DateTime, List<ShortTermState>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
@@ -573,6 +728,9 @@ namespace StockOdds
 					// the PRE-BIAS ema -- this is the plotted "EMA (raw)" line, and the one that goes negative
 					if (!emaPath.TryGetValue(d, out var el)) emaPath[d] = el = new List<double>();
 					el.Add(k < iEng.EmaExposure.Count ? iEng.EmaExposure[k] : double.NaN);
+					// the 5m CANDLE state, bar by bar, for the arming-time condition
+					if (!stPath.TryGetValue(d, out var sl)) stPath[d] = sl = new List<ShortTermState>();
+					sl.Add(k < iEng.StState.Count ? iEng.StState[k] : ShortTermState.BullNeutral);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 
@@ -592,9 +750,11 @@ namespace StockOdds
 					emaPath.TryGetValue(dTr, out var eToday);
 					if (rToday == null || rPrev == null || rPrev.Count == 0) continue;
 					if (eToday == null || ePrev == null || ePrev.Count == 0) continue;
+					stPath.TryGetValue(dTr, out var stToday);
+					if (stToday == null) continue;
 					outp.Add(new Input(symbol, dTr, tb, pToday, h * VolRiskPremium, pPrev[^1],
 						cpMap.TryGetValue(dSig, out double cpv) ? cpv : double.NaN, rToday, rPrev[^1],
-						eToday, ePrev[^1]));
+						eToday, ePrev[^1], stToday));
 				}
 			}
 			return outp;
@@ -725,6 +885,7 @@ namespace StockOdds
 				var expPath = new Dictionary<DateTime, List<double>>();
 				var rawPath = new Dictionary<DateTime, List<double>>();
 				var emaPath = new Dictionary<DateTime, List<double>>();
+				var stPath = new Dictionary<DateTime, List<ShortTermState>>();
 				for (int k = 0; k < iEng.Positions.Count && k < iEng.ReturnDates.Count; k++)
 				{
 					var d = iEng.ReturnDates[k].Date;
@@ -737,6 +898,9 @@ namespace StockOdds
 					// the PRE-BIAS ema -- this is the plotted "EMA (raw)" line, and the one that goes negative
 					if (!emaPath.TryGetValue(d, out var el)) emaPath[d] = el = new List<double>();
 					el.Add(k < iEng.EmaExposure.Count ? iEng.EmaExposure[k] : double.NaN);
+					// the 5m CANDLE state, bar by bar, for the arming-time condition
+					if (!stPath.TryGetValue(d, out var sl)) stPath[d] = sl = new List<ShortTermState>();
+					sl.Add(k < iEng.StState.Count ? iEng.StState[k] : ShortTermState.BullNeutral);
 				}
 				var barsOf = intra.GroupBy(b => b.Date.Date).ToDictionary(g => g.Key, g => g.OrderBy(b => b.Date).ToList());
 

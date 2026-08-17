@@ -565,7 +565,12 @@ if showTable and barstate.islast
     zStOk    = not zdteSkipStBear or na(stState) or stState != 0        // 0 = ST Bear
     // 5m arming. `position` on a 5m chart IS the 5m exposure. Enough of the session must remain to open a
     // leg; the guard is in minutes so it does not depend on the exchange's session length.
-    zMinsLeft = na(time_close) ? na : (time_close - time) / 60000.0
+    // MINUTES LEFT IN THE SESSION, not in the bar. `time_close` is the CURRENT BAR's close, so on a 5m
+    // chart (time_close - time) is always 5 -- which made this permanently false and stopped the 5m mode
+    // arming at all. time_close("1D") is the current session's scheduled close from the exchange
+    // calendar, so it also handles early closes correctly.
+    zSessEnd  = time_close("1D")
+    zMinsLeft = na(zSessEnd) ? na : (zSessEnd - time) / 60000.0
     zSessOk   = na(zMinsLeft) or zMinsLeft >= zdte5mMinsLeft
     zArmed    = zIs5m and not na(position) and position < zdte5mGate and zSessOk
     // The daily qualification (exposure >= floor, not ST Bear) is NOT recomputed here from 5m bars -- it is a
@@ -582,7 +587,11 @@ if showTable and barstate.islast
     zShortTxt = zTrade ? "SELL " + str.tostring(zShort,   "#.00") + "d  (0 DTE)" : "—"
     zGateTxt = na(position)  ? "—" :
                not zTfOk     ? "NEEDS 1D OR 5m CHART (tf is " + timeframe.period + ")" :
-               zIs5m and not zSessOk ? "STAND DOWN — under " + str.tostring(zdte5mMinsLeft) + " min left" :
+               // Show the MEASURED value, not just the verdict. The first version of this row asserted
+               // "under 30 min left" without printing the number it compared, so a calculation that
+               // returned a constant 5 was invisible and silently disabled the whole 5m mode.
+               zIs5m and not zSessOk ? "STAND DOWN — " + str.tostring(math.round(zMinsLeft)) + " min left (need " +
+                                       str.tostring(zdte5mMinsLeft) + ")" :
                zIs5m and not zArmed  ? "WAIT — 5m exp " + str.tostring(position, "#.00") + " not under " + str.tostring(zdte5mGate, "#.00") :
                zIs5m         ? "ARMED — 5m exp " + str.tostring(position, "#.00") + " under " + str.tostring(zdte5mGate, "#.00") :
                position < zdteLo ? "NO TRADE — exp " + str.tostring(position, "#.00") + " below " + str.tostring(zdteLo, "#.00") + " floor" :
